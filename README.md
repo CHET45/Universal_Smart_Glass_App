@@ -28,13 +28,13 @@ Option A: Import from TaskerNet (recommended)
 
 1. Install Tasker from Google Play.
 2. Open this TaskerNet link on your phone and import the profile:
-   - `https://taskernet.com/shares/?id=PLACEHOLDER_TASKERNET_LINK`
+   - `https://taskernet.com/shares/?user=AS35m8m%2BZfcOI%2FAn4TYXwIRGXRuXzE9zXexYgafojsO%2FQSXgVbu8nOiYo%2BLhLj1izKWhtzdxI6eOvMI%3D&id=Profile%3ATasker+AI`
 3. In Tasker, ensure the imported profile is **enabled**.
 
 Option B: Import the .xml from this repository
 
 1. Download the profile XML to your phone:
-   - `tasker/HeyCyan_ImageQuery_Assistant.xml` (placeholder path)
+   - `android/CyanBridge/tasker/Tasker_AI.xml`
 2. In Tasker, use the import feature (commonly: Menu > Data > Import) and select the downloaded `.xml`.
 3. Ensure the imported profile is **enabled**.
 
