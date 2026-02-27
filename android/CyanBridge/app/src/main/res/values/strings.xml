@@ -34,4 +34,18 @@
     <string name="battery_opt_still_on_toast">Battery optimization still appears to be ON. Please disable it, then tap \"I Disabled It\" again.</string>
     <string name="battery_opt_not_supported">Battery optimization settings are not available on this Android version.</string>
     <string name="battery_opt_cant_open_settings">Could not open settings on this device.</string>
+
+    <!-- Privacy settings -->
+    <string name="privacy_settings_title">Privacy Settings</string>
+    <string name="privacy_settings_section_title">PRIVACY</string>
+    <string name="privacy_settings_transcript_storage">Transcript storage</string>
+    <string name="privacy_settings_transcript_storage_desc">Store transcripts locally for later review. Off by default.</string>
+    <string name="privacy_settings_redaction">Redaction</string>
+    <string name="privacy_settings_redaction_desc">Redact sensitive information before saving or sharing transcripts (when supported).</string>
+
+    <string name="privacy_settings_clear_section_title">LOCAL DATA</string>
+    <string name="privacy_settings_clear_local_data">Clear local data</string>
+    <string name="privacy_settings_clear_local_data_desc">Clears app-local cache and stored transcripts (if present). Does not delete photos/videos saved to your Gallery.</string>
+
+    <string name="open_privacy_settings">Privacy Settings</string>
 </resources>

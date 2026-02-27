@@ -67,6 +67,10 @@
             android:name=".ui.BatteryOptimizationGuideActivity"
             android:exported="false"
             android:label="@string/battery_opt_title" />
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="false"
+            android:label="@string/privacy_settings_title" />
         <activity android:name=".ui.DeviceBindActivity" />
 
         <provider

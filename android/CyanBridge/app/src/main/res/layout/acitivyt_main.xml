@@ -199,6 +199,16 @@
                     android:textColor="@color/text_secondary"/>
             </LinearLayout>
 
+            <Button
+                android:id="@+id/btn_privacy_settings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/open_privacy_settings"
+                android:backgroundTint="@color/card_bg"
+                android:textColor="@color/cyan_accent"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
             <!-- SECTION: DEVICE INFO -->
             <TextView
                 android:layout_width="wrap_content"

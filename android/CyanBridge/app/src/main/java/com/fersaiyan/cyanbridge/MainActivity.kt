@@ -45,6 +45,7 @@ import org.greenrobot.eventbus.EventBus
 import org.greenrobot.eventbus.Subscribe
 import org.greenrobot.eventbus.ThreadMode
 import com.fersaiyan.cyanbridge.ui.BatteryOptimizationGuideActivity
+import com.fersaiyan.cyanbridge.ui.SettingsActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -284,6 +285,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.btnModeGemini,
             binding.btnModeChatgpt,
             binding.btnModeTasker,
+            binding.btnPrivacySettings,
             binding.btnTestHijackVoice,
             binding.btnTestHijackImage
         ) {
@@ -325,6 +327,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     binding.btnModeChatgpt.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
                     binding.btnModeTasker.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.cyan_accent))
                     Toast.makeText(this@MainActivity, "AI Mode: Tasker Broadcast", Toast.LENGTH_SHORT).show()
+                }
+
+                binding.btnPrivacySettings -> {
+                    startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
                 }
 
                 binding.btnScan -> {
@@ -2040,25 +2046,58 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun isProbablyGroupOwnerIp(ip: String?): Boolean {
         if (ip.isNullOrBlank()) return false
-        // Typical Wi-Fi Direct GO address when phone is GO.
+        // Typical Wi‑Fi Direct GO address when phone is GO.
         return ip == "192.168.49.1"
     }
 
+    private fun ipv4Prefix24(ip: String?): String? {
+        if (ip.isNullOrBlank()) return null
+        val parts = ip.split(".")
+        if (parts.size != 4) return null
+        return "${parts[0]}.${parts[1]}.${parts[2]}."
+    }
+
+    private fun guessDownloadSubnetPrefix(): String? {
+        // Prefer authoritative device IPs when available; otherwise fall back to
+        // the group owner's subnet and finally the active Wi‑Fi/P2P interface subnet.
+        ipv4Prefix24(downloadBleIp)?.let { return it }
+        ipv4Prefix24(bleIpBridge.ip.value)?.let { return it }
+        ipv4Prefix24(downloadWifiIp)?.let { return it }
+
+        val network = downloadP2pNetwork ?: findLikelyP2pNetwork()
+        if (network != null) {
+            try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val lp = cm.getLinkProperties(network)
+                val addr = lp?.linkAddresses
+                    ?.mapNotNull { it.address.hostAddress }
+                    ?.firstOrNull { it.count { ch -> ch == '.' } == 3 }
+                ipv4Prefix24(addr)?.let { return it }
+            } catch (_: Exception) {
+                // ignore
+            }
+        }
+        return null
+    }
+
     private fun buildCandidateIps(): List<String> {
-        // Ordered best-effort list. We intentionally include a common glasses IP
-        // fallback (192.168.49.79) because in practice BLE IP sometimes never arrives.
+        // Ordered best-effort list. Avoid hard-coding 192.168.49.x: some devices/firmware
+        // report different subnets, and VPNs can change the default route.
         val set = LinkedHashSet<String>()
 
         downloadBleIp?.let { set.add(it) }
         bleIpBridge.ip.value?.let { set.add(it) }
 
-        // If the P2P group owner is the phone (often 192.168.49.1), this is NOT the glasses.
-        // Keep it as a very low-priority hint only.
+        // If the P2P group owner is the phone, this is NOT the glasses.
+        // Keep as a low-priority hint only (it can still help derive the subnet).
         downloadWifiIp?.let { set.add(it) }
 
-        set.add("192.168.49.79")
-        set.add("192.168.49.2")
-        set.add("192.168.49.3")
+        guessDownloadSubnetPrefix()?.let { prefix ->
+            // Empirical: glasses often end up at low host numbers or 79, but keep it heuristic.
+            set.add("${prefix}79")
+            set.add("${prefix}2")
+            set.add("${prefix}3")
+        }
 
         return set.toList()
     }
@@ -2249,23 +2288,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
                 }
 
-                // 2) If we have a group owner IP in 192.168.49.x, scan that /24.
+                // 2) If we still don't have a device IP, scan the local /24 derived from
+                // the best available hint (BLE IP, bridge IP, GO subnet, or interface subnet).
                 if (!didSubnetScan &&
                     downloadP2pConnected &&
                     downloadResolvedHttpIp == null &&
                     downloadBleIp == null &&
-                    bleIpBridge.ip.value == null &&
-                    (downloadWifiIp?.startsWith("192.168.49.") == true)
+                    bleIpBridge.ip.value == null
                 ) {
-                    didSubnetScan = true
-                    Log.i("DataDownload", "Candidate IPs failed; scanning 192.168.49.0/24 for HTTP server...")
-                    val found = discoverGlassesIpByScan("192.168.49.")
-                    if (!found.isNullOrBlank()) {
-                        downloadResolvedHttpIp = found
-                        downloadInProgress = true
-                        Log.i("DataDownload", "Resolved glasses HTTP IP via scan: $found")
-                        downloadMediaList(found)
-                        return@launch
+                    val prefix = guessDownloadSubnetPrefix()
+                    if (!prefix.isNullOrBlank()) {
+                        didSubnetScan = true
+                        Log.i("DataDownload", "Candidate IPs failed; scanning ${prefix}0/24 for HTTP server...")
+                        val found = discoverGlassesIpByScan(prefix)
+                        if (!found.isNullOrBlank()) {
+                            downloadResolvedHttpIp = found
+                            downloadInProgress = true
+                            Log.i("DataDownload", "Resolved glasses HTTP IP via scan: $found")
+                            downloadMediaList(found)
+                            return@launch
+                        }
                     }
                 }
 
@@ -2334,21 +2376,51 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun findLikelyP2pNetwork(): Network? {
+        // We want a network whose sockets route to the Wi‑Fi Direct group even when a VPN is active.
+        // Wi‑Fi Direct networks still show up as TRANSPORT_WIFI; the VPN itself shows up as TRANSPORT_VPN.
         return try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+            val prefixHints = listOfNotNull(
+                ipv4Prefix24(downloadBleIp),
+                ipv4Prefix24(bleIpBridge.ip.value),
+                ipv4Prefix24(downloadWifiIp)
+            ).distinct()
+
+            var p2pCandidate: Network? = null
+            var fallbackWifi: Network? = null
+
             for (n in cm.allNetworks) {
-                val lp = cm.getLinkProperties(n) ?: continue
-                val ifName = lp.interfaceName ?: ""
-                val has49 = lp.linkAddresses.any { la ->
-                    la.address.hostAddress?.startsWith("192.168.49.") == true
+                val caps = cm.getNetworkCapabilities(n) ?: continue
+                if (!caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) continue
+                if (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)) continue
+
+                val lp = cm.getLinkProperties(n)
+                val ifName = lp?.interfaceName ?: ""
+                val addrs = lp?.linkAddresses?.mapNotNull { it.address.hostAddress } ?: emptyList()
+
+                val matchesHint = prefixHints.any { p -> addrs.any { it.startsWith(p) } }
+                val looksLikeP2p = ifName.contains("p2p", ignoreCase = true) ||
+                    ifName.contains("wfd", ignoreCase = true) ||
+                    addrs.any { it.startsWith("192.168.49.") } ||
+                    matchesHint
+
+                if (looksLikeP2p) {
+                    Log.i("DataDownload", "Selected P2P/WFD network candidate: if=$ifName addrs=$addrs (matchesHint=$matchesHint)")
+                    p2pCandidate = n
+                    // Strong match -> return early.
+                    if (ifName.contains("p2p", ignoreCase = true) || ifName.contains("wfd", ignoreCase = true) || matchesHint) {
+                        return n
+                    }
                 }
-                if (ifName.contains("p2p", ignoreCase = true) || has49) {
-                    val addrs = lp.linkAddresses.joinToString { it.address.hostAddress ?: "?" }
-                    Log.i("DataDownload", "Selected P2P network: if=$ifName addrs=[$addrs]")
-                    return n
+
+                if (fallbackWifi == null) {
+                    Log.i("DataDownload", "Keeping Wi‑Fi fallback network: if=$ifName addrs=$addrs")
+                    fallbackWifi = n
                 }
             }
-            null
+
+            p2pCandidate ?: fallbackWifi
         } catch (e: Exception) {
             Log.w("DataDownload", "Failed to locate P2P network: ${e.message}")
             null
