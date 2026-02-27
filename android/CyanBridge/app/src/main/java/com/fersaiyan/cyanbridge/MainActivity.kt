@@ -84,6 +84,7 @@ import android.speech.tts.TextToSpeech
 import android.content.ClipboardManager
 import android.content.ClipData
 import android.content.Context
+import android.view.View
 
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
@@ -143,6 +144,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     // one for the download flow so we don't duplicate thumbnail/audio handling.
     private val downloadNotifyListener by lazy { DownloadNotifyListener() }
     private var downloadNotifyListenerRegistered = false
+
+    // UI state for P2P sync progress
+    private var transferTotalJpg = 0
+    private var transferTotalMp4 = 0
+    private var transferTotalOpus = 0
+    private var transferDoneJpg = 0
+    private var transferDoneMp4 = 0
+    private var transferDoneOpus = 0
     private var batteryPollJob: Job? = null
     private val batteryPollIntervalMs = 60_000L
     private var pendingBatteryToast = false
@@ -1080,6 +1089,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadP2pNetwork = null
         unbindProcessFromNetwork()
 
+        resetTransferUiState()
+        setTransferUiVisible(true)
+        setTransferDetail("Starting sync...")
+
         if (!downloadNotifyListenerRegistered) {
             try {
                 LargeDataHandler.getInstance().addOutDeviceListener(2, downloadNotifyListener)
@@ -1181,6 +1194,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // Start scanning for the glasses over WiFi Direct
         wifiP2pManager.startPeerDiscovery()
 
+        setTransferDetail("Waiting for glasses IP and HTTP server...")
+
         // Ask the glasses (over BLE) to bring up WiFi/P2P and report their IP,
         // mirroring the official app's importAlbum() flow.
         LargeDataHandler.getInstance().glassesControl(
@@ -1191,6 +1206,66 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 "glassesControl[0x02,0x01,0x04] -> dataType=${resp.dataType}, error=${resp.errorCode}"
             )
         }
+    }
+
+    private fun setTransferUiVisible(visible: Boolean) {
+        binding.cardTransferProgress.visibility = if (visible) View.VISIBLE else View.GONE
+    }
+
+    private fun resetTransferUiState() {
+        transferTotalJpg = 0
+        transferTotalMp4 = 0
+        transferTotalOpus = 0
+        transferDoneJpg = 0
+        transferDoneMp4 = 0
+        transferDoneOpus = 0
+
+        binding.tvTransferCounts.text = "Photos: --  Videos: --  Audio: --"
+        binding.progressTransfer.isIndeterminate = true
+        binding.progressTransfer.max = 100
+        binding.progressTransfer.progress = 0
+        binding.tvTransferDetail.text = "Idle"
+    }
+
+    private fun setTransferPlan(jpg: Int, mp4: Int, opus: Int) {
+        transferTotalJpg = jpg
+        transferTotalMp4 = mp4
+        transferTotalOpus = opus
+        transferDoneJpg = 0
+        transferDoneMp4 = 0
+        transferDoneOpus = 0
+        renderTransferProgress()
+    }
+
+    private fun onTransferItemDone(type: String) {
+        when (type) {
+            "jpg" -> transferDoneJpg++
+            "mp4" -> transferDoneMp4++
+            "opus" -> transferDoneOpus++
+        }
+        renderTransferProgress()
+    }
+
+    private fun renderTransferProgress() {
+        val total = transferTotalJpg + transferTotalMp4 + transferTotalOpus
+        val done = transferDoneJpg + transferDoneMp4 + transferDoneOpus
+
+        binding.tvTransferCounts.text =
+            "Photos: ${transferDoneJpg}/${transferTotalJpg}  Videos: ${transferDoneMp4}/${transferTotalMp4}  Audio: ${transferDoneOpus}/${transferTotalOpus}"
+
+        if (total <= 0) {
+            binding.progressTransfer.isIndeterminate = true
+            binding.progressTransfer.max = 100
+            binding.progressTransfer.progress = 0
+        } else {
+            binding.progressTransfer.isIndeterminate = false
+            binding.progressTransfer.max = total
+            binding.progressTransfer.progress = done.coerceAtMost(total)
+        }
+    }
+
+    private fun setTransferDetail(text: String) {
+        binding.tvTransferDetail.text = text
     }
     
     private fun getDeviceIpFromBLE(): String? {
@@ -1212,6 +1287,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 downloadResolvedHttpIp = deviceIp
                 val url = "http://$deviceIp/files/media.config"
                 Log.i("DataDownload", "Downloading media list from: $url")
+
+                withContext(Dispatchers.Main) {
+                    binding.progressTransfer.isIndeterminate = true
+                    setTransferDetail("Fetching media list...")
+                }
                 
                 val connection = openHttpConnection(URL(url))
                 connection.requestMethod = "GET"
@@ -1303,6 +1383,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     "Media list parsed: jpg=${jpgFiles.size}, mp4=${mp4Files.size}, opus=${opusFiles.size}, other=$otherFiles"
                 )
 
+                CoroutineScope(Dispatchers.Main).launch {
+                    setTransferPlan(jpgFiles.size, mp4Files.size, opusFiles.size)
+                    val total = jpgFiles.size + mp4Files.size + opusFiles.size
+                    setTransferDetail("Preparing downloads (0/$total)...")
+                }
+
                 if (jpgFiles.isEmpty() && mp4Files.isEmpty() && opusFiles.isEmpty()) {
                     Log.w("DataDownload", "No JPG/MP4/OPUS files found in media.config")
                     CoroutineScope(Dispatchers.Main).launch {
@@ -1333,6 +1419,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 "DataDownload",
                 "Starting download: jpg=${jpgFiles.size}, mp4=${mp4Files.size}, opus=${opusFiles.size}"
             )
+
+            val totalAll = jpgFiles.size + mp4Files.size + opusFiles.size
+            withContext(Dispatchers.Main) {
+                if (totalAll > 0) {
+                    binding.progressTransfer.isIndeterminate = false
+                }
+                setTransferDetail("Downloading 0/$totalAll...")
+            }
             
             var jpgSuccess = 0
             var jpgFail = 0
@@ -1343,6 +1437,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             
             for ((index, fileName) in jpgFiles.withIndex()) {
                 try {
+                    withContext(Dispatchers.Main) {
+                        setTransferDetail("Downloading photo ${index + 1}/${jpgFiles.size}...")
+                    }
                     Log.i("DataDownload", "Downloading file ${index + 1}/${jpgFiles.size}: $fileName")
 
                     val success = downloadSingleJpgFile(fileName, deviceIp)
@@ -1353,6 +1450,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         jpgFail++
                         Log.e("DataDownload", "✗ Failed to download: $fileName")
                     }
+
+                    withContext(Dispatchers.Main) {
+                        onTransferItemDone("jpg")
+                        setTransferDetail("Downloaded ${binding.progressTransfer.progress}/${binding.progressTransfer.max}")
+                    }
                     
                     // Add a small delay to avoid excessively fast requests
                     delay(500)
@@ -1360,11 +1462,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 } catch (e: Exception) {
                     jpgFail++
                     Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+
+                    withContext(Dispatchers.Main) {
+                        onTransferItemDone("jpg")
+                        setTransferDetail("Downloaded ${binding.progressTransfer.progress}/${binding.progressTransfer.max} (with errors)")
+                    }
                 }
             }
 
             for ((index, fileName) in mp4Files.withIndex()) {
                 try {
+                    withContext(Dispatchers.Main) {
+                        setTransferDetail("Downloading video ${index + 1}/${mp4Files.size}...")
+                    }
                     Log.i("DataDownload", "Downloading video ${index + 1}/${mp4Files.size}: $fileName")
 
                     val success = downloadSingleMp4File(fileName, deviceIp)
@@ -1376,16 +1486,29 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         Log.e("DataDownload", "✗ Failed to download: $fileName")
                     }
 
+                    withContext(Dispatchers.Main) {
+                        onTransferItemDone("mp4")
+                        setTransferDetail("Downloaded ${binding.progressTransfer.progress}/${binding.progressTransfer.max}")
+                    }
+
                     // Videos are larger; be gentler.
                     delay(800)
                 } catch (e: Exception) {
                     mp4Fail++
                     Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+
+                    withContext(Dispatchers.Main) {
+                        onTransferItemDone("mp4")
+                        setTransferDetail("Downloaded ${binding.progressTransfer.progress}/${binding.progressTransfer.max} (with errors)")
+                    }
                 }
             }
 
             for ((index, fileName) in opusFiles.withIndex()) {
                 try {
+                    withContext(Dispatchers.Main) {
+                        setTransferDetail("Downloading audio ${index + 1}/${opusFiles.size}...")
+                    }
                     Log.i("DataDownload", "Downloading audio ${index + 1}/${opusFiles.size}: $fileName")
 
                     val success = downloadSingleOpusFile(fileName, deviceIp)
@@ -1397,10 +1520,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         Log.e("DataDownload", "✗ Failed to download: $fileName")
                     }
 
+                    withContext(Dispatchers.Main) {
+                        onTransferItemDone("opus")
+                        setTransferDetail("Downloaded ${binding.progressTransfer.progress}/${binding.progressTransfer.max}")
+                    }
+
                     delay(500)
                 } catch (e: Exception) {
                     opusFail++
                     Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+
+                    withContext(Dispatchers.Main) {
+                        onTransferItemDone("opus")
+                        setTransferDetail("Downloaded ${binding.progressTransfer.progress}/${binding.progressTransfer.max} (with errors)")
+                    }
                 }
             }
             
@@ -2011,6 +2144,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadAttemptJob?.cancel()
         downloadAttemptJob = null
         unbindProcessFromNetwork()
+
+        runOnUiThread {
+            setTransferUiVisible(false)
+            resetTransferUiState()
+        }
 
         // Stop receiving download-mode notify frames.
         if (downloadNotifyListenerRegistered) {

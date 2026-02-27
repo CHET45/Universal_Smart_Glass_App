@@ -60,12 +60,73 @@
         </LinearLayout>
     </androidx.cardview.widget.CardView>
 
+    <!-- Transfer progress (P2P sync) -->
+    <androidx.cardview.widget.CardView
+        android:id="@+id/card_transfer_progress"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:visibility="gone"
+        app:cardBackgroundColor="@color/card_bg"
+        app:cardCornerRadius="12dp"
+        app:cardElevation="4dp"
+        app:layout_constraintTop_toBottomOf="@id/card_status"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:id="@+id/tv_transfer_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SYNC PROGRESS"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.1" />
+
+            <TextView
+                android:id="@+id/tv_transfer_counts"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="Photos: --  Videos: --  Audio: --"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <ProgressBar
+                android:id="@+id/progress_transfer"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="10dp"
+                android:layout_marginTop="10dp"
+                android:indeterminate="true"
+                android:max="100" />
+
+            <TextView
+                android:id="@+id/tv_transfer_detail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Idle"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+    </androidx.cardview.widget.CardView>
+
     <!-- SCROLLABLE CONTENT -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginTop="16dp"
-        app:layout_constraintTop_toBottomOf="@id/card_status"
+        app:layout_constraintTop_toBottomOf="@id/card_transfer_progress"
         app:layout_constraintBottom_toBottomOf="parent">
 
         <LinearLayout
