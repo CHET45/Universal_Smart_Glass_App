@@ -1099,11 +1099,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // Register receiver and listen for P2P state/peer changes
         wifiP2pManager.registerReceiver()
 
-        // Prefer "phone as Group Owner" mode: create a P2P group and let the glasses join.
-        // This is more reliable than connecting to peers on some devices/firmware.
-        // 0=not attempted, 1=pending, 2=success, 3=failed
-        var groupCreateState = 0
-
         val callback = object : WifiP2pManagerSingleton.WifiP2pCallback {
             override fun onWifiP2pEnabled() {
                 Log.i("DataDownload", "WiFi P2P enabled")
@@ -1115,15 +1110,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             override fun onPeersChanged(peers: Collection<WifiP2pDevice>) {
                 Log.i("DataDownload", "Found ${peers.size} P2P devices")
-
-                // If we're creating/owning the group, don't attempt peer connects.
-                // The glasses should join the group after BLE transfer-mode is triggered.
-                if (groupCreateState == 1 || groupCreateState == 2) {
-                    Log.i("DataDownload", "Group-owner mode active (state=$groupCreateState); ignoring peer connect")
-                    return
-                }
-
-                // Fallback: connect to first available peer.
+                // Connect to the first available peer (the official app filters by name/MAC;
+                // here we keep it simple).
                 val target = peers.firstOrNull() ?: return
                 Log.i(
                     "DataDownload",
@@ -1189,22 +1177,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         downloadWifiP2pCallback = callback
         wifiP2pManager.addCallback(callback)
-
-        // Create (or recreate) the P2P group first. If this fails, we fall back to peer discovery + connect.
-        try {
-            // Mark pending immediately so onPeersChanged doesn't attempt peer-connect.
-            groupCreateState = 1
-            wifiP2pManager.removeGroup { removed ->
-                Log.i("DataDownload", "P2P group removed before createGroup: $removed")
-                wifiP2pManager.createGroup { ok ->
-                    groupCreateState = if (ok) 2 else 3
-                    Log.i("DataDownload", "P2P createGroup result: $ok")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("DataDownload", "Failed to remove/create P2P group: ${e.message}")
-            groupCreateState = 3
-        }
 
         // Start scanning for the glasses over WiFi Direct
         wifiP2pManager.startPeerDiscovery()
