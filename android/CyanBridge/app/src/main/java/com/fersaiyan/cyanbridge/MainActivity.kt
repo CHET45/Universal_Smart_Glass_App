@@ -2011,11 +2011,41 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadAttemptJob?.cancel()
         downloadAttemptJob = null
         unbindProcessFromNetwork()
+
+        // Stop receiving download-mode notify frames.
+        if (downloadNotifyListenerRegistered) {
+            try {
+                LargeDataHandler.getInstance().removeOutDeviceListener(2)
+                downloadNotifyListenerRegistered = false
+                Log.i("DataDownload", "Unregistered download notify listener (cmdType=2)")
+            } catch (e: Exception) {
+                Log.w("DataDownload", "Failed to unregister download notify listener", e)
+            }
+        }
+
+        // Tell the glasses to exit transfer mode (official app does this after downloads finish).
+        try {
+            LargeDataHandler.getInstance().glassesControl(
+                byteArrayOf(0x02, 0x01, 0x09)
+            ) { _, resp ->
+                Log.i(
+                    "DataDownload",
+                    "glassesControl[0x02,0x01,0x09] -> dataType=${resp.dataType}, error=${resp.errorCode}"
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("DataDownload", "Failed to send exit-transfer command [0x02,0x01,0x09]", e)
+        }
+
         val manager = downloadWifiP2pManager
         val callback = downloadWifiP2pCallback
         if (manager != null && callback != null) {
             manager.removeCallback(callback)
         }
+
+        // Mirror official app: cancel the P2P connection as part of cleanup.
+        manager?.cancelP2pConnection()
+
         manager?.removeGroup { success ->
             Log.i("DataDownload", "P2P group removed: $success")
         }
@@ -2457,6 +2487,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun maybeResetP2pAfterError255(source: String) {
         val now = System.currentTimeMillis()
         val haveDeviceIp = !downloadBleIp.isNullOrBlank() || !bleIpBridge.ip.value.isNullOrBlank()
+
+        // Only attempt P2P resets when we're actually in (or attempting) a download session.
+        // Otherwise these resets can interfere with normal camera/recording usage.
+        val sessionActive = downloadInProgress || downloadAttemptJob?.isActive == true || downloadP2pConnected
+        if (!sessionActive) {
+            Log.i("DataDownload", "Ignoring error=255 reset (source=$source) outside download session")
+            return
+        }
 
         // On some devices (notably Samsung), sending the reset command while we are actively
         // trying to talk to the glasses can drop the P2P link and kill the HTTP session.
