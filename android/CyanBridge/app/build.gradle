@@ -43,7 +43,8 @@ android {
 
 
 dependencies {
-    implementation("com.heycyan.core:core-connectivity:0.1.0-SNAPSHOT")
+    def coreConnectivityVersion = project.findProperty("heycyanCoreConnectivityVersion") ?: "0.1.0-SNAPSHOT"
+    implementation("com.heycyan.core:core-connectivity:${coreConnectivityVersion}")
     implementation files("libs/glasses_sdk_20250723_v01.aar")
     implementation(libs.androidx.core.ktx)
 
