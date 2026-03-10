@@ -20,3 +20,9 @@ dependencyResolutionManagement {
 rootProject.name = "CyanBridge"
 include(":app")
 include(":LIB_GLASSES_SDK")
+
+// Shared core (optional local composite build)
+val sharedCoreDir = file("../../../heycyan-android-core")
+if (sharedCoreDir.exists()) {
+    includeBuild(sharedCoreDir)
+}

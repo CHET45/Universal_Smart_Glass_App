@@ -43,6 +43,7 @@ android {
 
 
 dependencies {
+    implementation("com.heycyan.core:core-connectivity:0.1.0-SNAPSHOT")
     implementation files("libs/glasses_sdk_20250723_v01.aar")
     implementation(libs.androidx.core.ktx)
 
