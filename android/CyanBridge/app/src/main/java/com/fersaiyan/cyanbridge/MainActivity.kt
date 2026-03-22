@@ -30,6 +30,7 @@ import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AlertDialog
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.hjq.permissions.OnPermissionCallback
 import com.hjq.permissions.XXPermissions
 import com.oudmon.ble.base.communication.utils.ByteUtil
@@ -98,7 +99,7 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
-import androidx.core.content.ContextCompat
+import java.net.InetAddress
 import java.net.URL
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -236,6 +237,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var downloadP2pConnected = false
     private var downloadBleIp: String? = null
     private var downloadWifiIp: String? = null
+    private var downloadPhoneIsGroupOwner: Boolean = true
     private var downloadInProgress = false
     private var downloadAttemptJob: Job? = null
     private var downloadResolvedHttpIp: String? = null
@@ -2250,6 +2252,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        // Check WiFi is enabled (required for WiFi Direct / P2P)
+        val wifiManager = getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        if (!wifiManager.isWifiEnabled) {
+            Log.e("DataDownload", "WiFi is disabled. WiFi must be on for P2P sync.")
+            Toast.makeText(
+                this,
+                "Please enable WiFi to sync with glasses.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
         // Check NEARBY_WIFI_DEVICES on Android 13+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             !XXPermissions.isGranted(this, "android.permission.NEARBY_WIFI_DEVICES")
@@ -2308,16 +2322,44 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             override fun onPeersChanged(peers: Collection<WifiP2pDevice>) {
                 Log.i("DataDownload", "Found ${peers.size} P2P devices")
-                // Connect to the first available peer (the official app
-                // filters by name/MAC; here we keep it simple).
-                val target = peers.firstOrNull()
-                if (target != null) {
-                    Log.i(
-                        "DataDownload",
-                        "Connecting to peer: ${target.deviceName} / ${target.deviceAddress}"
-                    )
-                    wifiP2pManager.connectToDevice(target)
+                if (peers.isEmpty()) return
+
+                // Guard against redundant connection attempts (official app uses isP2PConnecting).
+                if (downloadWifiP2pManager?.isConnecting() == true || downloadWifiP2pManager?.isConnected() == true) {
+                    Log.i("DataDownload", "Already connecting/connected, skipping peer re-evaluation")
+                    return
                 }
+
+                val target = if (peers.size == 1) {
+                    // Single peer — unambiguous, connect directly.
+                    peers.first()
+                } else {
+                    // Multiple peers — try to match the currently-BLE-paired glasses.
+                    val bleMacNoColon = try {
+                        DeviceManager.getInstance().deviceAddress
+                            ?.replace(":", "")
+                            ?.uppercase()
+                    } catch (_: Exception) { null }
+
+                    val matched = peers.firstOrNull { p ->
+                        val p2pName = (p.deviceName ?: "").uppercase()
+                        if (!bleMacNoColon.isNullOrBlank() && p2pName.contains(bleMacNoColon)) {
+                            Log.i("DataDownload", "Peer ${p.deviceName} matched by BLE MAC suffix in name")
+                            true
+                        } else false
+                    }
+
+                    if (matched == null) {
+                        Log.w("DataDownload", "No peer matched BLE MAC; picking first. Peers: ${peers.map { "${it.deviceName}/${it.deviceAddress}" }}")
+                    }
+                    matched ?: peers.first()
+                }
+
+                Log.i(
+                    "DataDownload",
+                    "Connecting to peer: ${target.deviceName} / ${target.deviceAddress}"
+                )
+                wifiP2pManager.connectToDevice(target)
             }
 
             override fun onThisDeviceChanged(device: WifiP2pDevice) {
@@ -2479,32 +2521,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     binding.progressTransfer.isIndeterminate = true
                     setTransferDetail("Fetching media list...")
                 }
-                
-                val connection = openHttpConnection(URL(url))
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 10000
-                connection.readTimeout = 30000
-                
-                if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                    val inputStream = connection.inputStream
-                    val content = inputStream.bufferedReader().use { it.readText() }
-                    
-                    // Show downloaded content
+
+                var content: String? = null
+                httpGet(URL(url), 10000, 30000) { stream, _ ->
+                    content = stream.bufferedReader().use { it.readText() }
+                }
+
+                if (content != null) {
                     Log.i("DataDownload", "=== MEDIA CONFIG CONTENT ===")
-                    Log.i("DataDownload", content)
+                    Log.i("DataDownload", content!!)
                     Log.i("DataDownload", "=== END MEDIA CONFIG ===")
-                    
-                    // Parse media file list and start downloads. Do NOT clean up P2P here;
-                    // we must keep the network bound until all files are downloaded.
-                    parseMediaList(content, deviceIp)
+                    parseMediaList(content!!, deviceIp)
                 } else {
-                    Log.e("DataDownload", "Failed to download media list. Response code: ${connection.responseCode}")
+                    Log.e("DataDownload", "Failed to download media list.")
                     withContext(Dispatchers.Main) {
-                        showDownloadError("Failed to download media list. Response code: ${connection.responseCode}")
+                        showDownloadError("Failed to download media list.")
                     }
                 }
-                
-                connection.disconnect()
             } catch (e: Exception) {
                     Log.e("DataDownload", "Error downloading media list: ${e.message}", e)
                     CoroutineScope(Dispatchers.Main).launch {
@@ -2747,31 +2780,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val url = "http://$deviceIp/files/$fileName"
             Log.i("DataDownload", "Downloading: $url")
 
-            val connection = openHttpConnection(URL(url))
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 30000
-
-            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+            var saved: GallerySaveResult? = null
+            httpGet(URL(url), 10000, 30000) { stream, _ ->
                 val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-                val saved = connection.inputStream.use { input ->
-                    saveJpegToGallery(input, fileName, takenMs)
-                }
-                if (saved.bytes > 0) {
-                    Log.i("DataDownload", "File downloaded: $fileName (${saved.bytes} bytes)")
-                }
-                if (saved.success) {
-                    Log.i("DataDownload", "Saved to gallery: name=$fileName uri=${saved.uri}")
-                    true
-                } else {
-                    Log.e("DataDownload", "Failed to save to gallery: $fileName")
-                    false
-                }
+                saved = saveJpegToGallery(stream, fileName, takenMs)
+            }
+
+            if (saved != null && saved!!.bytes > 0) {
+                Log.i("DataDownload", "File downloaded: $fileName (${saved!!.bytes} bytes)")
+            }
+            if (saved != null && saved!!.success) {
+                Log.i("DataDownload", "Saved to gallery: name=$fileName uri=${saved!!.uri}")
+                true
             } else {
-                Log.e("DataDownload", "Failed to download $fileName. Response code: ${connection.responseCode}")
+                Log.e("DataDownload", "Failed to download/save: $fileName")
                 false
             }
-            
         } catch (e: Exception) {
             Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
             false
@@ -2783,28 +2807,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val url = "http://$deviceIp/files/$fileName"
             Log.i("DataDownload", "Downloading: $url")
 
-            val connection = openHttpConnection(URL(url))
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 180000
-
-            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+            var saved: GallerySaveResult? = null
+            httpGet(URL(url), 15000, 180000) { stream, _ ->
                 val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-                val saved = connection.inputStream.use { input ->
-                    saveMp4ToGallery(input, fileName, takenMs)
-                }
-                if (saved.bytes > 0) {
-                    Log.i("DataDownload", "File downloaded: $fileName (${saved.bytes} bytes)")
-                }
-                if (saved.success) {
-                    Log.i("DataDownload", "Saved to gallery: name=$fileName uri=${saved.uri}")
-                    true
-                } else {
-                    Log.e("DataDownload", "Failed to save to gallery: $fileName")
-                    false
-                }
+                saved = saveMp4ToGallery(stream, fileName, takenMs)
+            }
+
+            if (saved != null && saved!!.bytes > 0) {
+                Log.i("DataDownload", "File downloaded: $fileName (${saved!!.bytes} bytes)")
+            }
+            if (saved != null && saved!!.success) {
+                Log.i("DataDownload", "Saved to gallery: name=$fileName uri=${saved!!.uri}")
+                true
             } else {
-                Log.e("DataDownload", "Failed to download $fileName. Response code: ${connection.responseCode}")
+                Log.e("DataDownload", "Failed to download/save: $fileName")
                 false
             }
         } catch (e: Exception) {
@@ -2818,28 +2834,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val url = "http://$deviceIp/files/$fileName"
             Log.i("DataDownload", "Downloading: $url")
 
-            val connection = openHttpConnection(URL(url))
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 120000
-
-            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+            var saved: GallerySaveResult? = null
+            httpGet(URL(url), 15000, 120000) { stream, _ ->
                 val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-                val saved = connection.inputStream.use { input ->
-                    saveOpusToLibrary(input, fileName, takenMs)
-                }
-                if (saved.bytes > 0) {
-                    Log.i("DataDownload", "File downloaded: $fileName (${saved.bytes} bytes)")
-                }
-                if (saved.success) {
-                    Log.i("DataDownload", "Saved to library: name=$fileName uri=${saved.uri}")
-                    true
-                } else {
-                    Log.e("DataDownload", "Failed to save to library: $fileName")
-                    false
-                }
+                saved = saveOpusToLibrary(stream, fileName, takenMs)
+            }
+
+            if (saved != null && saved!!.bytes > 0) {
+                Log.i("DataDownload", "File downloaded: $fileName (${saved!!.bytes} bytes)")
+            }
+            if (saved != null && saved!!.success) {
+                Log.i("DataDownload", "Saved to library: name=$fileName uri=${saved!!.uri}")
+                true
             } else {
-                Log.e("DataDownload", "Failed to download $fileName. Response code: ${connection.responseCode}")
+                Log.e("DataDownload", "Failed to download/save: $fileName")
                 false
             }
         } catch (e: Exception) {
@@ -3399,6 +3407,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun isProbablyGroupOwnerIp(ip: String?): Boolean {
         if (ip.isNullOrBlank()) return false
+
+        // If the phone is not the group owner, then we shouldn't block the group owner IP (.1)
+        // because it belongs to the glasses.
+        if (!downloadPhoneIsGroupOwner) return false
+
         // Typical Wi‑Fi Direct GO address when phone is GO.
         return ip == "192.168.49.1"
     }
@@ -3434,19 +3447,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun buildCandidateIps(): List<String> {
-        // Ordered best-effort list. Avoid hard-coding 192.168.49.x: some devices/firmware
-        // report different subnets, and VPNs can change the default route.
         val set = LinkedHashSet<String>()
 
         downloadBleIp?.let { set.add(it) }
         bleIpBridge.ip.value?.let { set.add(it) }
 
-        // If the P2P group owner is the phone, this is NOT the glasses.
-        // Keep as a low-priority hint only (it can still help derive the subnet).
-        downloadWifiIp?.let { set.add(it) }
+        if (!downloadPhoneIsGroupOwner && downloadWifiIp != null) {
+            set.add(downloadWifiIp!!)
+        } else {
+            downloadWifiIp?.let { set.add(it) }
+        }
 
         guessDownloadSubnetPrefix()?.let { prefix ->
-            // Empirical: glasses often end up at low host numbers or 79, but keep it heuristic.
+            set.add("${prefix}1") // Glasses might be the group owner
             set.add("${prefix}79")
             set.add("${prefix}2")
             set.add("${prefix}3")
@@ -3456,33 +3469,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun isPortOpen(ip: String, port: Int, timeoutMs: Int): Boolean {
+        // Standard path: use P2P network's socket factory.
+        try {
+            val factory = downloadP2pNetwork?.socketFactory ?: javax.net.SocketFactory.getDefault()
+            factory.createSocket().use { s ->
+                s.connect(InetSocketAddress(ip, port), timeoutMs)
+                return true
+            }
+        } catch (_: Exception) {}
+
+        // VPN fallback: bind socket to P2P local address to bypass VPN routing.
+        val p2pAddr = p2pLocalAddress() ?: return false
         return try {
-            val factory: SocketFactory? = downloadP2pNetwork?.socketFactory
-            val sock = factory?.createSocket() ?: Socket()
-            sock.use { s ->
+            Socket().use { s ->
+                s.bind(InetSocketAddress(p2pAddr, 0))
                 s.connect(InetSocketAddress(ip, port), timeoutMs)
                 true
             }
-        } catch (_: Exception) {
-            false
-        }
+        } catch (_: Exception) { false }
     }
 
     private fun mediaConfigOk(ip: String, timeoutMs: Int, logFailures: Boolean = false): Boolean {
-        return try {
-            val conn = openHttpConnection(URL("http://$ip/files/media.config"))
-            conn.requestMethod = "GET"
-            conn.connectTimeout = timeoutMs
-            conn.readTimeout = timeoutMs
-            val code = conn.responseCode
-            conn.disconnect()
-            code == HttpURLConnection.HTTP_OK
-        } catch (e: Exception) {
-            if (logFailures) {
-                Log.w("DataDownload", "media.config probe failed for $ip: ${e.message}")
-            }
-            false
+        val url = URL("http://$ip/files/media.config")
+        val ok = httpGet(url, timeoutMs, timeoutMs)
+        if (!ok && logFailures) {
+            Log.w("DataDownload", "media.config probe failed for $ip")
         }
+        return ok
     }
 
     private suspend fun discoverGlassesIpByScan(prefix: String = "192.168.49."): String? {
@@ -3495,9 +3508,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val found = CompletableDeferred<String?>()
             val firstOpenPortIp = AtomicReference<String?>(null)
 
-            for (host in 2..254) {
+            for (host in 1..254) {
                 val ip = "$prefix$host"
-                if (ip == "192.168.49.1") continue
+                if (downloadPhoneIsGroupOwner && ip == "192.168.49.1") continue
                 launch(Dispatchers.IO) {
                     sem.withPermit {
                         if (found.isCompleted) return@withPermit
@@ -3541,33 +3554,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun testConnection(deviceIp: String): Boolean {
         Log.i("DataDownload", "Testing connection to $deviceIp...")
-        try {
-            // Try to connect to the actual media configuration file
-            val url = URL("http://$deviceIp/files/media.config")
-            val connection = openHttpConnection(url)
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 5000 // Connection timeout
-            connection.readTimeout = 5000 // Read timeout
-            
-            val responseCode = connection.responseCode
-            Log.i("DataDownload", "Connection test response code: $responseCode")
-            
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                // Try to read a small amount of content to confirm that the connection is available
-                val inputStream = connection.inputStream
-                val buffer = ByteArray(1024)
-                val bytesRead = inputStream.read(buffer)
-                inputStream.close()
-                
-                Log.i("DataDownload", "Connection test successful - read $bytesRead bytes")
-                return true
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e("DataDownload", "Connection test failed: ${e.message}", e)
-            return false
+        val url = URL("http://$deviceIp/files/media.config")
+        var bytesRead = 0
+        val ok = httpGet(url, 5000, 5000) { stream, _ ->
+            val buffer = ByteArray(1024)
+            bytesRead = stream.read(buffer)
+            stream.close()
         }
+        if (ok) {
+            Log.i("DataDownload", "Connection test successful - read $bytesRead bytes")
+        } else {
+            Log.e("DataDownload", "Connection test failed for $deviceIp")
+        }
+        return ok
     }
 
     private fun onDownloadBleIp(ip: String) {
@@ -3587,6 +3586,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun onDownloadP2pConnected(info: WifiP2pInfo) {
         downloadP2pConnected = info.groupFormed
         downloadWifiIp = info.groupOwnerAddress?.hostAddress
+        downloadPhoneIsGroupOwner = info.isGroupOwner
         downloadP2pNetwork = findLikelyP2pNetwork()
         bindProcessToNetwork(downloadP2pNetwork)
         Log.i(
@@ -3717,15 +3717,87 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun openHttpConnection(url: URL): HttpURLConnection {
+    private fun openHttpConnection(url: URL): HttpURLConnection? {
         val network = downloadP2pNetwork ?: findLikelyP2pNetwork()?.also { downloadP2pNetwork = it }
-        val conn = if (network != null) {
-            network.openConnection(url) as HttpURLConnection
-        } else {
-            url.openConnection() as HttpURLConnection
+        if (network != null) {
+            try {
+                val conn = network.openConnection(url) as HttpURLConnection
+                conn.instanceFollowRedirects = true
+                return conn
+            } catch (_: Exception) {}
         }
-        conn.instanceFollowRedirects = true
-        return conn
+        return try {
+            val conn = url.openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = true
+            conn
+        } catch (_: Exception) { null }
+    }
+
+    /** Build an OkHttp client whose sockets bind to the P2P local address (VPN-proof). */
+    private fun vpnSafeHttpClient(connectTimeoutMs: Int, readTimeoutMs: Int): okhttp3.OkHttpClient? {
+        val p2pAddr = p2pLocalAddress() ?: return null
+        val factory = object : javax.net.SocketFactory() {
+            override fun createSocket(): Socket {
+                val s = Socket()
+                s.bind(InetSocketAddress(p2pAddr, 0))
+                return s
+            }
+            override fun createSocket(host: String, port: Int) = throw UnsupportedOperationException()
+            override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int) = throw UnsupportedOperationException()
+            override fun createSocket(host: InetAddress, port: Int) = throw UnsupportedOperationException()
+            override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int) = throw UnsupportedOperationException()
+        }
+        return try {
+            okhttp3.OkHttpClient.Builder()
+                .socketFactory(factory)
+                .connectTimeout(connectTimeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                .readTimeout(readTimeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * HTTP GET using P2P-bound sockets (VPN-safe).
+     * Tries Network.openConnection() first, then OkHttp with P2P local-address binding.
+     */
+    private fun httpGet(
+        url: URL,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        onStream: ((InputStream, Long) -> Unit)? = null
+    ): Boolean {
+        try {
+            val conn = openHttpConnection(url) ?: return false
+            conn.requestMethod = "GET"
+            conn.connectTimeout = connectTimeoutMs
+            conn.readTimeout = readTimeoutMs
+            if (conn.responseCode == HttpURLConnection.HTTP_OK) {
+                onStream?.invoke(conn.inputStream, conn.contentLengthLong)
+                conn.disconnect()
+                return true
+            }
+            conn.disconnect()
+        } catch (_: Exception) {}
+
+        if (isVpnActive()) {
+            val client = vpnSafeHttpClient(connectTimeoutMs, readTimeoutMs) ?: return false
+            return try {
+                val request = okhttp3.Request.Builder().url(url).build()
+                client.newCall(request).execute().use { resp ->
+                    if (resp.isSuccessful && resp.body != null) {
+                        onStream?.invoke(resp.body!!.byteStream(), resp.body!!.contentLength())
+                        true
+                    } else false
+                }
+            } catch (e: Exception) {
+                Log.w("DataDownload", "VPN-safe httpGet failed for $url: ${e.message}")
+                false
+            }
+        }
+
+        return false
     }
 
     private fun findLikelyP2pNetwork(): Network? {
@@ -3784,6 +3856,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun bindProcessToNetwork(network: Network?) {
         if (network == null) return
         if (boundNetwork == network) return
+
+        // When a VPN is active, Android blocks bindProcessToNetwork (EPERM).
+        // We skip it and rely on per-socket binding via socket.bind(p2pLocalAddress) instead.
+        if (isVpnActive()) {
+            Log.i("DataDownload", "VPN active — skipping bindProcessToNetwork, will bind sockets to P2P local address")
+            return
+        }
+
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             val ok = cm.bindProcessToNetwork(network)
@@ -3808,6 +3888,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } finally {
             boundNetwork = null
         }
+    }
+
+    private fun isVpnActive(): Boolean {
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.allNetworks.any { n ->
+                cm.getNetworkCapabilities(n)
+                    ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+            }
+        } catch (_: Exception) { false }
+    }
+
+    /** Return the P2P network's first IPv4 local address (e.g. "192.168.49.1"). */
+    private fun p2pLocalAddress(): InetAddress? {
+        val network = downloadP2pNetwork ?: return null
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val lp = cm.getLinkProperties(network)
+            lp?.linkAddresses
+                ?.mapNotNull { it.address }
+                ?.firstOrNull { it is java.net.Inet4Address }
+        } catch (_: Exception) { null }
     }
 
     private fun maybeResetP2pAfterError255(source: String) {
