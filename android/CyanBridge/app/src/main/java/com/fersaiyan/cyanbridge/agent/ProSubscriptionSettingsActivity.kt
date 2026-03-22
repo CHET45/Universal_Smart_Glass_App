@@ -507,11 +507,15 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
     }
 
     private fun launchWebCheckoutWithEmail(plan: String, emailHint: String) {
-        Toast.makeText(this, "Opening web checkout...", Toast.LENGTH_SHORT).show()
-
         val baseUrl = SubscriptionCheckoutPolicy.resolveWebCheckoutUrl(this)
         if (baseUrl.isBlank()) {
-            Toast.makeText(this, "Web checkout is not configured yet.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Web checkout is not configured yet. Check server URL.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val parsedBase = runCatching { Uri.parse(baseUrl) }.getOrNull()
+        if (parsedBase == null || !parsedBase.isAbsolute || parsedBase.scheme.isNullOrBlank()) {
+            Toast.makeText(this, "Invalid checkout URL: $baseUrl", Toast.LENGTH_LONG).show()
             return
         }
 
@@ -539,10 +543,17 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
             }
             .build()
 
-        runCatching {
-            startActivity(Intent(Intent.ACTION_VIEW, target))
-        }.onFailure {
-            Toast.makeText(this, "Unable to open website checkout", Toast.LENGTH_SHORT).show()
+        val intent = Intent(Intent.ACTION_VIEW, target)
+        if (intent.resolveActivityInfo(packageManager, 0) == null) {
+            Toast.makeText(this, "No browser found to open checkout.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Toast.makeText(this, "Opening web checkout...", Toast.LENGTH_SHORT).show()
+        try {
+            startActivity(intent)
+        } catch (e: Throwable) {
+            Toast.makeText(this, "Unable to open checkout: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 }
