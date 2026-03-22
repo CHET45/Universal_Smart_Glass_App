@@ -1,14 +1,17 @@
 package com.fersaiyan.cyanbridge.agent
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
+import android.view.View
 import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import android.view.View
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
@@ -472,6 +475,40 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
     }
 
     private fun launchWebCheckoutForPlan(plan: String) {
+        val storedEmail = ProSubscriptionServerPrefs.getAccountEmail(this)
+        if (storedEmail.isBlank()) {
+            promptForCheckoutEmail(plan)
+            return
+        }
+        launchWebCheckoutWithEmail(plan, storedEmail)
+    }
+
+    private fun promptForCheckoutEmail(plan: String) {
+        val input = EditText(this).apply {
+            hint = "you@example.com"
+            inputType = InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Account email")
+            .setMessage("Use the same email as your previous purchase to restore subscription without being charged again.")
+            .setView(input)
+            .setPositiveButton("Continue") { _, _ ->
+                val email = input.text?.toString()?.trim().orEmpty()
+                if (email.isNotBlank()) {
+                    ProSubscriptionServerPrefs.setAccountEmail(this, email)
+                }
+                launchWebCheckoutWithEmail(plan, email)
+            }
+            .setNegativeButton("Skip") { _, _ ->
+                launchWebCheckoutWithEmail(plan, "")
+            }
+            .show()
+    }
+
+    private fun launchWebCheckoutWithEmail(plan: String, emailHint: String) {
+        Toast.makeText(this, "Opening web checkout...", Toast.LENGTH_SHORT).show()
+
         val baseUrl = SubscriptionCheckoutPolicy.resolveWebCheckoutUrl(this)
         if (baseUrl.isBlank()) {
             Toast.makeText(this, "Web checkout is not configured yet.", Toast.LENGTH_SHORT).show()
@@ -484,24 +521,28 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
             .appendPath("callback")
             .build()
 
-        val apiToken = ProSubscriptionServerPrefs.getApiToken(this)
-        val email = ProSubscriptionServerPrefs.getAccountEmail(this)
-
         val target = Uri.parse(baseUrl).buildUpon()
             .appendQueryParameter("plan", plan)
             .appendQueryParameter("platform", "android")
             .appendQueryParameter("package_name", packageName)
             .appendQueryParameter("return_url", callback.toString())
             .apply {
-                if (apiToken.isNotBlank()) appendQueryParameter("api_token", apiToken)
-                if (email.isNotBlank()) appendQueryParameter("email", email)
+                val apiToken = ProSubscriptionServerPrefs.getApiToken(this@ProSubscriptionSettingsActivity)
+                if (apiToken.isNotBlank()) {
+                    appendQueryParameter("api_token", apiToken)
+                }
+                val accountEmail = ProSubscriptionServerPrefs.getAccountEmail(this@ProSubscriptionSettingsActivity)
+                val finalEmail = emailHint.ifBlank { accountEmail }
+                if (finalEmail.isNotBlank()) {
+                    appendQueryParameter("email", finalEmail)
+                }
             }
             .build()
 
-        try {
-            startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, target))
-        } catch (e: Exception) {
-            Toast.makeText(this, "Could not open web checkout", Toast.LENGTH_SHORT).show()
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, target))
+        }.onFailure {
+            Toast.makeText(this, "Unable to open website checkout", Toast.LENGTH_SHORT).show()
         }
     }
 }
