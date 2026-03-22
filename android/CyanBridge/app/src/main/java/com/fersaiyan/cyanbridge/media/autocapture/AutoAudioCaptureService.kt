@@ -1,0 +1,408 @@
+package com.fersaiyan.cyanbridge.media.autocapture
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import com.fersaiyan.cyanbridge.MainActivity
+import com.fersaiyan.cyanbridge.R
+import com.oudmon.ble.base.bluetooth.BleOperateManager
+import com.oudmon.ble.base.communication.LargeDataHandler
+import com.hjq.permissions.XXPermissions
+import com.fersaiyan.cyanbridge.audio.MeetingCapturePrefs
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Foreground service that continuously records audio on the glasses in 30-minute chunks.
+ *
+ * Protocol: same as MainActivity "Media controls → Audio":
+ * - start: glassesControl(0x02, 0x01, 0x08)
+ * - stop:  glassesControl(0x02, 0x01, 0x0c)
+ */
+class AutoAudioCaptureService : Service() {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var loopJob: Job? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        ensureChannel()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action
+
+        when (action) {
+            ACTION_START -> startLoop()
+            ACTION_STOP -> stopLoop(reason = "user")
+            null -> {
+                // Process restart: respect pref.
+                if (AutoAudioCapturePrefs.isEnabled(this)) startLoop() else stopSelf()
+            }
+        }
+
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        stopLoop(reason = "destroy")
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    private fun canPostNotifications(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            XXPermissions.isGranted(this, Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun startForegroundSafely(content: String): Boolean {
+        if (!canPostNotifications()) {
+            Log.w(TAG, "Missing POST_NOTIFICATIONS; disabling auto-audio to avoid restart loops")
+            AutoAudioCapturePrefs.setLastPauseReason(this, "missing_post_notifications")
+            AutoAudioCapturePrefs.setEnabled(this, false)
+            return false
+        }
+
+        return runCatching {
+            val notif = notification(content)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIF_ID,
+                    notif,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                )
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+        }.onFailure {
+            Log.e(TAG, "startForeground failed: ${it.message}")
+            AutoAudioCapturePrefs.setLastPauseReason(this, "start_foreground_failed")
+            AutoAudioCapturePrefs.setEnabled(this, false)
+        }.isSuccess
+    }
+
+    private fun startLoop() {
+        if (RUNNING.getAndSet(true)) {
+            Log.i(TAG, "Already running")
+            return
+        }
+
+        if (!startForegroundSafely("Auto audio capture: starting")) {
+            RUNNING.set(false)
+            stopSelf()
+            return
+        }
+
+        loopJob = scope.launch {
+            var pauseStopSent = false
+
+            while (isActive) {
+                if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) {
+                    Log.i(TAG, "Pref disabled, stopping")
+                    break
+                }
+
+                // Hard pause conditions (meeting capture or video recording), plus short user holdoffs.
+                val pauseReason = computePauseReason()
+                if (pauseReason != null) {
+                    AutoAudioCapturePrefs.setLastPauseReason(this@AutoAudioCaptureService, pauseReason)
+                    updateNotification("Paused: $pauseReason")
+                    // Best-effort stop any ongoing glasses recording (only once per paused period).
+                    if (!pauseStopSent) {
+                        pauseStopSent = true
+                        sendAudioCommandAwait(start = false)
+                    }
+                    delay(10_000)
+                    continue
+                } else {
+                    AutoAudioCapturePrefs.clearLastPauseReason(this@AutoAudioCaptureService)
+                    pauseStopSent = false
+                }
+
+                if (!BleOperateManager.getInstance().isConnected) {
+                    updateNotification("Waiting for glasses connection…")
+                    delay(10_000)
+                    continue
+                }
+
+                val loops = AutoAudioCapturePrefs.getSuccessfulLoops(this@AutoAudioCaptureService)
+                updateNotification("Recording audio (0–30 min)… (completed=$loops)")
+
+                // Best-effort start. Some firmware builds record successfully but don't ACK reliably,
+                // so we don't gate the loop on acknowledgements.
+                val startAck = sendAudioCommandAwait(start = true)
+                if (startAck.responded && !startAck.ok) {
+                    // Log-only; do not treat as failure.
+                    Log.w(TAG, "Start not acknowledged (err=${startAck.errorCode}, workTypeIng=${startAck.workTypeIng}); continuing")
+                }
+
+                // Wait 30 minutes, but allow responsive pause/stop.
+                val finished = delayWhileEnabledOrPaused(CHUNK_MS)
+                if (!finished) {
+                    // Disabled or paused while recording; stop and return to loop.
+                    val reason = computePauseReason() ?: if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) "disabled" else "paused"
+                    AutoAudioCapturePrefs.setLastPauseReason(this@AutoAudioCaptureService, reason)
+                    updateNotification("Stopping early: $reason")
+                    sendAudioCommandAwait(start = false)
+                    delay(2_000)
+                    continue
+                }
+
+                updateNotification("Stopping audio recording…")
+                val stopAck = sendAudioCommandAwait(start = false)
+                if (stopAck.responded && !stopAck.ok) {
+                    Log.w(TAG, "Stop not acknowledged (err=${stopAck.errorCode}, workTypeIng=${stopAck.workTypeIng}); continuing")
+                }
+
+                // Consider the loop successful if we reached the end of the 30-min window.
+                val newLoops = AutoAudioCapturePrefs.incrementSuccessfulLoops(this@AutoAudioCaptureService)
+                val shouldSync = newLoops > 0 && newLoops % LOOPS_PER_SYNC == 0
+
+                if (shouldSync) {
+                    updateNotification("Loop #$newLoops done. Starting P2P sync…")
+                    triggerP2pSyncViaMainActivity()
+                    // Give the glasses a moment to finalize the file before starting the next recording.
+                    delayWhileEnabledOrPaused(10_000)
+                }
+
+                // Small gap between recordings.
+                delayWhileEnabledOrPaused(2_000)
+            }
+
+            stopLoop(reason = "loop_end")
+        }
+    }
+
+    private fun stopLoop(reason: String) {
+        if (!RUNNING.getAndSet(false)) {
+            stopSelf()
+            return
+        }
+
+        Log.i(TAG, "Stopping: $reason")
+        loopJob?.cancel()
+        loopJob = null
+
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        stopSelf()
+    }
+
+    private data class AudioCmdAck(
+        val responded: Boolean,
+        val ok: Boolean,
+        val dataType: Int? = null,
+        val errorCode: Int? = null,
+        val workTypeIng: Int? = null,
+    )
+
+    private suspend fun sendAudioCommandAwait(start: Boolean): AudioCmdAck {
+        val value = if (start) 0x08 else 0x0c
+        val done = CompletableDeferred<AudioCmdAck>()
+
+        LargeDataHandler.getInstance().glassesControl(
+            byteArrayOf(0x02, 0x01, value.toByte())
+        ) { _, rsp ->
+            val ok = (rsp != null && rsp.dataType == 1 && rsp.errorCode == 0)
+            val ack = AudioCmdAck(
+                responded = (rsp != null),
+                ok = ok,
+                dataType = rsp?.dataType,
+                errorCode = rsp?.errorCode,
+                workTypeIng = rsp?.workTypeIng,
+            )
+
+            Log.i(
+                TAG,
+                "Audio cmd start=$start responded=${ack.responded} dataType=${ack.dataType} err=${ack.errorCode} workTypeIng=${ack.workTypeIng} ok=${ack.ok}"
+            )
+
+            if (!done.isCompleted) done.complete(ack)
+        }
+
+        // Some firmware builds start recording but never ACK (or ACK late). Treat timeout as "unknown",
+        // not as hard failure, to avoid restart loops.
+        return withTimeoutOrNull(6_000) { done.await() }
+            ?: AudioCmdAck(responded = false, ok = false)
+    }
+
+    private suspend fun delayWhileEnabledOrPaused(totalMs: Long, stepMs: Long = 2_000): Boolean {
+        var remaining = totalMs
+        while (remaining > 0) {
+            if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) {
+                return false
+            }
+            if (computePauseReason() != null) {
+                return false
+            }
+            val step = minOf(stepMs, remaining)
+            delay(step)
+            remaining -= step
+        }
+        return AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)
+    }
+
+    /**
+     * Returns a short string reason if auto audio should pause now; otherwise null.
+     */
+    private fun computePauseReason(): String? {
+        val meetingActive = MeetingCapturePrefs.getState(this@AutoAudioCaptureService).isRecording
+        if (meetingActive) return "meeting_capture_active"
+
+        if (AutoAudioCapturePrefs.isPausedForMeeting(this@AutoAudioCaptureService)) return "paused_for_meeting"
+        if (AutoAudioCapturePrefs.isPausedForVideo(this@AutoAudioCaptureService)) return "paused_for_video"
+
+        val until = AutoAudioCapturePrefs.getPauseUntilMs(this@AutoAudioCaptureService)
+        val now = System.currentTimeMillis()
+        if (until > now) {
+            val sec = ((until - now) / 1000L).coerceAtLeast(1)
+            return "manual_holdoff_${sec}s"
+        }
+
+        return null
+    }
+
+    private fun triggerP2pSyncViaMainActivity() {
+        // Requirements: Bluetooth connected + permission already granted (Android 13+).
+        if (!BleOperateManager.getInstance().isConnected) {
+            Log.w(TAG, "Skipping P2P sync: glasses not connected")
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !XXPermissions.isGranted(this, "android.permission.NEARBY_WIFI_DEVICES")
+        ) {
+            Log.w(TAG, "Skipping P2P sync: missing NEARBY_WIFI_DEVICES")
+            updateNotification("P2P sync skipped: grant NEARBY_WIFI_DEVICES")
+            return
+        }
+
+        // Use the same pathway as the UI button: MainActivity handles the tasker command
+        // and triggers btnDataDownload -> startDataDownload.
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = MainActivity.actionTaskerCommand(packageName)
+            putExtra(MainActivity.EXTRA_TASKER_COMMAND, "data_download")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+
+        runCatching {
+            startActivity(intent)
+        }.onFailure {
+            Log.e(TAG, "Failed to start MainActivity for P2P sync: ${it.message}")
+        }
+    }
+
+    private fun ensureChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val ch = NotificationChannel(
+            CHANNEL_ID,
+            "Auto audio capture",
+            NotificationManager.IMPORTANCE_DEFAULT
+        ).apply {
+            description = "Keeps the auto audio capture loop running"
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+        }
+        nm.createNotificationChannel(ch)
+    }
+
+    private fun updateNotification(content: String) {
+        if (!canPostNotifications()) return
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        runCatching {
+            nm.notify(NOTIF_ID, notification(content))
+        }.onFailure {
+            Log.w(TAG, "notify failed: ${it.message}")
+        }
+    }
+
+    private fun notification(content: String): Notification {
+        val openIntent = Intent(this, MainActivity::class.java)
+        val openPi = PendingIntent.getActivity(
+            this,
+            0,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Auto audio capture")
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setOngoing(true)
+            .setContentIntent(openPi)
+            .build()
+    }
+
+    companion object {
+        private const val TAG = "AutoAudioCapture"
+        private const val CHANNEL_ID = "auto_audio_capture"
+        private const val NOTIF_ID = 55231
+
+        // 30 minutes
+        private const val CHUNK_MS = 30L * 60L * 1000L
+
+        private const val LOOPS_PER_SYNC = 12
+
+        private val RUNNING = AtomicBoolean(false)
+
+        const val ACTION_START = "com.fersaiyan.cyanbridge.action.AUTO_AUDIO_CAPTURE_START"
+        const val ACTION_STOP = "com.fersaiyan.cyanbridge.action.AUTO_AUDIO_CAPTURE_STOP"
+
+        fun start(context: Context) {
+            // If notifications are blocked (Android 13+), running as a foreground service is unreliable
+            // and can cause fast restart loops. Require permission before starting.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !XXPermissions.isGranted(context, Manifest.permission.POST_NOTIFICATIONS)
+            ) {
+                AutoAudioCapturePrefs.setLastPauseReason(context, "missing_post_notifications")
+                AutoAudioCapturePrefs.setEnabled(context, false)
+                return
+            }
+
+            AutoAudioCapturePrefs.setEnabled(context, true)
+            val intent = Intent(context, AutoAudioCaptureService::class.java).setAction(ACTION_START)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            AutoAudioCapturePrefs.setEnabled(context, false)
+            val intent = Intent(context, AutoAudioCaptureService::class.java).setAction(ACTION_STOP)
+            context.startService(intent)
+        }
+
+        fun isRunning(): Boolean = RUNNING.get()
+    }
+}

@@ -1,14 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.CyanBridge" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Primary brand color. -->
-        <item name="colorPrimary">@color/purple_500</item>
-        <!-- Secondary brand color. -->
-        <!-- Status bar color. -->
-        <!-- Customize your theme here. -->
+    <style name="Theme.CyanBridgeManager" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- CyanBridge AI branding (MVP) -->
+        <item name="colorPrimary">@color/cyan_accent</item>
+        <item name="colorPrimaryVariant">@color/card_bg</item>
+        <item name="colorSecondary">@color/cyan_accent</item>
+
+        <item name="android:windowBackground">@color/bg_dark</item>
+        <item name="android:statusBarColor">@color/bg_dark</item>
+        <item name="android:navigationBarColor">@color/card_bg</item>
+
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
-        <!--        <item name="android:navigationBarColor">@color/g_bg_color</item>-->
-
     </style>
 </resources>

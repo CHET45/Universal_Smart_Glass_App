@@ -1,6 +1,21 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    id 'kotlin-kapt'
+}
+
+configurations.configureEach {
+    resolutionStrategy {
+        force 'androidx.core:core:1.15.0'
+        force 'androidx.core:core-ktx:1.15.0'
+    }
+}
+
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
 android {
@@ -11,16 +26,48 @@ android {
         applicationId = "com.fersaiyan.cyanbridge"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 3
+        versionName = "1.0.2"
+
+        // Chapter 6: optional transcription API key (do not commit secrets).
+        def openAiKey = project.findProperty("OPENAI_API_KEY") ?: ""
+        buildConfigField "String", "OPENAI_API_KEY", "\"${openAiKey}\""
+
+        def proMonthlySku = project.findProperty("PRO_MONTHLY_SKU") ?: "pro_monthly"
+        def proYearlySku = project.findProperty("PRO_YEARLY_SKU") ?: "pro_yearly"
+        def proVerifyUrl = project.findProperty("PRO_SUB_VERIFY_URL") ?: ""
+        def webSubscribeUrl = project.findProperty("WEB_SUBSCRIBE_URL") ?: ""
+        def webAllowedCountries = project.findProperty("WEB_SUB_ALLOWED_COUNTRIES") ?: ""
+        def donationUrl = project.findProperty("DONATION_URL") ?: "https://buymeacoffee.com/"
+        buildConfigField "String", "PRO_MONTHLY_SKU", "\"${proMonthlySku}\""
+        buildConfigField "String", "PRO_YEARLY_SKU", "\"${proYearlySku}\""
+        buildConfigField "String", "PRO_SUB_VERIFY_URL", "\"${proVerifyUrl}\""
+        buildConfigField "String", "WEB_SUBSCRIBE_URL", "\"${webSubscribeUrl}\""
+        buildConfigField "String", "WEB_SUB_ALLOWED_COUNTRIES", "\"${webAllowedCountries}\""
+        buildConfigField "String", "DONATION_URL", "\"${donationUrl}\""
 
         vectorDrawables {
             useSupportLibrary = true
         }
     }
 
+    signingConfigs {
+        release {
+            // Only configure signing if keystore.properties exists.
+            if (keystorePropertiesFile.exists()) {
+                storeFile file(keystoreProperties["storeFile"])
+                storePassword keystoreProperties["storePassword"]
+                keyAlias keystoreProperties["keyAlias"]
+                keyPassword keystoreProperties["keyPassword"]
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -29,24 +76,38 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
+        freeCompilerArgs += ["-Xskip-metadata-version-check"]
     }
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
     }
 }
 
 
 dependencies {
+    def localLlamaRuntimeAarPath = (
+            project.findProperty("localLlamaRuntimeAarPath")
+                    ?: ""
+    ).toString().trim()
     def coreConnectivityVersion = project.findProperty("heycyanCoreConnectivityVersion") ?: "0.1.0-SNAPSHOT"
     implementation("com.heycyan.core:core-connectivity:${coreConnectivityVersion}")
     implementation files("libs/glasses_sdk_20250723_v01.aar")
     implementation(libs.androidx.core.ktx)
+    implementation("androidx.core:core:1.15.0")
+    implementation("androidx.core:core-ktx:1.15.0")
 
     implementation("com.google.android.material:material:1.12.0")
     implementation("com.github.getActivity:XXPermissions:20.0")
@@ -55,7 +116,41 @@ dependencies {
     implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
     implementation("com.github.CymChad:BaseRecyclerViewAdapterHelper:3.0.4")
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'com.android.billingclient:billing-ktx:7.1.1'
     implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.0"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+    if (localLlamaRuntimeAarPath.isEmpty()) {
+        implementation "io.github.ljcamargo:llamacpp-kotlin:0.1.1"
+    } else {
+        def localLlamaRuntimeAar = rootProject.file(localLlamaRuntimeAarPath)
+        if (!localLlamaRuntimeAar.exists()) {
+            throw new GradleException("localLlamaRuntimeAarPath points to a missing file: ${localLlamaRuntimeAar.absolutePath}")
+        }
+        logger.lifecycle("Using local llama runtime AAR: ${localLlamaRuntimeAar.absolutePath}")
+        implementation files(localLlamaRuntimeAar)
+    }
+
+    // Offline transcription fallback (Moonshine; vendored module)
+    implementation project(":moonshine-voice")
+
+    // Legacy offline transcription fallback (Vosk) - kept for now until Moonshine is fully wired
+    implementation "com.alphacephei:vosk-android:0.3.47"
+
+    // Chapter 2 storage
+    def room_version = "2.6.1"
+    implementation "androidx.room:room-runtime:$room_version"
+    implementation "androidx.room:room-ktx:$room_version"
+    kapt "androidx.room:room-compiler:$room_version"
+
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.12.2'
+    testImplementation 'androidx.test:core:1.6.1'
+    testImplementation "androidx.room:room-testing:$room_version"
+
+    // Chapter 4 UI gating test (androidTest)
+    androidTestImplementation 'androidx.test:core-ktx:1.6.1'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test:runner:1.6.1'
+    androidTestImplementation 'androidx.test:rules:1.6.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
 }

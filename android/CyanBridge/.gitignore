@@ -13,4 +13,29 @@
 .externalNativeBuild
 .cxx
 local.properties
-_local_termux_server/
+
+# CLI relay server scratch
+/tools/_relay_tmp/
+
+# Signing (do not commit secrets)
+keystore.properties
+
+# APK files
+*.apk
+
+# Node modules
+node_modules/
+
+# Build artifacts
+*/build/
+build/
+moonshine-voice/build/
+node_modules/
+
+# Local model artifacts (never commit weights)
+*.gguf
+*.gguf.part
+*.bin
+*.safetensors
+app/src/main/assets/models/
+app/src/main/ml/

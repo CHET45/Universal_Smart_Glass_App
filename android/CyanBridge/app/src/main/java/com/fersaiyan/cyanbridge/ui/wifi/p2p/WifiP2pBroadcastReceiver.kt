@@ -1,58 +1,39 @@
 package com.fersaiyan.cyanbridge.ui.wifi.p2p
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.net.NetworkInfo
 import android.net.wifi.p2p.WifiP2pDevice
-import android.net.wifi.p2p.WifiP2pManager
-import android.util.Log
+import com.heycyan.core.connectivity.p2p.CoreWifiP2pBroadcastReceiver
+import com.heycyan.core.connectivity.p2p.WifiP2pBroadcastHandler
 
 class WifiP2pBroadcastReceiver(
     private val wifiP2pManagerSingleton: WifiP2pManagerSingleton
-) : BroadcastReceiver() {
-
-    override fun onReceive(context: Context, intent: Intent) {
-        when (intent.action) {
-            WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
-                val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
-                if (state == WifiP2pManager.WIFI_P2P_STATE_ENABLED) {
-                    Log.d(TAG, "WiFi P2P is enabled")
-                    wifiP2pManagerSingleton.onWifiP2pEnabled()
-                } else {
-                    Log.d(TAG, "WiFi P2P is disabled")
-                    wifiP2pManagerSingleton.onWifiP2pDisabled()
-                }
-            }
-
-            WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-                Log.d(TAG, "Peers changed")
-                wifiP2pManagerSingleton.requestPeers()
-            }
-
-            WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                val networkInfo: NetworkInfo? = intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
-                Log.d(TAG, "Connection state changed: ${networkInfo?.isConnected}")
-
-                if (networkInfo?.isConnected == true) {
-                    Log.d(TAG, "Connected to P2P device")
-                    wifiP2pManagerSingleton.requestConnectionInfo()
-                } else {
-                    Log.d(TAG, "Disconnected from P2P device")
-                    wifiP2pManagerSingleton.onDisconnected()
-                }
-            }
-
-            WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
-                val device: WifiP2pDevice? = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
-                device?.let {
-                    Log.d(TAG, "This device changed: ${it.deviceName} - ${it.status}")
-                    wifiP2pManagerSingleton.onThisDeviceChanged(it)
-                }
-            }
+) : CoreWifiP2pBroadcastReceiver(
+    object : WifiP2pBroadcastHandler {
+        override fun onWifiP2pEnabled() {
+            wifiP2pManagerSingleton.onWifiP2pEnabled()
         }
-    }
 
+        override fun onWifiP2pDisabled() {
+            wifiP2pManagerSingleton.onWifiP2pDisabled()
+        }
+
+        override fun requestPeers() {
+            wifiP2pManagerSingleton.requestPeers()
+        }
+
+        override fun requestConnectionInfo() {
+            wifiP2pManagerSingleton.requestConnectionInfo()
+        }
+
+        override fun onDisconnected() {
+            wifiP2pManagerSingleton.onDisconnected()
+        }
+
+        override fun onThisDeviceChanged(device: WifiP2pDevice) {
+            wifiP2pManagerSingleton.onThisDeviceChanged(device)
+        }
+    },
+    TAG,
+) {
     companion object {
         private const val TAG = "WifiP2pBroadcastReceiver"
     }

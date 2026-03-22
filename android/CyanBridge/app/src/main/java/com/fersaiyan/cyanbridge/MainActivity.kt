@@ -3,14 +3,32 @@ package com.fersaiyan.cyanbridge
 import android.Manifest
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.widget.ArrayAdapter
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.fersaiyan.cyanbridge.agent.AgentProviderType
+import com.fersaiyan.cyanbridge.agent.LocalAgentPrefs as AutomationPrefs
+import com.fersaiyan.cyanbridge.localagent.LocalAgentController
+import com.fersaiyan.cyanbridge.localagent.LocalAgentIntents
+import com.fersaiyan.cyanbridge.localagent.LocalAgentPrefs
+import com.fersaiyan.cyanbridge.audio.CaptureSource
+import com.fersaiyan.cyanbridge.audio.MeetingCapturePrefs
+import com.fersaiyan.cyanbridge.audio.MeetingCaptureService
+import com.fersaiyan.cyanbridge.media.GlassesMediaPrefs
+import com.fersaiyan.cyanbridge.media.SyncedMediaFolder
+import com.fersaiyan.cyanbridge.media.autocapture.AutoAudioCapturePrefs
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
+import android.view.View
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AlertDialog
 import androidx.core.app.ActivityCompat
 import com.hjq.permissions.OnPermissionCallback
 import com.hjq.permissions.XXPermissions
@@ -22,8 +40,32 @@ import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListene
 import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
 import com.fersaiyan.cyanbridge.databinding.AcitivytMainBinding
 import com.fersaiyan.cyanbridge.ui.DeviceBindActivity
+import com.fersaiyan.cyanbridge.ui.ChatListActivity
+import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
+import com.fersaiyan.cyanbridge.ui.CommunityPluginPrefs
+import com.fersaiyan.cyanbridge.ui.CommunityPluginsActivity
+import com.fersaiyan.cyanbridge.ui.SettingsActivity
+// import com.fersaiyan.cyanbridge.ui.notes.NotesListActivity
+import com.fersaiyan.cyanbridge.ui.recordings.RecordingsListActivity
 import com.fersaiyan.cyanbridge.ui.BluetoothUtils
 import com.fersaiyan.cyanbridge.ui.BluetoothEvent
+import com.fersaiyan.cyanbridge.ui.AutoPairManager
+import com.fersaiyan.cyanbridge.chat.ChatStore
+import com.fersaiyan.cyanbridge.devices.DeviceProfileStore
+import com.fersaiyan.cyanbridge.devices.GlassesManagerGating
+import com.fersaiyan.cyanbridge.ai.transcription.DefaultTranscriptionService
+import com.fersaiyan.cyanbridge.ai.transcription.Mp4AudioChunker
+import com.fersaiyan.cyanbridge.ai.transcription.NoOpAudioChunker
+import com.fersaiyan.cyanbridge.ai.transcription.OpenAIWhisperTranscriptionProvider
+import com.fersaiyan.cyanbridge.ai.transcription.RetryPolicy
+import com.fersaiyan.cyanbridge.ai.transcription.RetryingTranscriptionProvider
+import com.fersaiyan.cyanbridge.ai.transcription.vosk.VoskModelManager
+import com.fersaiyan.cyanbridge.ai.transcription.vosk.VoskTranscriptionProvider
+import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProgress
+import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionResult
+import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionService
+import com.fersaiyan.cyanbridge.privacy.PrivacyPrefs
+import com.fersaiyan.cyanbridge.ui.MyApplication
 import com.fersaiyan.cyanbridge.ui.bleIpBridge
 import com.fersaiyan.cyanbridge.ui.hasBluetooth
 import com.fersaiyan.cyanbridge.ui.requestAllPermission
@@ -45,7 +87,7 @@ import org.greenrobot.eventbus.EventBus
 import org.greenrobot.eventbus.Subscribe
 import org.greenrobot.eventbus.ThreadMode
 import com.fersaiyan.cyanbridge.ui.BatteryOptimizationGuideActivity
-import com.fersaiyan.cyanbridge.ui.SettingsActivity
+// import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -65,6 +107,7 @@ import javax.net.SocketFactory
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
@@ -74,21 +117,57 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.coroutineContext
+import kotlin.coroutines.resume
 
 import android.provider.Settings
 import android.net.Uri
 import android.app.KeyguardManager
 
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import com.fersaiyan.cyanbridge.agent.ProSubscriptionAiPrefs
+import com.fersaiyan.cyanbridge.ai.router.AiProviderPrefs
+import com.fersaiyan.cyanbridge.ai.router.AiProviderType as RelayProviderType
+import com.fersaiyan.cyanbridge.ai.router.CliRelayClient
+import com.fersaiyan.cyanbridge.localagent.context.LocalAgentContextBuilder
+import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsStorage
+import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemorySearch
+import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
+import com.fersaiyan.cyanbridge.localagent.userfacts.CandidateUserFactsStorage
+import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelsProvider
+import com.fersaiyan.cyanbridge.memoryvault.MemoryPolicyService
 import android.content.ClipboardManager
 import android.content.ClipData
-import android.content.Context
-import android.view.View
 
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
+    private val ttsDoneCallbacks = ConcurrentHashMap<String, () -> Unit>()
+
+    // Optional Local Agent UI status
+    private var agentReceiverRegistered = false
+    private val agentStatusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent == null) return
+
+            val status = intent.getStringExtra(LocalAgentIntents.EXTRA_STATUS)
+            val lastError = intent.getStringExtra(LocalAgentIntents.EXTRA_LAST_ERROR)
+
+            if (!status.isNullOrBlank()) {
+                LocalAgentPrefs.setStatus(this@MainActivity, status)
+            }
+            if (!lastError.isNullOrBlank()) {
+                LocalAgentPrefs.setLastError(this@MainActivity, lastError)
+            }
+
+            refreshAgentStatusUi()
+        }
+    }
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
@@ -97,11 +176,38 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun speak(text: String) {
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+        speak(text, utteranceId = null, onDone = null)
+    }
+
+    private fun speak(
+        text: String,
+        utteranceId: String?,
+        onDone: (() -> Unit)?,
+    ) {
+        val id = utteranceId ?: "utt_${System.currentTimeMillis()}"
+        if (onDone != null) {
+            ttsDoneCallbacks[id] = onDone
+        }
+
+        val bundle = Bundle().apply {
+            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id)
+        }
+
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, bundle, id)
     }
     companion object {
         const val EXTRA_TASKER_COMMAND = "tasker_command"
         private var loggedLargeDataHandlerMethods = false
+        private const val AI_MODE_GEMINI = "Gemini"
+        private const val AI_MODE_CHATGPT = "ChatGPT"
+        private const val AI_MODE_TASKER = "Tasker"
+        private const val AI_MODE_CHOSEN_PROVIDER = "ChosenProvider"
+        private const val TASKER_PACKAGE_NAME = "net.dinglisch.android.taskerm"
+        private const val QUERY_MAX_AGENT_PERSONA_CHARS = 1200
+        private const val QUERY_MAX_USER_FACTS_CHARS = 1400
+        private const val QUERY_MAX_CONFIRMED_FACTS_CHARS = 1800
+        private const val QUERY_MAX_DAILY_SUMMARY_CHARS = 2200
+        private const val QUERY_MAX_TOTAL_CONTEXT_CHARS = 6500
 
         fun actionTaskerCommand(appPackageName: String): String =
             "$appPackageName.ACTION_TASKER_COMMAND"
@@ -124,7 +230,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     // AI Hijack settings
     private var isAiHijackEnabled = true // Default to enabled
     private var isImageAssistantMode = true // Use assistant vs share intent
-    private var aiAssistantMode = "Gemini" // "Gemini" or "ChatGPT"
+    private var aiAssistantMode = AI_MODE_GEMINI
 
     // State used by the BLE+WiFi P2P data-download flow
     private var downloadP2pConnected = false
@@ -157,15 +263,47 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var pendingBatteryToast = false
     private var batteryCallbackRegistered = false
 
+    // Chapter 5: meeting capture UI + state
+    private val meetingTimerOptions: List<Pair<Long?, String>> = listOf(
+        null to "No timer",
+        15L * 60L to "15 min",
+        60L * 60L to "1 hour",
+        3L * 60L * 60L to "3 hours",
+    )
+    private var meetingCaptureStateReceiver: BroadcastReceiver? = null
+
+    // Transcription UI moved to the "Transcriptions & recordings" section
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = AcitivytMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        setupBottomNavigation()
         initView()
+        setupMeetingCaptureUi()
+        setupAgentControlsUi()
+        // Transcription UI moved to the "Transcriptions & recordings" section
         logLargeDataHandlerMethodsOnce()
         // Initialize TTS
         tts = TextToSpeech(this, this)
-        
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+            }
+
+            override fun onDone(utteranceId: String?) {
+                utteranceId?.let { ttsDoneCallbacks.remove(it)?.invoke() }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                utteranceId?.let { ttsDoneCallbacks.remove(it)?.invoke() }
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                utteranceId?.let { ttsDoneCallbacks.remove(it)?.invoke() }
+            }
+        })
+
         // Ensure we always listen for glasses reports (battery, AI, volume, etc.)
         LargeDataHandler.getInstance().addOutDeviceListener(100, deviceNotifyListener)
 
@@ -181,12 +319,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             EventBus.getDefault().register(this)
         }
         updateConnectionStatus(BleOperateManager.getInstance().isConnected)
-        startBatteryPolling()
+        registerMeetingCaptureReceiver()
+        syncMeetingCaptureUiFromPrefs()
+
+        if (!agentReceiverRegistered) {
+            LocalBroadcastManager.getInstance(this)
+                .registerReceiver(agentStatusReceiver, IntentFilter(LocalAgentIntents.ACTION_STATUS_CHANGED))
+            agentReceiverRegistered = true
+        }
+        LocalAgentController.requestStatus(this)
+        refreshAgentStatusUi()
     }
 
     override fun onStop() {
         super.onStop()
         stopBatteryPolling()
+        unregisterMeetingCaptureReceiver()
+
+        if (agentReceiverRegistered) {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(agentStatusReceiver)
+            agentReceiverRegistered = false
+        }
+
         if (EventBus.getDefault().isRegistered(this)) {
             EventBus.getDefault().unregister(this)
         }
@@ -249,6 +403,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             startActivityForResult(intent, 1234)
             Toast.makeText(this, "Please enable Overlay permission for background AI", Toast.LENGTH_LONG).show()
         }
+
+        // Ensure correct nav highlight when returning via CLEAR_TOP/SINGLE_TOP.
+        binding.bottomNavigation.post {
+            binding.bottomNavigation.menu.findItem(R.id.nav_glasses).isChecked = true
+        }
+        refreshAiQueryButtonsState()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -273,6 +433,65 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     }
 
+    private fun setupBottomNavigation() {
+        binding.bottomNavigation.selectedItemId = R.id.nav_glasses
+        binding.bottomNavigation.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.nav_glasses -> true
+                R.id.nav_chats -> {
+                    binding.bottomNavigation.post {
+                        val last = ChatStore.listNonEmptyThreads().firstOrNull()
+                        val now = System.currentTimeMillis()
+
+                        fun lastUserMessageAtMs(chatId: String): Long? {
+                            val msgs = ChatStore.listMessages(chatId)
+                            return msgs.lastOrNull { it.role == com.fersaiyan.cyanbridge.chat.ChatRole.USER }?.createdAt
+                        }
+
+                        val openChatId = if (last != null) {
+                            val lastUserAt = lastUserMessageAtMs(last.id) ?: 0L
+                            if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
+                        } else null
+
+                        val intent = Intent(this, ChatThreadActivity::class.java)
+                        if (openChatId != null) {
+                            intent.putExtra(ChatThreadActivity.EXTRA_CHAT_ID, openChatId)
+                        }
+                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        startActivity(intent)
+                    }
+                    true
+                }
+                R.id.nav_transcriptions_recordings -> {
+                    binding.bottomNavigation.post {
+                        startActivity(Intent(this, RecordingsListActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        })
+                    }
+                    true
+                }
+                R.id.nav_settings -> {
+                    binding.bottomNavigation.post {
+                        startActivity(Intent(this, SettingsActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        })
+                    }
+                    true
+                }
+                R.id.nav_community_plugins -> {
+                    binding.bottomNavigation.post {
+                        startActivity(Intent(this, CommunityPluginsActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        })
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+
     private fun initView() {
         setOnClickListener(
             binding.btnScan,
@@ -294,52 +513,90 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.btnModeGemini,
             binding.btnModeChatgpt,
             binding.btnModeTasker,
-            binding.btnPrivacySettings,
             binding.btnTestHijackVoice,
-            binding.btnTestHijackImage
+            binding.btnTestHijackImage,
+            binding.btnToggleAdvanced,
+            // binding.btnNotes,
+            binding.btnMeetingStart,
+            binding.btnMeetingStop,
+            binding.btnMeetingBannerStop
         ) {
+            // Safety: stop glasses audio recording before most actions.
+            // Users often press camera/video/etc while audio is running.
+            val shouldStopGlassesAudio = this != binding.btnScan && this != binding.btnConnect
+            if (shouldStopGlassesAudio) {
+                controlAudioRecording(false)
+                // If auto audio capture is enabled, give the user a short window to operate other controls.
+                if (AutoAudioCapturePrefs.isEnabled(this@MainActivity) && this != binding.btnRecord) {
+                    AutoAudioCapturePrefs.pauseForMs(this@MainActivity, 90_000)
+                }
+            }
+
             when (this) {
+                binding.btnToggleAdvanced -> {
+                    val container = binding.layoutAdvancedContainer
+                    if (container.visibility == android.view.View.VISIBLE) {
+                        container.visibility = android.view.View.GONE
+                        binding.btnToggleAdvanced.text = "Advanced ▼"
+                    } else {
+                        container.visibility = android.view.View.VISIBLE
+                        binding.btnToggleAdvanced.text = "Advanced ▲"
+                    }
+                }
+
                 binding.btnTestHijackVoice -> {
                     triggerAssistantVoiceQuery()
                 }
 
                 binding.btnTestHijackImage -> {
-                    // Create a dummy image for testing if none exists
-                    val testFile = File(getExternalFilesDir("DCIM"), "test_ai.jpg")
-                    if (!testFile.exists()) {
-                        try {
-                            testFile.writeText("dummy image data")
-                        } catch (e: Exception) {}
+                    if (!isImageQuerySupportedForCurrentSelection()) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Image queries are not available for Local Models.",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        return@setOnClickListener
                     }
-                    triggerAssistantImageQuery(testFile.absolutePath)
+
+                    if (maybeShowGeminiChatGptImageRequirementsWarning()) {
+                        return@setOnClickListener
+                    }
+
+                    triggerCliRelayImageCaptureAndQuery()
                 }
 
                 binding.btnModeGemini -> {
-                    aiAssistantMode = "Gemini"
-                    binding.btnModeGemini.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.cyan_accent))
-                    binding.btnModeChatgpt.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
-                    binding.btnModeTasker.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
+                    aiAssistantMode = AI_MODE_GEMINI
+                    refreshAiModeButtons()
                     Toast.makeText(this@MainActivity, "AI Mode: Google Gemini", Toast.LENGTH_SHORT).show()
                 }
 
                 binding.btnModeChatgpt -> {
-                    aiAssistantMode = "ChatGPT"
-                    binding.btnModeGemini.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
-                    binding.btnModeChatgpt.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.cyan_accent))
-                    binding.btnModeTasker.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
+                    aiAssistantMode = AI_MODE_CHATGPT
+                    refreshAiModeButtons()
                     Toast.makeText(this@MainActivity, "AI Mode: ChatGPT", Toast.LENGTH_SHORT).show()
                 }
 
                 binding.btnModeTasker -> {
-                    aiAssistantMode = "Tasker"
-                    binding.btnModeGemini.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
-                    binding.btnModeChatgpt.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
-                    binding.btnModeTasker.setTextColor(ContextCompat.getColor(this@MainActivity, R.color.cyan_accent))
-                    Toast.makeText(this@MainActivity, "AI Mode: Tasker Broadcast", Toast.LENGTH_SHORT).show()
+                    aiAssistantMode = AI_MODE_CHOSEN_PROVIDER
+                    refreshAiModeButtons()
+
+                    val msg = when (AutomationPrefs.getProviderType(this@MainActivity)) {
+                        AgentProviderType.TASKER -> "AI Mode: Chosen Provider (Tasker Broadcast)"
+                        AgentProviderType.PRO_SUBSCRIPTION -> "AI Mode: Chosen Provider (Pro Subscription)"
+                        AgentProviderType.LOCAL_AGENT -> "AI Mode: Chosen Provider (Local Agent)"
+                    }
+                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
                 }
 
-                binding.btnPrivacySettings -> {
-                    startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                // Notes & Summaries entry removed (moved to Transcriptions & recordings section)
+
+                binding.btnMeetingStart -> {
+                    startMeetingCaptureFromUi()
+                }
+
+                binding.btnMeetingStop, binding.btnMeetingBannerStop -> {
+                    stopMeetingCaptureFromUi()
                 }
 
                 binding.btnScan -> {
@@ -347,12 +604,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnConnect -> {
+                    // User explicitly wants to reconnect, so re-enable auto pairing.
+                    AutoPairManager.setAutoReconnectSuppressed(false, reason = "user_reconnect_button")
                     Toast.makeText(this@MainActivity, "Reconnecting to glasses…", Toast.LENGTH_SHORT).show()
                     BleOperateManager.getInstance()
                         .connectDirectly(DeviceManager.getInstance().deviceAddress)
                 }
 
                 binding.btnDisconnect -> {
+                    // Prevent the background reconnection loop from immediately reconnecting.
+                    AutoPairManager.setAutoReconnectSuppressed(true, reason = "user_disconnect_button")
                     Toast.makeText(this@MainActivity, "Disconnecting from glasses…", Toast.LENGTH_SHORT).show()
                     BleOperateManager.getInstance().unBindDevice()
                 }
@@ -422,8 +683,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnVideo -> {
-                    // Default UI behavior: start video recording
-                    controlVideoRecording(true)
+                    // Toggle video recording. While video is active, pause the auto audio loop.
+                    val isRecording = GlassesMediaPrefs.isVideoRecording(this@MainActivity)
+                    if (isRecording) {
+                        Toast.makeText(this@MainActivity, "Stopping video recording…", Toast.LENGTH_SHORT).show()
+                        controlVideoRecording(false)
+                    } else {
+                        Toast.makeText(this@MainActivity, "Starting video recording…", Toast.LENGTH_SHORT).show()
+                        controlVideoRecording(true)
+                    }
                 }
 
                 binding.btnRecord -> {
@@ -519,9 +787,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        binding.btnModeGemini.setTextColor(if (aiAssistantMode == "Gemini") ContextCompat.getColor(this, R.color.cyan_accent) else ContextCompat.getColor(this, R.color.text_secondary))
-        binding.btnModeChatgpt.setTextColor(if (aiAssistantMode == "ChatGPT") ContextCompat.getColor(this, R.color.cyan_accent) else ContextCompat.getColor(this, R.color.text_secondary))
-        binding.btnModeTasker.setTextColor(if (aiAssistantMode == "Tasker") ContextCompat.getColor(this, R.color.cyan_accent) else ContextCompat.getColor(this, R.color.text_secondary))
+        refreshAiModeButtons()
 
         binding.cbHijackEnabled.setOnCheckedChangeListener { _, isChecked ->
 
@@ -716,33 +982,36 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     
     private fun controlVideoRecording(start: Boolean) {
         val value = if (start) 0x02 else 0x03
+
+        // While video is recording, pause the auto audio loop.
+        if (start) {
+            AutoAudioCapturePrefs.setPausedForVideo(this, true)
+            GlassesMediaPrefs.setVideoRecording(this, true) // optimistic
+        }
+
         LargeDataHandler.getInstance().glassesControl(
             byteArrayOf(0x02, 0x01, value.toByte())
-        ) { _, it ->
-            if (it.dataType == 1) {
-                if (it.errorCode == 0) {
-                    when (it.workTypeIng) {
+        ) { _, rsp ->
+            if (rsp.dataType == 1) {
+                if (rsp.errorCode == 0) {
+                    when (rsp.workTypeIng) {
                         2 -> {
-                            //Glasses are recording video
+                            // Glasses are recording video
+                            GlassesMediaPrefs.setVideoRecording(this, true)
+                            AutoAudioCapturePrefs.setPausedForVideo(this, true)
                         }
-                        4 -> {
-                            //Glasses are in transfer mode
-                        }
-                        5 -> {
-                            //Glasses are in OTA mode
-                        }
-                        1, 6 ->{
-                            //Glasses are in camera mode
-                        }
-                        7 -> {
-                            //Glasses are in AI conversation
-                        }
-                        8 ->{
-                            //Glasses are in recording mode
+                        else -> {
+                            // Anything other than 2 means not actively recording video.
+                            GlassesMediaPrefs.setVideoRecording(this, false)
+                            AutoAudioCapturePrefs.setPausedForVideo(this, false)
                         }
                     }
                 } else {
-                    //Execute start and end
+                    // Command failed; revert optimistic state.
+                    if (start) {
+                        GlassesMediaPrefs.setVideoRecording(this, false)
+                        AutoAudioCapturePrefs.setPausedForVideo(this, false)
+                    }
                 }
             }
         }
@@ -813,22 +1082,676 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         batteryPollJob = null
     }
 
-    private fun sendAiBroadcast(type: String, path: String? = null) {
+    private fun resolveEffectiveAiAssistantMode(): String {
+        if (aiAssistantMode != AI_MODE_CHOSEN_PROVIDER) {
+            return aiAssistantMode
+        }
+        return when (AutomationPrefs.getProviderType(this)) {
+            AgentProviderType.TASKER -> AI_MODE_TASKER
+            AgentProviderType.PRO_SUBSCRIPTION,
+            AgentProviderType.LOCAL_AGENT -> AI_MODE_GEMINI
+        }
+    }
+
+    private fun isChosenProviderMode(): Boolean = aiAssistantMode == AI_MODE_CHOSEN_PROVIDER
+
+    private fun isChosenProviderCloudEndpoint(): Boolean {
+        if (!isChosenProviderMode()) return false
+        return when (AutomationPrefs.getProviderType(this)) {
+            AgentProviderType.PRO_SUBSCRIPTION -> true
+            AgentProviderType.LOCAL_AGENT,
+            AgentProviderType.TASKER -> false
+        }
+    }
+
+    private fun isImageQuerySupportedForCurrentSelection(): Boolean {
+        if (!isChosenProviderMode()) return true
+        return AutomationPrefs.getProviderType(this) != AgentProviderType.LOCAL_AGENT
+    }
+
+    private fun isGeminiOrChatGptModeSelected(): Boolean {
+        return aiAssistantMode == AI_MODE_GEMINI || aiAssistantMode == AI_MODE_CHATGPT
+    }
+
+    private fun requiresTaskerAutomationForImageQuestions(): Boolean {
+        if (!isGeminiOrChatGptModeSelected()) return false
+        return AiProviderPrefs.getProvider(this) != RelayProviderType.CLI_RELAY
+    }
+
+    private fun isTaskerInstalled(): Boolean {
+        return runCatching {
+            packageManager.getPackageInfo(TASKER_PACKAGE_NAME, 0)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun maybeShowGeminiChatGptImageRequirementsWarning(): Boolean {
+        if (!requiresTaskerAutomationForImageQuestions()) return false
+
+        val taskerInstalled = isTaskerInstalled()
+        val pluginEnabled = CommunityPluginPrefs.isGeminiChatGptImageAutomationEnabled(this)
+        if (taskerInstalled && pluginEnabled) return false
+
+        val msg = when {
+            !taskerInstalled && !pluginEnabled ->
+                "AI image questions won't work until Tasker and the Gemini/ChatGPT Image Questions automation plugin are enabled."
+            !taskerInstalled ->
+                "AI image questions won't work until Tasker is installed and enabled."
+            else ->
+                "AI image questions won't work until the Gemini/ChatGPT app automation plugin for Image Questions is downloaded from Community Plugins and enabled."
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("AI image setup required")
+            .setMessage(msg)
+            .setNegativeButton("Not now", null)
+            .setPositiveButton("Open Plugins") { _, _ ->
+                startActivity(Intent(this, CommunityPluginsActivity::class.java))
+            }
+            .show()
+
+        return true
+    }
+
+    private fun refreshAiQueryButtonsState() {
+        val imageSupported = isImageQuerySupportedForCurrentSelection()
+        binding.btnTestHijackImage.isEnabled = imageSupported
+        binding.btnTestHijackImage.alpha = if (imageSupported) 1f else 0.45f
+
+        if (!imageSupported) {
+            binding.btnTestHijackImage.text = "Image query unavailable"
+        } else {
+            binding.btnTestHijackImage.text = "Test Image AI description"
+        }
+    }
+
+    private fun refreshAiModeButtons() {
+        val activeColor = ContextCompat.getColor(this, R.color.cyan_accent)
+        val inactiveColor = ContextCompat.getColor(this, R.color.text_secondary)
+
+        binding.btnModeGemini.setTextColor(if (aiAssistantMode == AI_MODE_GEMINI) activeColor else inactiveColor)
+        binding.btnModeChatgpt.setTextColor(if (aiAssistantMode == AI_MODE_CHATGPT) activeColor else inactiveColor)
+        val chosenProviderSelected = aiAssistantMode == AI_MODE_CHOSEN_PROVIDER
+        binding.btnModeTasker.setTextColor(if (chosenProviderSelected) activeColor else inactiveColor)
+        refreshAiQueryButtonsState()
+    }
+
+    private fun sendAiBroadcast(type: String, path: String? = null, assistantMode: String = resolveEffectiveAiAssistantMode()) {
         val intent = Intent(aiEventAction(packageName)).apply {
             putExtra("type", type)
             path?.let { putExtra("path", it) }
-            putExtra("assistant", aiAssistantMode)
+            putExtra("assistant", assistantMode)
             addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
         sendBroadcast(intent)
         Log.i("AIHijack", "Sent Broadcast to Tasker: $type")
     }
 
+    private fun todayDateString(tsMs: Long = System.currentTimeMillis()): String {
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        return fmt.format(java.util.Date(tsMs))
+    }
+
+    private fun tokenizeMemoryQuery(text: String): List<String> {
+        val stopwords = setOf(
+            "the", "and", "for", "with", "that", "this", "from", "into", "what", "when",
+            "how", "who", "why", "are", "was", "were", "can", "could", "should", "would",
+            "will", "just", "like", "your", "you", "about", "have", "has", "had", "then",
+            "que", "para", "com", "uma", "nao", "não", "isso", "essa", "esse", "foi", "tem",
+            "como", "porque", "por", "das", "dos", "uns", "umas"
+        )
+
+        return text
+            .lowercase(Locale.US)
+            .split(Regex("[^\\p{L}\\p{N}]+"))
+            .map { it.trim() }
+            .filter { it.length >= 3 && it !in stopwords }
+            .distinct()
+    }
+
+    private fun selectRelevantMemoryItems(items: List<String>, queryText: String, maxItems: Int): List<String> {
+        val clean = items
+            .map { it.trim().removePrefix("- ").removePrefix("* ").trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        if (clean.isEmpty()) return emptyList()
+        val tokens = tokenizeMemoryQuery(queryText)
+        if (tokens.isEmpty()) return clean.take(minOf(maxItems, 2))
+
+        val scored = clean.map { item ->
+            val hay = item.lowercase(Locale.US)
+            var score = 0
+            for (token in tokens) {
+                if (hay.contains(token)) score += 1
+            }
+            item to score
+        }
+
+        val hits = scored
+            .filter { it.second > 0 }
+            .sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { it.first.length })
+            .map { it.first }
+            .take(maxItems)
+
+        return if (hits.isNotEmpty()) hits else clean.take(minOf(maxItems, 2))
+    }
+
+    private fun buildCompactMemoryAwareSystemPrompt(queryText: String, date: String): String {
+        val extraSections = mutableListOf<LocalAgentContextBuilder.Section>()
+
+        val retrieval = LocalAgentMemorySearch.buildRelevantMemoryBlock(
+            context = this,
+            queryText = queryText,
+            date = date,
+            lookbackDaysFacts = 5,
+            topFacts = 4,
+            topSummaryLines = 3,
+            maxChars = 900,
+        )
+        if (retrieval.isNotBlank()) {
+            extraSections += LocalAgentContextBuilder.Section(
+                title = "Relevant memory (search hits)",
+                content = retrieval,
+            )
+        }
+
+        val draftFacts = runCatching { DailyFactsStorage.load(this, date).draft }.getOrDefault(emptyList())
+        val draftRef = LocalAgentMemoryStore.memoryRefForFile(
+            this,
+            LocalAgentMemoryStore.dailyFactsFileForDate(this, date),
+        )
+        val relevantDraft = if (MemoryPolicyService.isMemoryRefSearchEligible(this, draftRef)) {
+            selectRelevantMemoryItems(draftFacts, queryText, maxItems = 4)
+        } else {
+            emptyList()
+        }
+        if (relevantDraft.isNotEmpty()) {
+            extraSections += LocalAgentContextBuilder.Section(
+                title = "Today's draft daily facts (unconfirmed)",
+                content = relevantDraft.joinToString("\n") { "- $it" },
+            )
+        }
+
+        val candidateFacts = runCatching { CandidateUserFactsStorage.load(this, date) }.getOrDefault(emptyList())
+        val candidateRef = LocalAgentMemoryStore.memoryRefForFile(
+            this,
+            LocalAgentMemoryStore.userFactsCandidatesFileForDate(this, date),
+        )
+        val relevantCandidates = if (MemoryPolicyService.isMemoryRefSearchEligible(this, candidateRef)) {
+            selectRelevantMemoryItems(candidateFacts, queryText, maxItems = 3)
+        } else {
+            emptyList()
+        }
+        if (relevantCandidates.isNotEmpty()) {
+            extraSections += LocalAgentContextBuilder.Section(
+                title = "Candidate user facts (pending review)",
+                content = relevantCandidates.joinToString("\n") { "- $it" },
+            )
+        }
+
+        val builder = LocalAgentContextBuilder(
+            maxAgentPersonaChars = QUERY_MAX_AGENT_PERSONA_CHARS,
+            maxUserFactsChars = QUERY_MAX_USER_FACTS_CHARS,
+            maxConfirmedDailyFactsChars = QUERY_MAX_CONFIRMED_FACTS_CHARS,
+            maxDailySummaryChars = QUERY_MAX_DAILY_SUMMARY_CHARS,
+            maxTotalChars = QUERY_MAX_TOTAL_CONTEXT_CHARS,
+        )
+
+        return builder.buildSystemMessage(
+            context = this,
+            date = date,
+            extraSections = extraSections,
+        )
+    }
+
+    private suspend fun runMemoryAwareChosenProviderQuery(
+        userPrompt: String,
+        providerType: AgentProviderType,
+    ): String {
+        val date = todayDateString()
+        val systemPrompt = buildCompactMemoryAwareSystemPrompt(queryText = userPrompt, date = date)
+
+        val messages = listOf(
+            mapOf("role" to "System", "content" to systemPrompt),
+            mapOf("role" to "User", "content" to userPrompt),
+        )
+
+        return when (providerType) {
+            AgentProviderType.PRO_SUBSCRIPTION -> {
+                CliRelayClient.chat(
+                    context = this,
+                    chatId = "glasses_${System.currentTimeMillis()}",
+                    prompt = userPrompt,
+                    messages = messages,
+                    modelOverride = ProSubscriptionAiPrefs.getRequestsModel(this),
+                ).getOrElse {
+                    "Pro endpoint error: ${it.message ?: "unknown error"}"
+                }
+            }
+
+            AgentProviderType.LOCAL_AGENT ->
+                runCatching {
+                    LocalModelsProvider().streamChat(
+                        context = this,
+                        messages = messages,
+                    )
+                }.getOrElse {
+                    "Local Models error: ${it.message ?: "unknown error"}"
+                }
+
+            AgentProviderType.TASKER -> {
+                CliRelayClient.chat(
+                    context = this,
+                    chatId = "glasses_${System.currentTimeMillis()}",
+                    prompt = userPrompt,
+                    messages = messages,
+                ).getOrElse { "Endpoint unavailable: ${it.message ?: "unknown error"}" }
+            }
+        }.trim()
+    }
+
+    private fun triggerMemoryAwareImageQuery(
+        imagePath: String,
+        providerType: AgentProviderType,
+        userQuestion: String?,
+    ) {
+        Log.i("AIHijack", "Running memory-aware image query for chosen provider $providerType: $imagePath")
+
+        CoroutineScope(Dispatchers.IO).launch {
+            val finalReply = when (providerType) {
+                AgentProviderType.PRO_SUBSCRIPTION -> {
+                    val visionReply = CliRelayClient.imageQuery(
+                        context = this@MainActivity,
+                        imagePath = imagePath,
+                        modelOverride = ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity),
+                    )
+                        .getOrElse { "Image query unavailable: ${it.message ?: "unknown error"}" }
+                        .trim()
+
+                    if (visionReply.startsWith("Image query unavailable:")) {
+                        visionReply
+                    } else if (visionReply.isBlank()) {
+                        "I couldn't analyze that image right now. Please try again."
+                    } else {
+                        val leadPrompt = userQuestion?.trim().takeUnless { it.isNullOrBlank() }
+                            ?: "Describe and translate to English the following picture if it isn't in English."
+                        val followUpPrompt = buildString {
+                            appendLine(leadPrompt)
+                            appendLine("Use this vision observation:")
+                            appendLine(visionReply.take(1400))
+                            appendLine()
+                            appendLine("Keep the final answer concise (1-3 short sentences).")
+                        }
+                        runMemoryAwareChosenProviderQuery(
+                            userPrompt = followUpPrompt,
+                            providerType = AgentProviderType.PRO_SUBSCRIPTION,
+                        )
+                    }
+                }
+
+                AgentProviderType.LOCAL_AGENT ->
+                    "Image queries are not available for Local Models on mobile yet."
+
+                AgentProviderType.TASKER -> {
+                    val visionReply = CliRelayClient.imageQuery(this@MainActivity, imagePath)
+                        .getOrElse { "Image query unavailable: ${it.message ?: "unknown error"}" }
+                        .trim()
+                    if (visionReply.isBlank()) {
+                        "I couldn't analyze that image right now. Please try again."
+                    } else {
+                        visionReply
+                    }
+                }
+            }
+
+            runOnUiThread {
+                speak(finalReply)
+            }
+        }
+    }
+
+    private fun triggerCliRelayImageCaptureAndQuery() {
+        handleGlassesImageButtonPressed(triggerCapture = true, sourceTag = "test_button")
+    }
+
+    private fun handleGlassesImageButtonPressed(triggerCapture: Boolean, sourceTag: String) {
+        if (!BleOperateManager.getInstance().isConnected) {
+            runOnUiThread {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Glasses are not connected. Connect first to use image query.",
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            return
+        }
+
+        if (triggerCapture) {
+            Toast.makeText(this, "Triggering glasses camera…", Toast.LENGTH_SHORT).show()
+        }
+
+        val outDir = getExternalFilesDir("DCIM") ?: filesDir
+        val fileName = "AI_Thumb_${sourceTag}_${System.currentTimeMillis()}.jpg"
+        val file = File(outDir, fileName)
+        runCatching {
+            file.parentFile?.mkdirs()
+            if (file.exists()) file.delete()
+        }
+
+        val gotChunk = java.util.concurrent.atomic.AtomicBoolean(false)
+        val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val thumbCallback: (Int, Boolean, ByteArray?) -> Unit = { _, isComplete, data ->
+            if (data != null && data.isNotEmpty()) {
+                gotChunk.set(true)
+                runCatching {
+                    FileOutputStream(file, true).use { it.write(data) }
+                }.onFailure {
+                    Log.e("AIHijack", "Failed to write thumbnail chunk: ${it.message}")
+                }
+            }
+
+            if (isComplete && completed.compareAndSet(false, true)) {
+                Log.i("AIHijack", "[$sourceTag] Thumbnail transfer complete: ${file.absolutePath} (${file.length()} bytes)")
+                onImageThumbnailReadyForQuestion(file.absolutePath)
+            }
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            if (triggerCapture) {
+                runCatching {
+                    LargeDataHandler.getInstance().glassesControl(
+                        byteArrayOf(0x02, 0x01, 0x06, 0x02, 0x02)
+                    ) { _, _ -> }
+                }
+                delay(250)
+                LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x01)) { _, _ -> }
+                delay(3000)
+            }
+
+            LargeDataHandler.getInstance().getPictureThumbnails(thumbCallback)
+
+            delay(5000)
+            if (!gotChunk.get() && !completed.get()) {
+                Log.w("AIHijack", "[$sourceTag] No thumbnail chunks yet; retrying getPictureThumbnails()…")
+                LargeDataHandler.getInstance().getPictureThumbnails(thumbCallback)
+            }
+
+            delay(8000)
+            if (!completed.get()) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "No thumbnail received from glasses.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    speak("I didn't receive an image thumbnail from the glasses.")
+                }
+            }
+        }
+    }
+
+    private fun onImageThumbnailReadyForQuestion(imagePath: String) {
+        runOnUiThread {
+            Toast.makeText(
+                this@MainActivity,
+                "Thumbnail received. Ask your image question now.",
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+
+        CoroutineScope(Dispatchers.Main).launch {
+            val spokenQuestion = captureOptionalImageQuestionFromBluetoothMic(timeoutMs = 3_000L)
+            triggerAssistantImageQuery(imagePath, spokenQuestion)
+        }
+    }
+
+    private suspend fun captureOptionalImageQuestionFromBluetoothMic(timeoutMs: Long): String? {
+        return withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine { cont ->
+                val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                var recognizer: SpeechRecognizer? = null
+                var timeoutJob: Job? = null
+                var finished = false
+                var heardSpeech = false
+
+                fun cleanup() {
+                    runCatching {
+                        recognizer?.destroy()
+                    }
+                    recognizer = null
+
+                    runCatching {
+                        audioManager.isBluetoothScoOn = false
+                        audioManager.stopBluetoothSco()
+                        audioManager.mode = android.media.AudioManager.MODE_NORMAL
+                    }
+                }
+
+                fun finish(result: String?) {
+                    if (finished) return
+                    finished = true
+                    timeoutJob?.cancel()
+                    timeoutJob = null
+                    val cleaned = result?.trim()?.takeIf { it.isNotBlank() }
+
+                    runCatching {
+                        val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_VOICE_CALL, 90)
+                        tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP2, 170)
+                        CoroutineScope(Dispatchers.Main).launch {
+                            delay(190)
+                            runCatching { tone.release() }
+                            cleanup()
+                            if (cont.isActive) {
+                                cont.resume(cleaned)
+                            }
+                        }
+                    }.onFailure {
+                        cleanup()
+                        if (cont.isActive) {
+                            cont.resume(cleaned)
+                        }
+                    }
+                }
+
+                runCatching {
+                    audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+                    audioManager.startBluetoothSco()
+                    audioManager.isBluetoothScoOn = true
+                }
+
+                runCatching {
+                    val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_VOICE_CALL, 90)
+                    tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 180)
+                    CoroutineScope(Dispatchers.Main).launch {
+                        delay(250)
+                        runCatching { tone.release() }
+                    }
+                }
+
+                recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity)
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
+                }
+
+                recognizer?.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {}
+                    override fun onBeginningOfSpeech() {
+                        heardSpeech = true
+                        timeoutJob?.cancel()
+                        timeoutJob = null
+                    }
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
+
+                    override fun onError(error: Int) {
+                        Log.i("AIHijack", "Image question listener ended with error code=$error")
+                        finish(null)
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        finish(matches?.firstOrNull())
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {}
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+
+                timeoutJob = CoroutineScope(Dispatchers.Main).launch {
+                    delay(timeoutMs)
+                    if (!heardSpeech) {
+                        finish(null)
+                    }
+                }
+
+                recognizer?.startListening(intent)
+
+                cont.invokeOnCancellation {
+                    finish(null)
+                }
+            }
+        }
+    }
+
+    private fun triggerCliRelayVoiceQuery(
+        memoryAwareChosenProvider: Boolean = false,
+        chosenProviderType: AgentProviderType? = null,
+    ) {
+        // Wake up screen if locked
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+            keyguardManager.requestDismissKeyguard(this, null)
+        }
+
+        // Tell glasses to stop proprietary AI audio stream
+        LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x0b)) { _, _ -> }
+
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+
+        fun stopSco() {
+            runCatching {
+                audioManager.isBluetoothScoOn = false
+                audioManager.stopBluetoothSco()
+                audioManager.mode = android.media.AudioManager.MODE_NORMAL
+            }
+        }
+
+        runCatching {
+            audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+            audioManager.startBluetoothSco()
+            audioManager.isBluetoothScoOn = true
+        }
+
+        Toast.makeText(this, "Listening for voice query…", Toast.LENGTH_SHORT).show()
+
+        val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                speak("I am listening")
+            }
+
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+
+            override fun onError(error: Int) {
+                Toast.makeText(this@MainActivity, "Voice query failed: $error", Toast.LENGTH_SHORT).show()
+                recognizer.destroy()
+                stopSco()
+            }
+
+            override fun onResults(results: Bundle?) {
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val prompt = matches?.firstOrNull()?.trim().orEmpty()
+
+                if (prompt.isBlank()) {
+                    recognizer.destroy()
+                    stopSco()
+                    return
+                }
+
+                Toast.makeText(this@MainActivity, "Asking: $prompt", Toast.LENGTH_SHORT).show()
+
+                CoroutineScope(Dispatchers.IO).launch {
+                    val reply = if (memoryAwareChosenProvider) {
+                        runMemoryAwareChosenProviderQuery(
+                            userPrompt = prompt,
+                            providerType = chosenProviderType ?: AgentProviderType.PRO_SUBSCRIPTION,
+                        )
+                    } else {
+                        val selectedProvider = AutomationPrefs.getProviderType(this@MainActivity)
+                        val modelOverride = if (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION) {
+                            ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
+                        } else {
+                            null
+                        }
+
+                        CliRelayClient.voiceQuery(
+                            context = this@MainActivity,
+                            prompt = prompt,
+                            modelOverride = modelOverride,
+                        )
+                            .getOrElse { "Relay unavailable: ${it.message ?: "unknown error"}" }
+                    }
+
+                    runOnUiThread {
+                        speak(reply, utteranceId = "AI_REPLY") {
+                            stopSco()
+                        }
+                    }
+                }
+
+                recognizer.destroy()
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        recognizer.startListening(intent)
+    }
+
     private fun triggerAssistantVoiceQuery() {
-        Log.i("AIHijack", "Triggering Voice Query for $aiAssistantMode")
-        
-        if (aiAssistantMode == "Tasker") {
-            sendAiBroadcast("voice")
+        val effectiveMode = resolveEffectiveAiAssistantMode()
+        Log.i("AIHijack", "Triggering Voice Query for $effectiveMode")
+
+        val selectedProvider = AutomationPrefs.getProviderType(this)
+        val useChosenProviderMemoryAware =
+            aiAssistantMode == AI_MODE_CHOSEN_PROVIDER &&
+                (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION ||
+                    selectedProvider == AgentProviderType.LOCAL_AGENT)
+        if (useChosenProviderMemoryAware) {
+            triggerCliRelayVoiceQuery(
+                memoryAwareChosenProvider = true,
+                chosenProviderType = selectedProvider,
+            )
+            return
+        }
+
+        // Spike branch feature: CLI Relay AI provider (hosted Gemini/Codex via HTTP).
+        val relayProvider = AiProviderPrefs.getProvider(this)
+        if (relayProvider == RelayProviderType.CLI_RELAY) {
+            triggerCliRelayVoiceQuery()
+            return
+        }
+
+        if (effectiveMode == AI_MODE_TASKER) {
+            sendAiBroadcast(type = "voice", assistantMode = AI_MODE_TASKER)
             return
         }
 
@@ -847,7 +1770,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         try {
             val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                if (aiAssistantMode == "ChatGPT") {
+                if (effectiveMode == AI_MODE_CHATGPT) {
                     // Try to target ChatGPT specifically if possible, 
                     // otherwise default assistant will handle it if user set it to ChatGPT
                     setPackage("com.openai.chatgpt")
@@ -862,7 +1785,41 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun triggerAssistantImageQuery(imagePath: String) {
+    private fun triggerAssistantImageQuery(imagePath: String, userQuestion: String? = null) {
+        val selectedProvider = AutomationPrefs.getProviderType(this)
+        val useChosenProviderMemoryAware =
+            aiAssistantMode == AI_MODE_CHOSEN_PROVIDER &&
+                selectedProvider == AgentProviderType.PRO_SUBSCRIPTION
+        if (useChosenProviderMemoryAware) {
+            triggerMemoryAwareImageQuery(imagePath, selectedProvider, userQuestion)
+            return
+        }
+
+        val relayProvider = AiProviderPrefs.getProvider(this)
+        if (relayProvider == RelayProviderType.CLI_RELAY) {
+            Log.i("AIHijack", "Sending image query to CLI relay: $imagePath")
+
+            CoroutineScope(Dispatchers.IO).launch {
+                val modelOverride = if (AutomationPrefs.getProviderType(this@MainActivity) == AgentProviderType.PRO_SUBSCRIPTION) {
+                    ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
+                } else {
+                    null
+                }
+
+                val reply = CliRelayClient.imageQuery(
+                    context = this@MainActivity,
+                    imagePath = imagePath,
+                    modelOverride = modelOverride,
+                )
+                    .getOrElse { "Relay unavailable: ${it.message ?: "unknown error"}" }
+
+                runOnUiThread {
+                    speak(reply)
+                }
+            }
+            return
+        }
+
         Log.i("AIHijack", "Redirecting Image Query to Tasker logic with $imagePath")
 
         val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
@@ -927,10 +1884,238 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             "Disconnected"
         }
         binding.statusText.text = status
+        updateDeviceClassText()
         if (!connected) {
             updateBatteryText(null)
         }
     }
+
+    private fun updateDeviceClassText() {
+        val profile = DeviceProfileStore.loadLastSelected(this)
+        val classLabel = profile?.selectedClass?.displayName() ?: "Unknown"
+        binding.tvDeviceClass.text = "Class: $classLabel"
+
+        applyGlassesManagerGating(profile)
+    }
+
+    /**
+     * Chapter 4: Capability gating for the Glasses Manager screen.
+     *
+     * - HEY_CYAN: show extra controls + battery/storage placeholders.
+     * - Other classes: show meeting capture only (plus basic connection UI).
+     */
+    private fun applyGlassesManagerGating(profile: com.fersaiyan.cyanbridge.devices.DeviceProfile?) {
+        val model = GlassesManagerGating.uiModel(profile)
+
+        // Expanded controls panel (HeyCyan-only in MVP baseline)
+        binding.layoutHeycyanExtras.visibility =
+            if (model.isVisible(GlassesManagerGating.Action.HEY_CYAN_EXTRAS)) android.view.View.VISIBLE else android.view.View.GONE
+
+        // Status placeholders
+        val showBattery = model.isVisible(GlassesManagerGating.Action.STATUS_BATTERY)
+        val showStorage = model.isVisible(GlassesManagerGating.Action.STATUS_STORAGE)
+
+        binding.layoutBattery.visibility = if (showBattery) android.view.View.VISIBLE else android.view.View.GONE
+        binding.layoutStorage.visibility = if (showStorage) android.view.View.VISIBLE else android.view.View.GONE
+        binding.layoutStatusMetrics.visibility =
+            if (showBattery || showStorage) android.view.View.VISIBLE else android.view.View.GONE
+
+        // Only poll battery for profiles that claim to support it.
+        if (showBattery) {
+            startBatteryPolling()
+        } else {
+            stopBatteryPolling()
+            updateBatteryText(null)
+        }
+
+        if (!showStorage) {
+            binding.storageText.text = "--"
+        }
+    }
+
+    // --- Chapter 5: Meeting capture pipeline (start/stop, timer, indicator) ---
+
+    private fun setupMeetingCaptureUi() {
+        val labels = meetingTimerOptions.map { it.second }
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).also {
+            it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        binding.spinnerMeetingTimer.adapter = adapter
+        syncMeetingCaptureUiFromPrefs()
+    }
+
+    private fun setupAgentControlsUi() {
+        binding.btnAgentStart.setOnClickListener {
+            val res = LocalAgentController.start(this)
+            if (res.ok) {
+                LocalAgentPrefs.setStatus(this, "Starting…")
+                LocalAgentPrefs.clearLastError(this)
+            } else {
+                LocalAgentPrefs.setStatus(this, "Error")
+                LocalAgentPrefs.setLastError(this, res.error ?: res.userMessage)
+            }
+            refreshAgentStatusUi()
+            Toast.makeText(this, res.userMessage, Toast.LENGTH_SHORT).show()
+            LocalAgentController.requestStatus(this)
+        }
+
+        binding.btnAgentStop.setOnClickListener {
+            val res = LocalAgentController.stop(this)
+            if (res.ok) {
+                LocalAgentPrefs.setStatus(this, "Stopping…")
+                LocalAgentPrefs.clearLastError(this)
+            } else {
+                LocalAgentPrefs.setStatus(this, "Error")
+                LocalAgentPrefs.setLastError(this, res.error ?: res.userMessage)
+            }
+            refreshAgentStatusUi()
+            Toast.makeText(this, res.userMessage, Toast.LENGTH_SHORT).show()
+            LocalAgentController.requestStatus(this)
+        }
+
+        binding.btnAgentDemo.setOnClickListener {
+            Toast.makeText(
+                this,
+                "Demo: I will read the screen content through your glasses in 5 seconds…",
+                Toast.LENGTH_LONG
+            ).show()
+
+            val res = LocalAgentController.demo(this)
+            if (res.ok) {
+                LocalAgentPrefs.setStatus(this, "Running demo…")
+                LocalAgentPrefs.clearLastError(this)
+            } else {
+                LocalAgentPrefs.setStatus(this, "Error")
+                LocalAgentPrefs.setLastError(this, res.error ?: res.userMessage)
+            }
+            refreshAgentStatusUi()
+            Toast.makeText(this, res.userMessage, Toast.LENGTH_SHORT).show()
+            LocalAgentController.requestStatus(this)
+        }
+
+        refreshAgentStatusUi()
+    }
+
+    private fun refreshAgentStatusUi() {
+        binding.tvAgentStatus.text = "Status: ${LocalAgentPrefs.getStatus(this)}"
+        binding.tvAgentLastError.text = "Last error: ${LocalAgentPrefs.getLastError(this)}"
+    }
+
+    private fun selectedMeetingTimerDurationSec(): Long? { 
+        val idx = binding.spinnerMeetingTimer.selectedItemPosition
+        return meetingTimerOptions.getOrNull(idx)?.first
+    }
+
+    private fun requestMeetingCapturePermissions(onGranted: () -> Unit) {
+        val perms = mutableListOf<String>(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        XXPermissions.with(this)
+            .permission(perms)
+            .request(object : OnPermissionCallback {
+                override fun onGranted(permissions: MutableList<String>, all: Boolean) {
+                    if (all) onGranted() else {
+                        Toast.makeText(this@MainActivity, "Missing permissions for recording", Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                override fun onDenied(permissions: MutableList<String>, never: Boolean) {
+                    super.onDenied(permissions, never)
+                    Toast.makeText(this@MainActivity, "Recording permission denied", Toast.LENGTH_SHORT).show()
+                    if (never) {
+                        XXPermissions.startPermissionActivity(this@MainActivity, permissions)
+                    }
+                }
+            })
+    }
+
+    private fun startMeetingCaptureFromUi() {
+        requestMeetingCapturePermissions {
+            val deviceClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass?.name ?: "UNKNOWN"
+            val durationSec = selectedMeetingTimerDurationSec()
+
+            // Optimistic UI so user instantly sees a recording indicator.
+            setRecordingUi(isRecording = true, source = null)
+            binding.tvMeetingBanner.text = "Starting recording…"
+
+            MeetingCaptureService.start(this, timerDurationSec = durationSec, deviceClass = deviceClass)
+        }
+    }
+
+    private fun stopMeetingCaptureFromUi() {
+        binding.tvMeetingBanner.text = "Stopping…"
+        MeetingCaptureService.stop(this)
+    }
+
+    private fun registerMeetingCaptureReceiver() {
+        if (meetingCaptureStateReceiver != null) return
+
+        meetingCaptureStateReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != MeetingCaptureService.ACTION_STATE) return
+
+                val isRecording = intent.getBooleanExtra(MeetingCaptureService.EXTRA_IS_RECORDING, false)
+                val source = intent.getStringExtra(MeetingCaptureService.EXTRA_SOURCE)?.let {
+                    runCatching { CaptureSource.valueOf(it) }.getOrNull()
+                }
+                val stopReason = intent.getStringExtra(MeetingCaptureService.EXTRA_STOP_REASON)
+                val error = intent.getStringExtra(MeetingCaptureService.EXTRA_ERROR)
+
+                setRecordingUi(isRecording = isRecording, source = source)
+
+                if (!isRecording && stopReason == "timer") {
+                    Toast.makeText(this@MainActivity, "Meeting capture auto-stopped (timer)", Toast.LENGTH_SHORT).show()
+                }
+                if (!error.isNullOrBlank()) {
+                    Toast.makeText(this@MainActivity, "Recording error: $error", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
+        LocalBroadcastManager.getInstance(this)
+            .registerReceiver(meetingCaptureStateReceiver!!, IntentFilter(MeetingCaptureService.ACTION_STATE))
+    }
+
+    private fun unregisterMeetingCaptureReceiver() {
+        val r = meetingCaptureStateReceiver ?: return
+        meetingCaptureStateReceiver = null
+        runCatching {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(r)
+        }
+    }
+
+    private fun syncMeetingCaptureUiFromPrefs() {
+        val state = MeetingCapturePrefs.getState(this)
+        setRecordingUi(isRecording = state.isRecording, source = state.source)
+    }
+
+    private fun setRecordingUi(isRecording: Boolean, source: CaptureSource?) {
+        binding.btnMeetingStart.isEnabled = !isRecording
+        binding.btnMeetingStop.isEnabled = isRecording
+        binding.btnMeetingBannerStop.isEnabled = isRecording
+
+        if (isRecording) {
+            binding.meetingRecordingBanner.visibility = android.view.View.VISIBLE
+            val src = when (source) {
+                CaptureSource.BLUETOOTH_MIC -> "Bluetooth mic"
+                CaptureSource.PHONE_MIC -> "Phone mic"
+                null -> "(detecting…)"
+            }
+            binding.tvMeetingBanner.text = "Recording active · $src"
+            binding.tvMeetingSource.text = "Source: $src"
+        } else {
+            binding.meetingRecordingBanner.visibility = android.view.View.GONE
+            binding.tvMeetingSource.text = "Source: (not recording)"
+        }
+    }
+
+    // --- end Chapter 5 meeting capture ---
+
+    // --- Transcription UI moved to RecordingsListActivity (per-item) ---
+
+
 
     private fun updateBatteryText(battery: Int?) {
         binding.batteryText.text = battery?.let { "$it%" } ?: "--%"
@@ -1123,14 +2308,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             override fun onPeersChanged(peers: Collection<WifiP2pDevice>) {
                 Log.i("DataDownload", "Found ${peers.size} P2P devices")
-                // Connect to the first available peer (the official app filters by name/MAC;
-                // here we keep it simple).
-                val target = peers.firstOrNull() ?: return
-                Log.i(
-                    "DataDownload",
-                    "Connecting to peer: ${target.deviceName} / ${target.deviceAddress}"
-                )
-                wifiP2pManager.connectToDevice(target)
+                // Connect to the first available peer (the official app
+                // filters by name/MAC; here we keep it simple).
+                val target = peers.firstOrNull()
+                if (target != null) {
+                    Log.i(
+                        "DataDownload",
+                        "Connecting to peer: ${target.deviceName} / ${target.deviceAddress}"
+                    )
+                    wifiP2pManager.connectToDevice(target)
+                }
             }
 
             override fun onThisDeviceChanged(device: WifiP2pDevice) {
@@ -1696,7 +2883,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 put(MediaStore.Images.Media.DATE_ADDED, takenTimeMs / 1000)
                 put(MediaStore.Images.Media.DATE_MODIFIED, takenTimeMs / 1000)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/CyanBridge")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, SyncedMediaFolder.relativePath)
                     put(MediaStore.Images.Media.IS_PENDING, 1)
                 }
             }
@@ -1757,7 +2944,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 put(MediaStore.Video.Media.DATE_MODIFIED, takenTimeMs / 1000)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // Keep videos in the same DCIM/CyanBridge folder as photos.
-                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/CyanBridge")
+                    put(MediaStore.Video.Media.RELATIVE_PATH, SyncedMediaFolder.relativePath)
                     put(MediaStore.Video.Media.IS_PENDING, 1)
                 }
             }
@@ -1822,7 +3009,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // Keep alongside photos/videos per your preference (DCIM/CyanBridge).
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/CyanBridge")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, SyncedMediaFolder.relativePath)
                     put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
             }
@@ -2580,6 +3767,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
                 }
 
+                // Keep a Wi‑Fi fallback so VPN doesn't steal routing if we fail to detect P2P.
                 if (fallbackWifi == null) {
                     Log.i("DataDownload", "Keeping Wi‑Fi fallback network: if=$ifName addrs=$addrs")
                     fallbackWifi = n
@@ -2667,25 +3855,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
                 //Glasses pass quick recognition / AI Photo
                 0x02 -> {
-                    Log.i("DeviceNotify", "AI Photo Button Pressed - Starting Chunked Download")
-                    val fileName = "AI_Thumb_${System.currentTimeMillis()}.jpg"
-                    val file = File(getExternalFilesDir("DCIM"), fileName)
-                    
-                    // The SDK sends the image in multiple chunks. 
-                    // We must append them to the file and wait for isComplete (success parameter).
-                    LargeDataHandler.getInstance().getPictureThumbnails { _, isComplete, data ->
-                        if (data != null) {
-                            try {
-                                FileOutputStream(file, true).use { it.write(data) }
-                                if (isComplete) {
-                                    Log.i("DeviceNotify", "Thumbnail transfer complete: ${file.absolutePath} (${file.length()} bytes)")
-                                    if (isAiHijackEnabled) {
-                                        triggerAssistantImageQuery(file.absolutePath)
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Log.e("DeviceNotify", "Failed to write thumbnail chunk: ${e.message}")
+                    Log.i("DeviceNotify", "AI Photo Button Pressed")
+                    if (isAiHijackEnabled) {
+                        runOnUiThread {
+                            if (maybeShowGeminiChatGptImageRequirementsWarning()) {
+                                return@runOnUiThread
                             }
+                            handleGlassesImageButtonPressed(
+                                triggerCapture = false,
+                                sourceTag = "glasses_signal",
+                            )
                         }
                     }
                 }

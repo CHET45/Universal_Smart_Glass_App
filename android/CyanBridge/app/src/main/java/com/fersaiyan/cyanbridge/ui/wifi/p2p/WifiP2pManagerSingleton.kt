@@ -12,6 +12,8 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.heycyan.core.connectivity.p2p.WifiP2pConnectionState
+import com.heycyan.core.connectivity.p2p.WifiP2pRetryState
 import com.oudmon.ble.base.communication.LargeDataHandler
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -38,10 +40,8 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     private val discoveryTimeoutMs = 16_000L
     private val connectTimeoutMs = 15_000L
 
-    private var connected = false
-    private var connecting = false
-    private var connectRetry = 0
-    private var discoveryRetry = 0
+    private val connectionState = WifiP2pConnectionState()
+    private val retryState = WifiP2pRetryState(1, 1)
 
     private val intentFilter = IntentFilter().apply {
         addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
@@ -133,13 +133,13 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
         // Once we decide to connect, stop peer discovery timeout tracking.
         resetPeerDiscovery()
 
-        if (connecting) {
+        if (connectionState.isConnecting()) {
             Log.d(TAG, "P2P is connecting, no connection call back")
             callbacks.forEach { it.connecting() }
             return
         }
 
-        if (connected) {
+        if (connectionState.isConnected()) {
             Log.d(TAG, "P2P is already connected, return directly")
             return
         }
@@ -154,7 +154,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
             wps.setup = 0
         }
 
-        connecting = true
+        connectionState.setConnecting(true)
         Log.d(TAG, "Already connecting device: ${device.deviceName}---${device.deviceAddress}")
 
         wifiP2pManager.connect(wifiP2pChannel, config, object : WifiP2pManager.ActionListener {
@@ -165,7 +165,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
 
             override fun onFailure(reason: Int) {
                 Log.e(TAG, "Connect request failed: $reason")
-                connecting = false
+                connectionState.markConnectRequestFailed()
                 callbacks.forEach { it.onConnectRequestFailed(reason) }
             }
         })
@@ -209,10 +209,8 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     }
 
     fun resetFailCount() {
-        connectRetry = 0
-        discoveryRetry = 0
-        connecting = false
-        setConnect(false)
+        retryState.reset()
+        connectionState.reset()
         handler.removeCallbacks(discoveryTimeOut)
         handler.removeCallbacks(connectTimeOut)
     }
@@ -222,7 +220,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     }
 
     fun setConnect(connected: Boolean) {
-        this.connected = connected
+        connectionState.setConnected(connected)
     }
 
     fun requestPeers() {
@@ -306,15 +304,13 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     }
 
     internal fun onConnectionInfoAvailable(info: WifiP2pInfo) {
-        connecting = false
-        connected = info.groupFormed
+        connectionState.markConnectionInfoAvailable(info.groupFormed)
         handler.removeCallbacks(connectTimeOut)
         callbacks.forEach { it.onConnected(info) }
     }
 
     internal fun onDisconnected() {
-        connecting = false
-        connected = false
+        connectionState.markDisconnected()
         handler.removeCallbacks(connectTimeOut)
         callbacks.forEach { it.onDisconnected() }
     }
@@ -322,26 +318,24 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     // Timeout handlers
     private val discoveryTimeOut = object : Runnable {
         override fun run() {
-            Log.d(TAG, "Internal scan retry connection: $discoveryRetry")
-            if (discoveryRetry < 1) {
+            Log.d(TAG, "Internal scan retry connection: ${retryState.discoveryRetryCount()}")
+            if (retryState.shouldRetryDiscovery()) {
                 Log.d(TAG, "Internal scan retry connection once")
                 resetDeviceP2p()
                 initP2P()
                 startPeerDiscovery()
-                discoveryRetry++
             }
         }
     }
 
     private val connectTimeOut = object : Runnable {
         override fun run() {
-            connecting = false
-            if (connectRetry < 1) {
+            connectionState.setConnecting(false)
+            if (retryState.shouldRetryConnect()) {
                 wifiP2pDevice?.let { device ->
                     Log.d(TAG, "Internal connection retry connection once")
                     connectToDevice(device)
                 }
-                connectRetry++
             } else {
                 Log.d(TAG, "Do not reconnect, wait for external timeout")
                 callbacks.forEach { it.retryAlsoFailed() }
@@ -349,20 +343,5 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
         }
     }
 
-    interface WifiP2pCallback {
-        fun onWifiP2pEnabled()
-        fun onWifiP2pDisabled()
-        fun onPeersChanged(peers: Collection<WifiP2pDevice>)
-        fun onThisDeviceChanged(device: WifiP2pDevice)
-        fun onConnected(info: WifiP2pInfo)
-        fun onDisconnected()
-        fun onPeerDiscoveryStarted()
-        fun onPeerDiscoveryFailed(reason: Int)
-        fun onConnectRequestSent()
-        fun onConnectRequestFailed(reason: Int)
-        fun connecting()
-        fun cancelConnect()
-        fun cancelConnectFail(reason: Int)
-        fun retryAlsoFailed()
-    }
+    interface WifiP2pCallback : com.heycyan.core.connectivity.p2p.WifiP2pCallback
 }

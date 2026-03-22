@@ -12,6 +12,7 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.fersaiyan.cyanbridge.MainActivity
 import com.fersaiyan.cyanbridge.R
 
 class BatteryOptimizationGuideActivity : AppCompatActivity() {
@@ -40,7 +41,7 @@ class BatteryOptimizationGuideActivity : AppCompatActivity() {
             val ok = isBatteryOptimizationIgnored(this)
             if (ok) {
                 markCompleted(this)
-                finish()
+                navigateToNext()
             } else {
                 Toast.makeText(
                     this,
@@ -51,8 +52,30 @@ class BatteryOptimizationGuideActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btn_skip).setOnClickListener {
             suppressPermanently(this)
-            finish()
+            navigateToNext()
         }
+    }
+
+    private fun navigateToNext() {
+        // This app used to have a separate RAM/app-lock onboarding screen.
+        // We now consider onboarding complete after this guide to avoid leaving the user
+        // stuck on a blank/closed task when this activity is the task root.
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("onboarding_completed", true)
+            .apply()
+
+        // If this screen is the root of the task (e.g., launched from WelcomeActivity which finished),
+        // explicitly bring the user into the app's main screen instead of "exiting".
+        if (isTaskRoot) {
+            startActivity(
+                Intent(this, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                }
+            )
+        }
+
+        finish()
     }
 
     private fun openDisableBatteryOptimizationFlow() {

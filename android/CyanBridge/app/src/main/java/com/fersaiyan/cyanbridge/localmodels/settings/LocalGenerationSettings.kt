@@ -1,0 +1,96 @@
+package com.fersaiyan.cyanbridge.localmodels.settings
+
+import com.fersaiyan.cyanbridge.localmodels.catalog.LocalModelCatalogEntry
+
+enum class LocalModelPerformanceProfile(val label: String) {
+    FAST("Fast"),
+    BALANCED("Balanced"),
+    HIGH_QUALITY("High quality"),
+}
+
+enum class LocalComputeBackend(val label: String) {
+    CPU("CPU"),
+    GPU_EXPERIMENTAL("GPU (Experimental)"),
+}
+
+data class LocalGenerationSettings(
+    val profile: LocalModelPerformanceProfile,
+    val temperature: Double,
+    val topP: Double,
+    val topK: Int,
+    val maxTokens: Int,
+    val repetitionPenalty: Double,
+    val contextSize: Int,
+    val seed: Int,
+    val systemPromptOverride: String,
+    val templateOverrideId: String?,
+    val experimentalStructuredJson: Boolean,
+    val computeBackend: LocalComputeBackend,
+    val cpuThreads: Int,
+    val gpuLayers: Int,
+) {
+    companion object {
+        fun defaultCpuThreads(): Int {
+            return Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        }
+
+        fun defaultsFor(
+            entry: LocalModelCatalogEntry?,
+            profile: LocalModelPerformanceProfile,
+        ): LocalGenerationSettings {
+            val baseCtx = entry?.contextSizeDefault ?: 4096
+            return when (profile) {
+                LocalModelPerformanceProfile.FAST -> LocalGenerationSettings(
+                    profile = profile,
+                    temperature = 0.6,
+                    topP = 0.9,
+                    topK = 24,
+                    maxTokens = 220,
+                    repetitionPenalty = 1.05,
+                    contextSize = (baseCtx / 2).coerceAtLeast(2048),
+                    seed = -1,
+                    systemPromptOverride = "",
+                    templateOverrideId = null,
+                    experimentalStructuredJson = false,
+                    computeBackend = LocalComputeBackend.CPU,
+                    cpuThreads = defaultCpuThreads(),
+                    gpuLayers = -1,
+                )
+
+                LocalModelPerformanceProfile.BALANCED -> LocalGenerationSettings(
+                    profile = profile,
+                    temperature = 0.7,
+                    topP = 0.92,
+                    topK = 40,
+                    maxTokens = 320,
+                    repetitionPenalty = 1.1,
+                    contextSize = baseCtx,
+                    seed = -1,
+                    systemPromptOverride = "",
+                    templateOverrideId = null,
+                    experimentalStructuredJson = false,
+                    computeBackend = LocalComputeBackend.CPU,
+                    cpuThreads = defaultCpuThreads(),
+                    gpuLayers = -1,
+                )
+
+                LocalModelPerformanceProfile.HIGH_QUALITY -> LocalGenerationSettings(
+                    profile = profile,
+                    temperature = 0.75,
+                    topP = 0.95,
+                    topK = 64,
+                    maxTokens = 480,
+                    repetitionPenalty = 1.12,
+                    contextSize = (baseCtx + 1024).coerceAtMost(8192),
+                    seed = -1,
+                    systemPromptOverride = "",
+                    templateOverrideId = null,
+                    experimentalStructuredJson = false,
+                    computeBackend = LocalComputeBackend.CPU,
+                    cpuThreads = defaultCpuThreads(),
+                    gpuLayers = -1,
+                )
+            }
+        }
+    }
+}

@@ -1,5 +1,7 @@
 <resources>
     <string name="app_name">CyanBridge</string>
+    <string name="nav_transcriptions_recordings">Transcriptions
+&amp; recordings</string>
     <string name="text_1">Scan</string>
     <string name="text_2">Reconnect</string>
     <string name="text_3">Disconnect</string>
@@ -29,23 +31,34 @@
     <string name="battery_opt_open_app_info_button">Open App Info</string>
     <string name="battery_opt_lock_app_title">Also lock CyanBridge in Recents</string>
     <string name="battery_opt_lock_app_body">Open Recents, find CyanBridge, then use the app menu (often a long-press or tap the app icon) and choose Lock/Pin/Keep open. This prevents the system from clearing the app.</string>
-    <string name="battery_opt_done_button">I Disabled It</string>
+    <string name="battery_opt_done_button">I Locked It</string>
     <string name="battery_opt_skip_button">Don\'t show again</string>
-    <string name="battery_opt_still_on_toast">Battery optimization still appears to be ON. Please disable it, then tap \"I Disabled It\" again.</string>
+    <string name="battery_opt_still_on_toast">Battery optimization still appears to be ON. Please disable it, then tap "I Locked It" again.</string>
     <string name="battery_opt_not_supported">Battery optimization settings are not available on this Android version.</string>
     <string name="battery_opt_cant_open_settings">Could not open settings on this device.</string>
 
-    <!-- Privacy settings -->
-    <string name="privacy_settings_title">Privacy Settings</string>
-    <string name="privacy_settings_section_title">PRIVACY</string>
-    <string name="privacy_settings_transcript_storage">Transcript storage</string>
-    <string name="privacy_settings_transcript_storage_desc">Store transcripts locally for later review. Off by default.</string>
-    <string name="privacy_settings_redaction">Redaction</string>
-    <string name="privacy_settings_redaction_desc">Redact sensitive information before saving or sharing transcripts (when supported).</string>
+    <string name="welcome_title">Welcome to CyanBridge</string>
+    <string name="welcome_body">Let\'s get you set up with your smart glasses. We need to configure a few things to ensure a stable connection.</string>
+    <string name="welcome_button">Start Setup</string>
+    <string name="app_lock_guide_title">Prevent RAM Cleanup</string>
+    <string name="app_lock_guide_body">Android often closes apps running in the background to save RAM. To avoid disconnections, please \"Lock\" CyanBridge in your Recents menu.</string>
+    <string name="app_lock_guide_instructions">1. Swipe up from the bottom (or tap the Square button) to see recent apps.\n2. Find CyanBridge.\n3. Tap the icon at the top or long-press the preview.\n4. Select \"Lock this app\" or the Lock icon.</string>
+    <string name="app_lock_guide_button">Finish Setup</string>
 
-    <string name="privacy_settings_clear_section_title">LOCAL DATA</string>
-    <string name="privacy_settings_clear_local_data">Clear local data</string>
-    <string name="privacy_settings_clear_local_data_desc">Clears app-local cache and stored transcripts (if present). Does not delete photos/videos saved to your Gallery.</string>
+    <!-- Local agent automation (AccessibilityService) -->
+    <string name="local_agent_accessibility_service_label">Local Agent Automation</string>
+    <string name="local_agent_accessibility_service_description">Enables on-device automation primitives (read screen text, click, scroll, back/home) for the local agent.</string>
 
-    <string name="open_privacy_settings">Privacy Settings</string>
+    <!-- Legacy/compat: kept for code added by local-agent-service worktree -->
+    <string name="local_agent_accessibility_description">Local agent screen observer (MVP)</string>
+    <!-- Chat deletion -->
+    <string name="delete_chat_title">Delete Chat</string>
+    <string name="delete_chat_message">Delete \"%s\"? This cannot be undone.</string>
+    <string name="chat_deleted">Chat deleted</string>
+    <string name="open_synced_media">View synced photos and videos</string>
+    <string name="synced_media_title">Synced photos and videos</string>
+    <string name="synced_media_folder_hint">Showing files from: %1$s</string>
+    <string name="synced_media_empty">No synced photos or videos found yet.</string>
+    <string name="synced_media_open_failed">Unable to open this media item.</string>
+    <string name="synced_media_video_badge">VIDEO</string>
 </resources>

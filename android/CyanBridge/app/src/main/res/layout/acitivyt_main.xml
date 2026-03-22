@@ -1,12 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout 
+<androidx.constraintlayout.widget.ConstraintLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg_dark"
-    android:padding="16dp">
+    android:padding="16dp"
+    android:fitsSystemWindows="true">
+
+    <!-- Meeting capture banner (visible while recording) -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/meeting_recording_banner"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        app:cardBackgroundColor="@color/danger"
+        app:cardCornerRadius="12dp"
+        app:cardElevation="4dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="12dp">
+
+            <TextView
+                android:id="@+id/tv_meeting_banner"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Recording active"
+                android:textColor="@color/bg_dark"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btn_meeting_banner_stop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Stop"
+                android:backgroundTint="@color/bg_dark"
+                android:textColor="@color/danger" />
+        </LinearLayout>
+
+    </com.google.android.material.card.MaterialCardView>
 
     <!-- HEADER: Status Dashboard -->
     <androidx.cardview.widget.CardView
@@ -16,7 +56,9 @@
         app:cardBackgroundColor="@color/card_bg"
         app:cardCornerRadius="12dp"
         app:cardElevation="4dp"
-        app:layout_constraintTop_toTopOf="parent">
+        app:layout_constraintTop_toBottomOf="@id/meeting_recording_banner"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -24,14 +66,29 @@
             android:orientation="vertical"
             android:padding="16dp">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="GLASSES STATUS"
-                android:textColor="@color/cyan_accent"
-                android:textStyle="bold"
-                android:textSize="12sp"
-                android:letterSpacing="0.1"/>
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="GLASSES STATUS"
+                    android:textColor="@color/cyan_accent"
+                    android:textStyle="bold"
+                    android:textSize="12sp"
+                    android:letterSpacing="0.1"/>
+
+                <ImageView
+                    android:layout_width="96dp"
+                    android:layout_height="32dp"
+                    android:src="@null"
+                    android:adjustViewBounds="true"
+                    android:scaleType="fitCenter" />
+            </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -39,29 +96,93 @@
                 android:layout_marginTop="8dp"
                 android:orientation="horizontal">
 
-                <TextView
-                    android:id="@+id/status_text"
+                <LinearLayout
                     android:layout_width="0dp"
-                    android:layout_weight="1"
                     android:layout_height="wrap_content"
-                    android:text="Disconnected"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="18sp"/>
+                    android:layout_weight="1"
+                    android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/battery_text"
+                    <TextView
+                        android:id="@+id/status_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Disconnected"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="18sp"/>
+
+                    <TextView
+                        android:id="@+id/tv_device_class"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Class: Unknown"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="14sp"
+                        android:layout_marginTop="4dp"/>
+
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/layout_status_metrics"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="--%"
-                    android:textColor="@color/text_primary"
-                    android:textSize="18sp"
-                    android:textStyle="bold"/>
+                    android:orientation="vertical"
+                    android:gravity="end"
+                    android:layout_gravity="center_vertical">
+
+                    <LinearLayout
+                        android:id="@+id/layout_battery"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Battery: "
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/battery_text"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--%"
+                            android:textColor="@color/text_primary"
+                            android:textSize="18sp"
+                            android:textStyle="bold"/>
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/layout_storage"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Storage: "
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/storage_text"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--"
+                            android:textColor="@color/text_primary"
+                            android:textSize="12sp"/>
+                    </LinearLayout>
+
+                </LinearLayout>
+
             </LinearLayout>
         </LinearLayout>
     </androidx.cardview.widget.CardView>
 
     <!-- Transfer progress (P2P sync) -->
-    <androidx.cardview.widget.CardView
+    <com.google.android.material.card.MaterialCardView
         android:id="@+id/card_transfer_progress"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
@@ -119,15 +240,19 @@
 
         </LinearLayout>
 
-    </androidx.cardview.widget.CardView>
+    </com.google.android.material.card.MaterialCardView>
 
     <!-- SCROLLABLE CONTENT -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginTop="16dp"
+        android:scrollbars="vertical"
+        android:fadeScrollbars="false"
         app:layout_constraintTop_toBottomOf="@id/card_transfer_progress"
-        app:layout_constraintBottom_toBottomOf="parent">
+        app:layout_constraintBottom_toTopOf="@id/bottom_navigation"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -169,7 +294,7 @@
                     android:backgroundTint="@color/card_bg"
                     android:textColor="@color/cyan_accent"/>
             </LinearLayout>
-            
+
             <Button
                 android:id="@+id/btn_disconnect"
                 android:layout_width="match_parent"
@@ -178,50 +303,16 @@
                 android:backgroundTint="@color/card_bg"
                 android:textColor="@color/danger"/>
 
-            <Button
-                android:id="@+id/btn_add_listener"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/text_11"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/purple_200"/>
-
-            <!-- SECTION: AI ASSISTANT HIJACK -->
+            <!-- SECTION: MEETING CAPTURE -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="AI ASSISTANT HIJACK"
+                android:text="MEETING CAPTURE"
                 android:textColor="@color/cyan_accent"
                 android:textStyle="bold"
                 android:textSize="12sp"
                 android:layout_marginTop="16dp"
-                android:layout_marginBottom="8dp"/>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <CheckBox
-                    android:id="@+id/cb_hijack_enabled"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="wrap_content"
-                    android:text="Enable Hijack"
-                    android:textColor="@color/text_primary"
-                    android:checked="true"
-                    android:buttonTint="@color/cyan_accent"/>
-
-                <CheckBox
-                    android:id="@+id/cb_image_as_assistant"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="wrap_content"
-                    android:text="Direct Assistant"
-                    android:textColor="@color/text_primary"
-                    android:checked="true"
-                    android:buttonTint="@color/cyan_accent"/>
-            </LinearLayout>
+                android:layout_marginBottom="8dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -229,110 +320,26 @@
                 android:orientation="horizontal">
 
                 <Button
-                    android:id="@+id/btn_mode_gemini"
+                    android:id="@+id/btn_meeting_start"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Gemini"
-                    android:backgroundTint="@color/card_bg"
-                    android:textColor="@color/cyan_accent"/>
+                    android:text="Start"
+                    android:backgroundTint="@color/cyan_accent"
+                    android:textColor="@color/bg_dark" />
 
-                <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+                <Space
+                    android:layout_width="8dp"
+                    android:layout_height="wrap_content" />
 
                 <Button
-                    android:id="@+id/btn_mode_chatgpt"
+                    android:id="@+id/btn_meeting_stop"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="ChatGPT"
+                    android:text="Stop"
                     android:backgroundTint="@color/card_bg"
-                    android:textColor="@color/text_secondary"/>
-
-                <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
-
-                <Button
-                    android:id="@+id/btn_mode_tasker"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Tasker"
-                    android:backgroundTint="@color/card_bg"
-                    android:textColor="@color/text_secondary"/>
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/btn_privacy_settings"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/open_privacy_settings"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/cyan_accent"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-
-            <!-- SECTION: DEVICE INFO -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="DEVICE INFO"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="8dp"/>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
-                
-                <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content">
-                     <Button android:id="@+id/btn_battery" android:layout_weight="1" android:layout_width="0dp" android:layout_height="wrap_content" android:text="Battery" android:backgroundTint="@color/card_bg" android:textColor="@color/purple_200" style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-                     <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
-                     <Button android:id="@+id/btn_version" android:layout_weight="1" android:layout_width="0dp" android:layout_height="wrap_content" android:text="Version" android:backgroundTint="@color/card_bg" android:textColor="@color/purple_200" style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-                </LinearLayout>
-
-                <LinearLayout android:orientation="horizontal" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp">
-                     <Button android:id="@+id/btn_set_time" android:layout_weight="1" android:layout_width="0dp" android:layout_height="wrap_content" android:text="Sync Time" android:backgroundTint="@color/card_bg" android:textColor="@color/purple_200" style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-                     <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
-                     <Button android:id="@+id/btn_volume" android:layout_weight="1" android:layout_width="0dp" android:layout_height="wrap_content" android:text="Volume" android:backgroundTint="@color/card_bg" android:textColor="@color/purple_200" style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- SECTION: CAMERA & MEDIA -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="MEDIA CONTROLS"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp"
-                android:layout_marginTop="16dp"
-                android:layout_marginBottom="8dp"/>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <!-- Using a layout weight strategy for a grid look -->
-                <Button
-                    android:id="@+id/btn_camera"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="60dp"
-                    android:text="Photo"
-                    android:backgroundTint="@color/card_bg"
-                    android:textColor="@color/purple_200"/>
-
-                <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
-
-                <Button
-                    android:id="@+id/btn_video"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
-                    android:layout_height="60dp"
-                    android:text="Video"
-                    android:backgroundTint="@color/card_bg"
-                    android:textColor="@color/purple_200"/>
+                    android:textColor="@color/danger" />
             </LinearLayout>
 
             <LinearLayout
@@ -341,108 +348,446 @@
                 android:orientation="horizontal"
                 android:layout_marginTop="8dp">
 
-                <Button
-                    android:id="@+id/btn_record"
-                    android:layout_width="0dp"
-                    android:layout_weight="1"
+                <TextView
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Audio"
-                    android:backgroundTint="@color/card_bg"
-                    android:textColor="@color/purple_200"/>
+                    android:text="Timer:"
+                    android:textColor="@color/text_secondary"
+                    android:layout_gravity="center_vertical" />
 
-                <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+                <Spinner
+                    android:id="@+id/spinner_meeting_timer"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp" />
+            </LinearLayout>
 
-            <Button
-                android:id="@+id/btn_media_count"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="Count"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/purple_200"/>
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <Button
-                android:id="@+id/btn_test_hijack_voice"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="Test Voice Hijack"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/cyan_accent"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-
-            <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
-
-            <Button
-                android:id="@+id/btn_test_hijack_image"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="Test Image Hijack"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/cyan_accent"
-                style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
-        </LinearLayout>
-
-            <Button
-                android:id="@+id/btn_data_download"
+            <TextView
+                android:id="@+id/tv_meeting_source"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Sync Data (P2P)"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/purple_200"
-                android:layout_marginTop="8dp"/>
+                android:text="Source: (not recording)"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp"
+                android:layout_marginTop="4dp" />
 
-            <!-- Extra Dev Tools -->
-            <TextView
-                android:layout_width="wrap_content"
+            <!-- Notes & Summaries button removed (moved to Transcriptions & recordings section) -->
+
+            <!-- Recordings + transcription controls moved to "Transcriptions & recordings" section -->
+
+
+            <!-- SECTION: HEY_CYAN EXTRAS (capability gated) -->
+            <LinearLayout
+                android:id="@+id/layout_heycyan_extras"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="DEV TOOLS"
+                android:orientation="vertical">
+
+                <!-- SECTION: AI ASSISTANT -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="AI ASSISTANT"
+                    android:textColor="@color/cyan_accent"
+                    android:textStyle="bold"
+                    android:textSize="12sp"
+                    android:layout_marginTop="16dp"
+                    android:layout_marginBottom="8dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <CheckBox
+                        android:id="@+id/cb_hijack_enabled"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:text="Enable Hijack"
+                        android:textColor="@color/text_primary"
+                        android:checked="true"
+                        android:visibility="gone"
+                        android:buttonTint="@color/cyan_accent"/>
+
+                    <CheckBox
+                        android:id="@+id/cb_image_as_assistant"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:text="Direct Assistant"
+                        android:textColor="@color/text_primary"
+                        android:checked="true"
+                        android:visibility="gone"
+                        android:buttonTint="@color/cyan_accent"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_mode_gemini"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Gemini"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/cyan_accent"/>
+
+                    <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                    <Button
+                        android:id="@+id/btn_mode_chatgpt"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="ChatGPT"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/text_secondary"/>
+
+                    <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                    <Button
+                        android:id="@+id/btn_mode_tasker"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Chosen Provider"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/text_secondary"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="8dp">
+
+                    <Button
+                        android:id="@+id/btn_test_hijack_voice"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:text="Test AI Voice Question"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/cyan_accent"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                    <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                    <Button
+                        android:id="@+id/btn_test_hijack_image"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:text="Test Image AI description"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/cyan_accent"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+                </LinearLayout>
+
+                <!-- SECTION: CAMERA & MEDIA -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="MEDIA CONTROLS"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="16dp"
+                    android:layout_marginBottom="8dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_camera"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="60dp"
+                        android:text="Photo"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/purple_200"/>
+
+                    <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                    <Button
+                        android:id="@+id/btn_video"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="60dp"
+                        android:text="Video"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/purple_200"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="8dp">
+
+                    <Button
+                        android:id="@+id/btn_record"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:text="Audio"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/purple_200"/>
+
+                    <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                    <Button
+                        android:id="@+id/btn_media_count"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:layout_height="wrap_content"
+                        android:text="Count"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/purple_200"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_data_download"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Sync Data (P2P)"
+                    android:backgroundTint="@color/card_bg"
+                    android:textColor="@color/purple_200"
+                    android:layout_marginTop="8dp"/>
+
+                <!-- SECTION: ADVANCED TOGGLE -->
+                <Button
+                    android:id="@+id/btn_toggle_advanced"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Advanced ▼"
+                    android:backgroundTint="@android:color/transparent"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginTop="16dp"
+                    style="@style/Widget.MaterialComponents.Button.TextButton" />
+
+                <!-- COLLAPSIBLE ADVANCED CONTAINER -->
+                <LinearLayout
+                    android:id="@+id/layout_advanced_container"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                <!-- SECTION: LOCAL AGENT -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="LOCAL AGENT"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="16dp"
+                    android:layout_marginBottom="8dp"/>
+
+                <TextView
+                    android:id="@+id/tv_agent_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Status: Unknown"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp"/>
+
+                <TextView
+                    android:id="@+id/tv_agent_last_error"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Last error: (none)"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="8dp">
+
+                    <Button
+                        android:id="@+id/btn_agent_start"
+                        android:layout_weight="1"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:text="Start"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/purple_200"/>
+
+                    <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                    <Button
+                        android:id="@+id/btn_agent_stop"
+                        android:layout_weight="1"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:text="Stop"
+                        android:backgroundTint="@color/danger"
+                        android:textColor="@color/bg_dark"/>
+
+                    <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                    <Button
+                        android:id="@+id/btn_agent_demo"
+                        android:layout_weight="1"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:text="Demo"
+                        android:backgroundTint="@color/card_bg"
+                        android:textColor="@color/purple_200"/>
+                </LinearLayout>
+
+                <!-- SECTION: DEVICE INFO -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="DEVICE INFO"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:layout_marginTop="16dp"
+                    android:layout_marginBottom="8dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:orientation="horizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+
+                        <Button
+                            android:id="@+id/btn_battery"
+                            android:layout_weight="1"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:text="Battery"
+                            android:backgroundTint="@color/card_bg"
+                            android:textColor="@color/purple_200"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                        <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                        <Button
+                            android:id="@+id/btn_version"
+                            android:layout_weight="1"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:text="Version"
+                            android:backgroundTint="@color/card_bg"
+                            android:textColor="@color/purple_200"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:orientation="horizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp">
+
+                        <Button
+                            android:id="@+id/btn_set_time"
+                            android:layout_weight="1"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:text="Sync Time"
+                            android:backgroundTint="@color/card_bg"
+                            android:textColor="@color/purple_200"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                        <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
+
+                        <Button
+                            android:id="@+id/btn_volume"
+                            android:layout_weight="1"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:text="Volume"
+                            android:backgroundTint="@color/card_bg"
+                            android:textColor="@color/purple_200"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Extra Dev Tools -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="DEV TOOLS"
                     android:textColor="@color/text_secondary"
                     android:textSize="10sp"
                     android:layout_marginTop="16dp"
                     android:layout_marginBottom="4dp"/>
 
-            <Button
-                android:id="@+id/btn_bt"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/text_10"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/purple_200"
-                android:enabled="false"
-                android:alpha="0.5"
-                style="@style/Widget.MaterialComponents.Button.TextButton"/>
+                <Button
+                    android:id="@+id/btn_add_listener"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/text_11"
+                    android:backgroundTint="@color/card_bg"
+                    android:textColor="@color/purple_200"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"/>
 
-            <Button
-                android:id="@+id/btn_ota_info"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/text_16"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/purple_200"
-                android:enabled="false"
-                android:alpha="0.5"
-                style="@style/Widget.MaterialComponents.Button.TextButton"/>
+                <Button
+                    android:id="@+id/btn_bt"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/text_10"
+                    android:backgroundTint="@color/card_bg"
+                    android:textColor="@color/purple_200"
+                    android:enabled="false"
+                    android:alpha="0.5"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"/>
 
-            <Button
-                android:id="@+id/btn_pull_ota_test"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/text_17"
-                android:backgroundTint="@color/card_bg"
-                android:textColor="@color/purple_200"
-                android:enabled="false"
-                android:alpha="0.5"
-                style="@style/Widget.MaterialComponents.Button.TextButton"/>
+                <Button
+                    android:id="@+id/btn_ota_info"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/text_16"
+                    android:backgroundTint="@color/card_bg"
+                    android:textColor="@color/purple_200"
+                    android:enabled="false"
+                    android:alpha="0.5"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"/>
+
+                <Button
+                    android:id="@+id/btn_pull_ota_test"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/text_17"
+                    android:backgroundTint="@color/card_bg"
+                    android:textColor="@color/purple_200"
+                    android:enabled="false"
+                    android:alpha="0.5"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"/>
+
+                </LinearLayout>
+
+            </LinearLayout>
 
         </LinearLayout>
     </ScrollView>
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottom_navigation"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="@color/card_bg"
+        app:itemIconTint="@color/bottom_nav_item"
+        app:itemTextColor="@color/bottom_nav_item"
+        app:menu="@menu/bottom_nav_menu"
+        app:labelVisibilityMode="labeled"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -10,6 +10,12 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Meeting capture (microphone) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
     <!-- Storage -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission
@@ -31,9 +37,16 @@
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" tools:targetApi="33" />
 
 
+    <!-- Allow listing all installed packages (sideload/dev builds). Not Play-friendly. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- Android 13+ runtime notification permission -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_USER_PRESENT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
@@ -49,29 +62,178 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.CyanBridge"
+        android:theme="@style/Theme.CyanBridgeManager"
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="31">
+        <uses-native-library
+            android:name="libvulkan.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+
         <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:label="@string/app_name">
+            android:name=".ui.WelcomeActivity"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+        </activity>
+
+        <!-- AppLockGuideActivity removed (redundant onboarding screen) -->
+
         <activity
             android:name=".ui.BatteryOptimizationGuideActivity"
             android:exported="false"
             android:label="@string/battery_opt_title" />
+
+        <activity
+            android:name=".ui.DeviceBindActivity" />
+        <activity
+            android:name=".ui.ChatListActivity"
+            android:exported="false"
+            android:label="Chats" />
+
+        <activity
+            android:name=".ui.ChatThreadActivity"
+            android:exported="false"
+            android:label="Chat" />
+
         <activity
             android:name=".ui.SettingsActivity"
             android:exported="false"
-            android:label="@string/privacy_settings_title" />
-        <activity android:name=".ui.DeviceBindActivity" />
+            android:label="Settings" />
+
+        <activity
+            android:name=".ui.CommunityPluginsActivity"
+            android:exported="false"
+            android:label="Community Plugins" />
+
+        <activity
+            android:name=".ui.localagent.PendingActionsActivity"
+            android:exported="false"
+            android:label="Pending actions" />
+
+        <activity
+            android:name=".ui.localagent.AppBlacklistActivity"
+            android:exported="false"
+            android:label="Blacklist apps" />
+
+        <activity
+            android:name=".ui.localagent.DailyFactsActivity"
+            android:exported="false"
+            android:label="Daily facts" />
+
+        <activity
+            android:name=".ui.localagent.ScreenCapturesActivity"
+            android:exported="false"
+            android:label="Screen captures" />
+
+        <activity
+            android:name=".ui.localagent.DailySummaryActivity"
+            android:exported="false"
+            android:label="Daily summary" />
+
+        <activity
+            android:name=".ui.debug.TranscriptionDebugActivity"
+            android:exported="false"
+            android:label="Transcription Debug" />
+
+        <activity
+            android:name=".ui.notes.NotesListActivity"
+            android:exported="false"
+            android:label="Notes" />
+
+        <activity
+            android:name=".ui.notes.NoteDetailActivity"
+            android:exported="false"
+            android:label="Note" />
+
+        <activity
+            android:name=".ui.recordings.RecordingsListActivity"
+            android:exported="false"
+            android:label="Recordings" />
+
+        <activity
+            android:name=".ui.recordings.SyncedMediaGalleryActivity"
+            android:exported="false"
+            android:label="Synced photos and videos" />
+
+        <!-- Pro subscription configuration activities -->
+        <activity
+            android:name=".agent.ProSubscriptionActivity"
+            android:exported="false"
+            android:label="Pro Subscription" />
+
+        <activity
+            android:name=".agent.WebSubscriptionCallbackActivity"
+            android:exported="true"
+            android:label="Subscription Callback"
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:scheme="fersaiyan"
+                    android:host="pro-sub"
+                    android:path="/callback" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".agent.ProSubscriptionSettingsActivity"
+            android:exported="false"
+            android:label="Pro Subscription Settings" />
+        <activity
+            android:name=".agent.LocalModelsConfigureActivity"
+            android:exported="false"
+            android:label="Configure Local Models" />
+
+        <!-- Duplicate activity declarations removed -->
+
+        <service
+            android:name=".localagent.accessibility.LocalAgentAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false"
+            android:label="@string/local_agent_accessibility_service_label">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <service
+            android:name=".audio.MeetingCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <service
+            android:name=".localagent.LocalAgentService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".media.autocapture.AutoAudioCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".localagent.daily.DailyFactsReminderReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
