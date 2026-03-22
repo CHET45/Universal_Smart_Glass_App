@@ -39,3 +39,6 @@ node_modules/
 *.safetensors
 app/src/main/assets/models/
 app/src/main/ml/
+
+# Termux server docs (local only)
+TERMUX_SSH_TAILSCALE_RUNBOOK.md
