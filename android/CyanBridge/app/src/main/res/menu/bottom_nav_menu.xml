@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/nav_chats"
+        android:icon="@android:drawable/ic_dialog_email"
+        android:title="Chats" />
+
+    <item
+        android:id="@+id/nav_glasses"
+        android:icon="@drawable/ic_nav_glasses"
+        android:title="Glasses" />
+
+    <item
+        android:id="@+id/nav_transcriptions_recordings"
+        android:icon="@android:drawable/ic_menu_slideshow"
+        android:title="@string/nav_transcriptions_recordings" />
+
+    <item
+        android:id="@+id/nav_settings"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:title="Settings" />
+
+    <item
+        android:id="@+id/nav_community_plugins"
+        android:icon="@drawable/ic_nav_plugins"
+        android:title="Plugins" />
+</menu>
