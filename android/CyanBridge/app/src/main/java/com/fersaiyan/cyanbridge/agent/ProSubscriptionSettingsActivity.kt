@@ -14,6 +14,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
 import com.google.android.material.button.MaterialButton
 import com.fersaiyan.cyanbridge.R
 import kotlin.concurrent.thread
@@ -24,13 +25,22 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
         getSharedPreferences("pro_subscription_settings", MODE_PRIVATE)
     }
 
-    @Volatile
-    private var activityAlive = false
+    private val isInForeground get() = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+
+    private inline fun runSafeOnUiThread(crossinline block: () -> Unit) {
+        if (!isInForeground) return
+        runOnUiThread {
+            try {
+                block()
+            } catch (_: Throwable) {
+                // Activity may have been destroyed while handler executed
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_pro_subscription_settings)
-        activityAlive = true
 
         if (!ProSubscriptionPrefs.isActiveLocally(this)) {
             Toast.makeText(this, "No active Pro plan found.", Toast.LENGTH_SHORT).show()
@@ -262,8 +272,8 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
             setButtonBusy(btnRefreshQuota, true, "Refreshing...", "Refresh quota")
             thread {
                 val result = ProSubscriptionRelayClient.fetchQuota(this, model)
-                if (!activityAlive) return@thread
-                runOnUiThread {
+                if (!isInForeground) return@thread
+                runSafeOnUiThread {
                     setButtonBusy(btnRefreshQuota, false, "Refreshing...", "Refresh quota")
                     result.onSuccess { quota ->
                         val limitText = if (quota.limit > 0) quota.limit.toString() else "unknown"
@@ -304,8 +314,8 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
             setButtonBusy(btnRefreshAccount, true, "Refreshing...", "Refresh account")
             thread {
                 val result = ProSubscriptionRelayClient.fetchAccountInfo(this)
-                if (!activityAlive) return@thread
-                runOnUiThread {
+                if (!isInForeground) return@thread
+                runSafeOnUiThread {
                     setButtonBusy(btnRefreshAccount, false, "Refreshing...", "Refresh account")
                     result.onSuccess { account ->
                         if (account.email.isNotBlank()) {
@@ -332,8 +342,8 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
             setButtonBusy(btnRefreshModels, true, "Loading...", "Refresh models")
             thread {
                 val result = ProSubscriptionRelayClient.fetchAvailableModels(this)
-                if (!activityAlive) return@thread
-                runOnUiThread {
+                if (!isInForeground) return@thread
+                runSafeOnUiThread {
                     setButtonBusy(btnRefreshModels, false, "Loading...", "Refresh models")
                     result.onSuccess { models ->
                         if (models.isEmpty()) {
@@ -393,8 +403,8 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
             Toast.makeText(this, "Checking subscription status…", Toast.LENGTH_SHORT).show()
             thread {
                 val result = ProSubscriptionVerifier.verifyNow(this)
-                if (!activityAlive) return@thread
-                runOnUiThread {
+                if (!isInForeground) return@thread
+                runSafeOnUiThread {
                     it.isEnabled = true
                     it.alpha = 1f
                     refreshPlanDetails()
@@ -424,8 +434,8 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
             tvBetaCloudStatus.text = "Sending your beta cloud signup..."
             thread {
                 val result = ProSubscriptionRelayClient.registerBetaCloudInterest(this)
-                if (!activityAlive) return@thread
-                runOnUiThread {
+                if (!isInForeground) return@thread
+                runSafeOnUiThread {
                     setButtonBusy(btnJoinBetaCloud, false, "Submitting...", "Sign up for beta cloud")
                     result.onSuccess { signup ->
                         val countSuffix = signup.interestedCount?.let { " Current interested users: $it." } ?: ""
@@ -463,11 +473,6 @@ class ProSubscriptionSettingsActivity : AppCompatActivity() {
         }
 
         backButton.setOnClickListener { finish() }
-    }
-
-    override fun onDestroy() {
-        activityAlive = false
-        super.onDestroy()
     }
 
     private fun showChangePlanDialog() {
