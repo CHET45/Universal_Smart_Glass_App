@@ -38,7 +38,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     private val callbacks = CopyOnWriteArrayList<WifiP2pCallback>()
 
     private val discoveryTimeoutMs = 16_000L
-    private val connectTimeoutMs = 15_000L
+    private val connectTimeoutMs = 5_000L
 
     private val connectionState = WifiP2pConnectionState()
     private val retryState = WifiP2pRetryState(1, 1)
@@ -144,7 +144,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
             return
         }
 
-        // Arm internal connect timeout (vendor app uses ~15s).
+        // Arm internal connect timeout (vendor app uses ~5s).
         handler.postDelayed(connectTimeOut, connectTimeoutMs)
 
         wifiP2pDevice = device
@@ -214,6 +214,9 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
         handler.removeCallbacks(discoveryTimeOut)
         handler.removeCallbacks(connectTimeOut)
     }
+
+    fun isConnecting(): Boolean = connectionState.isConnecting()
+    fun isConnected(): Boolean = connectionState.isConnected()
 
     fun resetPeerDiscovery() {
         handler.removeCallbacks(discoveryTimeOut)
