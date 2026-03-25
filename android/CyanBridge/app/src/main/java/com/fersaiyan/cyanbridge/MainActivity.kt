@@ -1090,8 +1090,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         return when (AutomationPrefs.getProviderType(this)) {
             AgentProviderType.TASKER -> AI_MODE_TASKER
-            AgentProviderType.PRO_SUBSCRIPTION,
-            AgentProviderType.LOCAL_AGENT -> AI_MODE_GEMINI
+            AgentProviderType.PRO_SUBSCRIPTION -> AI_MODE_CHOSEN_PROVIDER
+            AgentProviderType.LOCAL_AGENT -> AI_MODE_CHOSEN_PROVIDER
         }
     }
 
@@ -1375,6 +1375,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         visionReply
                     } else if (visionReply.isBlank()) {
                         "I couldn't analyze that image right now. Please try again."
+                    } else if (looksLikeVisionFailed(visionReply)) {
+                        // The relay server received the filename but couldn't process the image.
+                        Log.w("AIHijack", "Vision relay couldn't process image. Reply: ${visionReply.take(100)}")
+                        "The vision server received the image but couldn't analyze it. Make sure the Termux server has a vision-capable model configured and the image-query endpoint is fully implemented."
                     } else {
                         val leadPrompt = userQuestion?.trim().takeUnless { it.isNullOrBlank() }
                             ?: "Describe and translate to English the following picture if it isn't in English."
@@ -1392,8 +1396,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
                 }
 
-                AgentProviderType.LOCAL_AGENT ->
-                    "Image queries are not available for Local Models on mobile yet."
+                AgentProviderType.LOCAL_AGENT -> {
+                    val modelName = try {
+                        val selected = com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository.resolveSelectedModel(this@MainActivity)
+                        selected?.catalogId ?: "unknown"
+                    } catch (_: Exception) { "current" }
+                    Log.w("AIHijack", "Image query attempted with local model '$modelName' which does not support vision")
+                    "Image queries require a vision-capable model. The current local model '$modelName' is text-only and cannot analyze images. Please switch to Pro Subscription in AI/Automation settings to use image queries, or use Gemini or ChatGPT mode."
+                }
 
                 AgentProviderType.TASKER -> {
                     val visionReply = CliRelayClient.imageQuery(this@MainActivity, imagePath)
@@ -1443,6 +1453,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val gotChunk = java.util.concurrent.atomic.AtomicBoolean(false)
         val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val imageProcessed = java.util.concurrent.atomic.AtomicBoolean(false)
 
         val thumbCallback: (Int, Boolean, ByteArray?) -> Unit = { _, isComplete, data ->
             if (data != null && data.isNotEmpty()) {
@@ -1456,7 +1467,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             if (isComplete && completed.compareAndSet(false, true)) {
                 Log.i("AIHijack", "[$sourceTag] Thumbnail transfer complete: ${file.absolutePath} (${file.length()} bytes)")
-                onImageThumbnailReadyForQuestion(file.absolutePath)
+                if (imageProcessed.compareAndSet(false, true)) {
+                    onImageThumbnailReadyForQuestion(file.absolutePath)
+                }
             }
         }
 
@@ -1482,31 +1495,100 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             delay(8000)
             if (!completed.get()) {
-                runOnUiThread {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "No thumbnail received from glasses.",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    speak("I didn't receive an image thumbnail from the glasses.")
+                // BLE thumbnail transfer timed out. Try to find a recent image already
+                // on the phone (e.g. from a previous capture or from the media download flow).
+                if (imageProcessed.compareAndSet(false, true)) {
+                    val fallbackImage = findLatestGlassesAiImage()
+                    if (fallbackImage != null) {
+                        Log.i("AIHijack", "[$sourceTag] BLE thumbnail timed out, using latest public image: $fallbackImage")
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "Using latest captured image.", Toast.LENGTH_SHORT).show()
+                        }
+                        onImageThumbnailReadyForQuestion(fallbackImage)
+                    } else {
+                        runOnUiThread {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "No thumbnail received from glasses.",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                            speak("I didn't receive an image thumbnail from the glasses.")
+                        }
+                    }
                 }
             }
         }
     }
 
     private fun onImageThumbnailReadyForQuestion(imagePath: String) {
-        runOnUiThread {
-            Toast.makeText(
-                this@MainActivity,
-                "Thumbnail received. Ask your image question now.",
-                Toast.LENGTH_SHORT,
-            ).show()
-        }
+        CoroutineScope(Dispatchers.IO).launch {
+            // Copy BLE-received thumbnail to public DCIM/Camera so both Tasker and
+            // cloud services can access it. Do this BEFORE querying to ensure file exists.
+            val publicPath = copyImageToPublicCamera(imagePath)
+            val resolvedPath = findLatestGlassesAiImage() ?: publicPath ?: imagePath
 
-        CoroutineScope(Dispatchers.Main).launch {
-            val spokenQuestion = captureOptionalImageQuestionFromBluetoothMic(timeoutMs = 3_000L)
-            triggerAssistantImageQuery(imagePath, spokenQuestion)
+            Log.i("AIHijack", "Image resolved for AI query: $resolvedPath (size=${File(resolvedPath).length()} bytes)")
+
+            withContext(Dispatchers.Main) {
+                val spokenQuestion = captureOptionalImageQuestionFromBluetoothMic(timeoutMs = 3_000L)
+                triggerAssistantImageQuery(resolvedPath, spokenQuestion)
+            }
         }
+    }
+
+    /**
+     * Copy an image file to DCIM/Camera/ with the Glasses_AI_ naming convention.
+     * Returns the public file path on success, null on failure.
+     */
+    private fun copyImageToPublicCamera(sourcePath: String): String? {
+        val source = File(sourcePath)
+        if (!source.exists() || source.length() == 0L) {
+            Log.w("AIHijack", "Source image missing or empty: $sourcePath")
+            return null
+        }
+        return try {
+            val publicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+            val cameraDir = File(publicDir, "Camera")
+            if (!cameraDir.exists()) cameraDir.mkdirs()
+            val publicFile = File(cameraDir, "Glasses_AI_${System.currentTimeMillis()}.jpg")
+            source.copyTo(publicFile, overwrite = true)
+            // Scan so MediaStore / Tasker file picker can see it immediately
+            MediaScannerConnection.scanFile(this, arrayOf(publicFile.absolutePath), arrayOf("image/jpeg")) { _, _ ->
+                Log.i("AIHijack", "Scanned to gallery: ${publicFile.absolutePath} (${publicFile.length()} bytes)")
+            }
+            Log.i("AIHijack", "Copied thumbnail to public: ${publicFile.absolutePath}")
+            publicFile.absolutePath
+        } catch (e: Exception) {
+            Log.e("AIHijack", "Failed to copy image to public DCIM: ${e.message}")
+            null
+        }
+    }
+
+    /** Find the most recent Glasses_AI_*.jpg in DCIM/Camera/. */
+    private fun findLatestGlassesAiImage(): String? {
+        return try {
+            val cameraDir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+                "Camera"
+            )
+            if (!cameraDir.isDirectory) return null
+            cameraDir.listFiles { f ->
+                f.isFile && f.name.startsWith("Glasses_AI_") && f.name.endsWith(".jpg", ignoreCase = true)
+            }
+                ?.filter { it.length() > 0 }
+                ?.maxByOrNull { it.lastModified() }
+                ?.absolutePath
+        } catch (_: Exception) { null }
+    }
+
+    /** Detect when the vision model couldn't actually see the image (server-side issue). */
+    private fun looksLikeVisionFailed(reply: String): Boolean {
+        val lower = reply.lowercase()
+        return lower.contains("upload") && lower.contains("image") ||
+            lower.contains("please provide the image") ||
+            lower.contains("i can't see") ||
+            lower.contains("no image") && lower.contains("provided") ||
+            lower.contains("attach") && lower.contains("image")
     }
 
     private suspend fun captureOptionalImageQuestionFromBluetoothMic(timeoutMs: Long): String? {
@@ -1746,10 +1828,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         // Spike branch feature: CLI Relay AI provider (hosted Gemini/Codex via HTTP).
-        val relayProvider = AiProviderPrefs.getProvider(this)
-        if (relayProvider == RelayProviderType.CLI_RELAY) {
-            triggerCliRelayVoiceQuery()
-            return
+        // Only route through CLI relay when NOT in Gemini/ChatGPT mode (those use native apps).
+        if (effectiveMode != AI_MODE_GEMINI && effectiveMode != AI_MODE_CHATGPT) {
+            val relayProvider = AiProviderPrefs.getProvider(this)
+            if (relayProvider == RelayProviderType.CLI_RELAY) {
+                triggerCliRelayVoiceQuery()
+                return
+            }
         }
 
         if (effectiveMode == AI_MODE_TASKER) {
@@ -1773,8 +1858,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 if (effectiveMode == AI_MODE_CHATGPT) {
-                    // Try to target ChatGPT specifically if possible, 
-                    // otherwise default assistant will handle it if user set it to ChatGPT
                     setPackage("com.openai.chatgpt")
                 }
             }
@@ -1789,9 +1872,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun triggerAssistantImageQuery(imagePath: String, userQuestion: String? = null) {
         val selectedProvider = AutomationPrefs.getProviderType(this)
+        val isChosenProviderMode = aiAssistantMode == AI_MODE_CHOSEN_PROVIDER
+
+        // Route ChosenProvider with memory-aware providers
         val useChosenProviderMemoryAware =
-            aiAssistantMode == AI_MODE_CHOSEN_PROVIDER &&
-                selectedProvider == AgentProviderType.PRO_SUBSCRIPTION
+            isChosenProviderMode &&
+                (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION ||
+                    selectedProvider == AgentProviderType.LOCAL_AGENT)
         if (useChosenProviderMemoryAware) {
             triggerMemoryAwareImageQuery(imagePath, selectedProvider, userQuestion)
             return
