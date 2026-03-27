@@ -11,6 +11,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.fersaiyan.cyanbridge.MainActivity
 import com.fersaiyan.cyanbridge.R
+import com.fersaiyan.cyanbridge.ai.router.AiProviderPrefs
 import com.fersaiyan.cyanbridge.chat.ChatRole
 import com.fersaiyan.cyanbridge.chat.ChatStore
 import com.fersaiyan.cyanbridge.databinding.ActivityCommunityPluginsBinding
@@ -192,7 +193,7 @@ class CommunityPluginsActivity : AppCompatActivity() {
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val relayUrl = "http://177.95.92.150:48787"
+                val relayUrl = AiProviderPrefs.getRelayBaseUrl(this@CommunityPluginsActivity)
                 val url = "$relayUrl/plugins"
 
                 val client = java.net.URL(url)
@@ -216,7 +217,7 @@ class CommunityPluginsActivity : AppCompatActivity() {
                 connection.disconnect()
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@CommunityPluginsActivity, "Server unreachable. Using cached plugins. Error: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@CommunityPluginsActivity, "Server unavailable. Using cached plugins.", Toast.LENGTH_LONG).show()
                 }
             }
         }

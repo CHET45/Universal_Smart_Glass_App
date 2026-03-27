@@ -12,6 +12,7 @@ import android.widget.ArrayAdapter
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.fersaiyan.cyanbridge.agent.AgentProviderType
 import com.fersaiyan.cyanbridge.agent.LocalAgentPrefs as AutomationPrefs
+import com.fersaiyan.cyanbridge.ui.VersionUpdateChecker
 import com.fersaiyan.cyanbridge.localagent.LocalAgentController
 import com.fersaiyan.cyanbridge.localagent.LocalAgentIntents
 import com.fersaiyan.cyanbridge.localagent.LocalAgentPrefs
@@ -290,6 +291,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         setupAgentControlsUi()
         // Transcription UI moved to the "Transcriptions & recordings" section
         logLargeDataHandlerMethodsOnce()
+        // Check for app updates
+        VersionUpdateChecker.checkForUpdates(this)
         // Initialize TTS
         tts = TextToSpeech(this, this)
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {

@@ -34,6 +34,8 @@ class ProSubscriptionActivity : AppCompatActivity() {
     private lateinit var rbMax: RadioButton
     private lateinit var cardWebCheckout: View
     private lateinit var btnSubscribeWeb: MaterialButton
+    private lateinit var cardUnsubscribe: View
+    private lateinit var btnUnsubscribe: MaterialButton
     private var billing: PlayBillingManager? = null
     private var lastBillingError: String = ""
 
@@ -49,6 +51,8 @@ class ProSubscriptionActivity : AppCompatActivity() {
         rbMax = findViewById(R.id.rb_max)
         cardWebCheckout = findViewById(R.id.card_web_checkout)
         btnSubscribeWeb = findViewById(R.id.btn_subscribe_web)
+        cardUnsubscribe = findViewById(R.id.card_unsubscribe)
+        btnUnsubscribe = findViewById(R.id.btn_unsubscribe)
 
         val btnSubscribe: MaterialButton = findViewById(R.id.btn_subscribe)
         val btnCancel: MaterialButton = findViewById(R.id.btn_cancel)
@@ -69,16 +73,11 @@ class ProSubscriptionActivity : AppCompatActivity() {
         }
 
         btnDonate.setOnClickListener {
-            val url = BuildConfig.DONATION_URL.trim()
-            if (url.isBlank()) {
-                Toast.makeText(this, "Donation link not configured yet.", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            runCatching {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-            }.onFailure {
-                Toast.makeText(this, "Unable to open donation link", Toast.LENGTH_SHORT).show()
-            }
+            showStripeDonationDialog()
+        }
+
+        btnUnsubscribe.setOnClickListener {
+            showUnsubscribeConfirmation()
         }
 
         btnSubscribe.setOnClickListener {
@@ -426,6 +425,62 @@ class ProSubscriptionActivity : AppCompatActivity() {
             "✓ Active on $plan plan · source=$provider"
         } else {
             "Not subscribed · ${status.message}"
+        }
+
+        cardUnsubscribe.visibility = if (status.active) View.VISIBLE else View.GONE
+    }
+
+    private fun showStripeDonationDialog() {
+        val amounts = arrayOf("$2", "$5", "$10", "$20")
+        AlertDialog.Builder(this)
+            .setTitle("Select Donation Amount")
+            .setItems(amounts) { _, which ->
+                val amount = amounts[which]
+                openStripeDonation(amount)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openStripeDonation(amount: String) {
+        try {
+            // Stripe payment link - user needs to configure their own Stripe account
+            // Format: https://buy.stripe.com/your_payment_link_id
+            // Replace this with your actual Stripe payment link after creating it in Stripe dashboard
+            val stripePaymentLink = "https://buy.stripe.com/test_donation_link"
+            val amountCents = when (amount) {
+                "$2" -> "200"
+                "$5" -> "500"
+                "$10" -> "1000"
+                "$20" -> "2000"
+                else -> "500"
+            }
+            val stripeUrl = "$stripePaymentLink?amount=$amountCents"
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(stripeUrl)))
+            Toast.makeText(this, "Opening Stripe donation...", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Unable to open donation page. Stripe payment link not configured.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun showUnsubscribeConfirmation() {
+        AlertDialog.Builder(this)
+            .setTitle("Cancel Subscription?")
+            .setMessage("Are you sure you want to cancel your subscription? You'll keep access until the end of your current billing period.")
+            .setPositiveButton("Yes, Cancel") { _, _ ->
+                performUnsubscribe()
+            }
+            .setNegativeButton("No, Keep It", null)
+            .show()
+    }
+
+    private fun performUnsubscribe() {
+        Toast.makeText(this, "Opening subscription management...", Toast.LENGTH_SHORT).show()
+        try {
+            val manageUrl = "https://billing.stripe.com/p/login/test_manage_link"
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(manageUrl)))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Unable to open subscription management", Toast.LENGTH_SHORT).show()
         }
     }
 

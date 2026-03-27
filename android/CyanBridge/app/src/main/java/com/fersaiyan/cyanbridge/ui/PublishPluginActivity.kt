@@ -5,6 +5,7 @@ import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.fersaiyan.cyanbridge.R
+import com.fersaiyan.cyanbridge.ai.router.AiProviderPrefs
 import com.fersaiyan.cyanbridge.databinding.ActivityPublishPluginBinding
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -122,7 +123,7 @@ class PublishPluginActivity : AppCompatActivity() {
                     binding.btnPublish.text = "Submit Plugin"
                     Toast.makeText(
                         this@PublishPluginActivity,
-                        "Error: ${e.message}. The Termux server may be unreachable.",
+                        "Server unavailable. Please try again later.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -132,7 +133,7 @@ class PublishPluginActivity : AppCompatActivity() {
 
     private suspend fun submitPluginToServer(pluginData: Map<String, String>): Boolean {
         return try {
-            val relayUrl = "http://177.95.92.150:48787"
+            val relayUrl = AiProviderPrefs.getRelayBaseUrl(this@PublishPluginActivity)
             val url = "$relayUrl/plugins/submit"
 
             val client = java.net.URL(url)
