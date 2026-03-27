@@ -247,6 +247,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var downloadWifiP2pManager: WifiP2pManagerSingleton? = null
     private var downloadWifiP2pCallback: WifiP2pManagerSingleton.WifiP2pCallback? = null
 
+    // Guard against concurrent/duplicate image queries
+    private val imageQueryInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var lastImageQueryAtMs: Long = 0L
+
     // Official app registers the notify listener with cmdType=2 for album import.
     // Keep our main listener (cmdType=100) for general events, and add a narrow
     // one for the download flow so we don't duplicate thumbnail/audio handling.
@@ -1361,64 +1365,90 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         Log.i("AIHijack", "Running memory-aware image query for chosen provider $providerType: $imagePath")
 
         CoroutineScope(Dispatchers.IO).launch {
-            val finalReply = when (providerType) {
-                AgentProviderType.PRO_SUBSCRIPTION -> {
-                    val visionReply = CliRelayClient.imageQuery(
-                        context = this@MainActivity,
-                        imagePath = imagePath,
-                        modelOverride = ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity),
-                    )
-                        .getOrElse { "Image query unavailable: ${it.message ?: "unknown error"}" }
-                        .trim()
-
-                    if (visionReply.startsWith("Image query unavailable:")) {
-                        visionReply
-                    } else if (visionReply.isBlank()) {
-                        "I couldn't analyze that image right now. Please try again."
-                    } else if (looksLikeVisionFailed(visionReply)) {
-                        // The relay server received the filename but couldn't process the image.
-                        Log.w("AIHijack", "Vision relay couldn't process image. Reply: ${visionReply.take(100)}")
-                        "The vision server received the image but couldn't analyze it. Make sure the Termux server has a vision-capable model configured and the image-query endpoint is fully implemented."
-                    } else {
-                        val leadPrompt = userQuestion?.trim().takeUnless { it.isNullOrBlank() }
-                            ?: "Describe and translate to English the following picture if it isn't in English."
-                        val followUpPrompt = buildString {
-                            appendLine(leadPrompt)
-                            appendLine("Use this vision observation:")
-                            appendLine(visionReply.take(1400))
-                            appendLine()
-                            appendLine("Keep the final answer concise (1-3 short sentences).")
-                        }
-                        runMemoryAwareChosenProviderQuery(
-                            userPrompt = followUpPrompt,
-                            providerType = AgentProviderType.PRO_SUBSCRIPTION,
+            try {
+                val finalReply = when (providerType) {
+                    AgentProviderType.PRO_SUBSCRIPTION -> {
+                        val visionResult = CliRelayClient.imageQuery(
+                            context = this@MainActivity,
+                            imagePath = imagePath,
+                            modelOverride = ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity),
                         )
+
+                        if (visionResult.isFailure) {
+                            val errorMsg = visionResult.exceptionOrNull()?.message ?: "unknown error"
+                            Log.e("AIHijack", "Image query failed: $errorMsg")
+                            runOnUiThread {
+                                Toast.makeText(this@MainActivity, "Vision error: ${errorMsg.take(80)}", Toast.LENGTH_LONG).show()
+                            }
+                            "I couldn't analyze the image. Please try again."
+                        } else {
+                            val visionReply = visionResult.getOrNull()?.trim() ?: ""
+                            if (visionReply.isBlank()) {
+                                "I couldn't analyze that image right now. Please try again."
+                            } else if (looksLikeVisionFailed(visionReply)) {
+                                Log.w("AIHijack", "Vision relay couldn't process image. Reply: ${visionReply.take(100)}")
+                                runOnUiThread {
+                                    Toast.makeText(this@MainActivity, "Vision model couldn't process image", Toast.LENGTH_LONG).show()
+                                }
+                                "I couldn't analyze the image. Please try again."
+                            } else {
+                                val leadPrompt = userQuestion?.trim().takeUnless { it.isNullOrBlank() }
+                                    ?: "Describe and translate to English the following picture if it isn't in English."
+                                val followUpPrompt = buildString {
+                                    appendLine(leadPrompt)
+                                    appendLine("Use this vision observation:")
+                                    appendLine(visionReply.take(1400))
+                                    appendLine()
+                                    appendLine("Keep the final answer concise (1-3 short sentences).")
+                                }
+                                runMemoryAwareChosenProviderQuery(
+                                    userPrompt = followUpPrompt,
+                                    providerType = AgentProviderType.PRO_SUBSCRIPTION,
+                                )
+                                null // Don't speak here - follow-up query will handle it
+                            }
+                        }
+                    }
+
+                    AgentProviderType.LOCAL_AGENT -> {
+                        val modelName = try {
+                            val selected = com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository.resolveSelectedModel(this@MainActivity)
+                            selected?.catalogId ?: "unknown"
+                        } catch (_: Exception) { "current" }
+                        Log.w("AIHijack", "Image query attempted with local model '$modelName' which does not support vision")
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "Local models don't support vision. Switch to Pro in settings.", Toast.LENGTH_LONG).show()
+                        }
+                        "Image queries need a vision-capable model. Switch to Pro Subscription in AI settings."
+                    }
+
+                    AgentProviderType.TASKER -> {
+                        val visionResult = CliRelayClient.imageQuery(this@MainActivity, imagePath)
+                        if (visionResult.isFailure) {
+                            val errorMsg = visionResult.exceptionOrNull()?.message ?: "unknown error"
+                            Log.e("AIHijack", "Image query failed: $errorMsg")
+                            runOnUiThread {
+                                Toast.makeText(this@MainActivity, "Vision error: ${errorMsg.take(80)}", Toast.LENGTH_LONG).show()
+                            }
+                            "I couldn't analyze the image. Please try again."
+                        } else {
+                            val visionReply = visionResult.getOrNull()?.trim() ?: ""
+                            if (visionReply.isBlank()) {
+                                "I couldn't analyze that image right now. Please try again."
+                            } else {
+                                visionReply
+                            }
+                        }
                     }
                 }
 
-                AgentProviderType.LOCAL_AGENT -> {
-                    val modelName = try {
-                        val selected = com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository.resolveSelectedModel(this@MainActivity)
-                        selected?.catalogId ?: "unknown"
-                    } catch (_: Exception) { "current" }
-                    Log.w("AIHijack", "Image query attempted with local model '$modelName' which does not support vision")
-                    "Image queries require a vision-capable model. The current local model '$modelName' is text-only and cannot analyze images. Please switch to Pro Subscription in AI/Automation settings to use image queries, or use Gemini or ChatGPT mode."
-                }
-
-                AgentProviderType.TASKER -> {
-                    val visionReply = CliRelayClient.imageQuery(this@MainActivity, imagePath)
-                        .getOrElse { "Image query unavailable: ${it.message ?: "unknown error"}" }
-                        .trim()
-                    if (visionReply.isBlank()) {
-                        "I couldn't analyze that image right now. Please try again."
-                    } else {
-                        visionReply
+                if (finalReply != null) {
+                    runOnUiThread {
+                        speak(finalReply)
                     }
                 }
-            }
-
-            runOnUiThread {
-                speak(finalReply)
+            } finally {
+                imageQueryInProgress.set(false)
             }
         }
     }
@@ -1521,17 +1551,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun onImageThumbnailReadyForQuestion(imagePath: String) {
-        CoroutineScope(Dispatchers.IO).launch {
-            // Copy BLE-received thumbnail to public DCIM/Camera so both Tasker and
-            // cloud services can access it. Do this BEFORE querying to ensure file exists.
-            val publicPath = copyImageToPublicCamera(imagePath)
-            val resolvedPath = findLatestGlassesAiImage() ?: publicPath ?: imagePath
+        val imageFile = File(imagePath)
+        if (!imageFile.exists() || imageFile.length() < 1000) {
+            Log.e("AIHijack", "Image file missing or too small: $imagePath (${imageFile.length()} bytes)")
+            runOnUiThread {
+                Toast.makeText(this, "Image transfer incomplete. Please try again.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
 
-            Log.i("AIHijack", "Image resolved for AI query: $resolvedPath (size=${File(resolvedPath).length()} bytes)")
+        CoroutineScope(Dispatchers.IO).launch {
+            val publicPath = copyImageToPublicCamera(imagePath)
+
+            Log.i("AIHijack", "Image ready for AI query: $imagePath (size=${imageFile.length()} bytes)")
 
             withContext(Dispatchers.Main) {
                 val spokenQuestion = captureOptionalImageQuestionFromBluetoothMic(timeoutMs = 3_000L)
-                triggerAssistantImageQuery(resolvedPath, spokenQuestion)
+                triggerAssistantImageQuery(imagePath, spokenQuestion)
             }
         }
     }
@@ -1588,7 +1624,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             lower.contains("please provide the image") ||
             lower.contains("i can't see") ||
             lower.contains("no image") && lower.contains("provided") ||
-            lower.contains("attach") && lower.contains("image")
+            lower.contains("attach") && lower.contains("image") ||
+            lower.contains("invalid") && lower.contains("image") ||
+            lower.contains("does not represent a valid image") ||
+            lower.contains("image data") && lower.contains("invalid") ||
+            lower.contains("vision") && lower.contains("failed") ||
+            lower.contains("couldn't analyze") ||
+            lower.contains("openrouter_image_failed")
     }
 
     private suspend fun captureOptionalImageQuestionFromBluetoothMic(timeoutMs: Long): String? {
@@ -1871,6 +1913,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun triggerAssistantImageQuery(imagePath: String, userQuestion: String? = null) {
+        // Debounce: prevent duplicate requests within 5 seconds
+        val now = System.currentTimeMillis()
+        if (now - lastImageQueryAtMs < 5000) {
+            Log.w("AIHijack", "Image query debounced (last was ${now - lastImageQueryAtMs}ms ago)")
+            return
+        }
+        
+        // Guard against concurrent requests
+        if (!imageQueryInProgress.compareAndSet(false, true)) {
+            Log.w("AIHijack", "Image query already in progress, skipping")
+            return
+        }
+        
+        lastImageQueryAtMs = now
+        
         val selectedProvider = AutomationPrefs.getProviderType(this)
         val isChosenProviderMode = aiAssistantMode == AI_MODE_CHOSEN_PROVIDER
 
@@ -1889,21 +1946,37 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             Log.i("AIHijack", "Sending image query to CLI relay: $imagePath")
 
             CoroutineScope(Dispatchers.IO).launch {
-                val modelOverride = if (AutomationPrefs.getProviderType(this@MainActivity) == AgentProviderType.PRO_SUBSCRIPTION) {
-                    ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
-                } else {
-                    null
-                }
+                try {
+                    val modelOverride = if (AutomationPrefs.getProviderType(this@MainActivity) == AgentProviderType.PRO_SUBSCRIPTION) {
+                        ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
+                    } else {
+                        null
+                    }
 
-                val reply = CliRelayClient.imageQuery(
-                    context = this@MainActivity,
-                    imagePath = imagePath,
-                    modelOverride = modelOverride,
-                )
-                    .getOrElse { "Relay unavailable: ${it.message ?: "unknown error"}" }
+                    val result = CliRelayClient.imageQuery(
+                        context = this@MainActivity,
+                        imagePath = imagePath,
+                        modelOverride = modelOverride,
+                    )
 
-                runOnUiThread {
-                    speak(reply)
+                    runOnUiThread {
+                        if (result.isFailure) {
+                            val errorMsg = result.exceptionOrNull()?.message ?: "unknown error"
+                            Log.e("AIHijack", "Image query failed: $errorMsg")
+                            Toast.makeText(this@MainActivity, "Vision error: ${errorMsg.take(80)}", Toast.LENGTH_LONG).show()
+                            speak("I couldn't analyze the image. Please try again.")
+                        } else {
+                            val reply = result.getOrNull() ?: ""
+                            if (looksLikeVisionFailed(reply)) {
+                                Toast.makeText(this@MainActivity, "Vision model couldn't process image", Toast.LENGTH_LONG).show()
+                                speak("I couldn't analyze the image. Please try again.")
+                            } else {
+                                speak(reply)
+                            }
+                        }
+                    }
+                } finally {
+                    imageQueryInProgress.set(false)
                 }
             }
             return
@@ -1911,28 +1984,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         Log.i("AIHijack", "Redirecting Image Query to Tasker logic with $imagePath")
 
-        val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
-        val isLocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            keyguardManager.isDeviceLocked
-        } else {
-            keyguardManager.isKeyguardLocked
-        }
-
-        // Wake and dismiss keyguard only when needed
-        if (isLocked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-            keyguardManager.requestDismissKeyguard(this, null)
-        }
-
-        if (isLocked) {
-            speak("Unlock your phone to answer the image query")
-        }
-
-        // Stop glasses AI mode
-        LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x0b)) { _, _ -> }
-
         try {
+            val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+            val isLocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                keyguardManager.isDeviceLocked
+            } else {
+                keyguardManager.isKeyguardLocked
+            }
+
+            // Wake and dismiss keyguard only when needed
+            if (isLocked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+                keyguardManager.requestDismissKeyguard(this, null)
+            }
+
+            if (isLocked) {
+                speak("Unlock your phone to answer the image query")
+            }
+
+            // Stop glasses AI mode
+            LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x0b)) { _, _ -> }
+
             val file = File(imagePath)
             if (!file.exists()) {
                 Log.e("AIHijack", "Image file does not exist: $imagePath")
@@ -1957,6 +2030,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         } catch (e: Exception) {
             Log.e("AIHijack", "Failed to process image for Tasker: ${e.message}")
+        } finally {
+            imageQueryInProgress.set(false)
         }
     }
 

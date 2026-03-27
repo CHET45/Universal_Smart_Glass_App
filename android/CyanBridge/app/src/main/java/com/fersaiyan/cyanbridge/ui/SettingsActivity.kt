@@ -353,6 +353,148 @@ class SettingsActivity : AppCompatActivity() {
         syncLocalAgentAccessibilityStatus()
     }
 
+    private fun showLogSubmissionDialog() {
+        val issueTypes = arrayOf(
+            "P2P/WiFi sync issue",
+            "Image query failed",
+            "Voice command not working",
+            "BLE connection issue",
+            "App crash/ANR",
+            "Other/General"
+        )
+        var selectedType = issueTypes[0]
+
+        val input = android.widget.EditText(this).apply {
+            hint = "Describe what happened (optional)"
+            minLines = 3
+            setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_primary))
+            setHintTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_secondary))
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Send Debug Logs")
+            .setSingleChoiceItems(issueTypes, 0) { _, which ->
+                selectedType = issueTypes[which]
+            }
+            .setView(input)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Send") { _, _ ->
+                val description = input.text?.toString()?.trim()?.take(2000) ?: "No description"
+                submitDebugLogs(issueType = selectedType, description = description)
+            }
+            .show()
+    }
+
+    private fun submitDebugLogs(issueType: String, description: String) {
+        Toast.makeText(this, "Collecting logs…", Toast.LENGTH_SHORT).show()
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val logs = collectLogcat()
+                val deviceInfo = buildDeviceInfo()
+                val result = sendLogsToServer(
+                    context = this@SettingsActivity,
+                    issueType = issueType,
+                    description = description,
+                    logs = logs,
+                    deviceInfo = deviceInfo
+                )
+
+                withContext(Dispatchers.Main) {
+                    if (result.isSuccess) {
+                        Toast.makeText(
+                            this@SettingsActivity,
+                            "Logs sent successfully! Thank you for helping debug.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            this@SettingsActivity,
+                            "Failed to send logs: ${result.exceptionOrNull()?.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@SettingsActivity,
+                        "Error collecting logs: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun collectLogcat(): String {
+        return try {
+            val process = Runtime.getRuntime().exec(
+                "logcat -d -t 500 " +
+                    "-s AIHijack:* DataDownload:* DeviceNotify:* WifiP2pManagerSingleton:* " +
+                    "WifiP2pBroadcastReceiver:* BleIpBridge:* CliRelayRouter:* " +
+                    "LocalAgent:* ChatThreadActivity:* MainActivity:*"
+            )
+            process.inputStream.bufferedReader().use { it.readText() }.take(50000)
+        } catch (e: Exception) {
+            "Failed to collect logcat: ${e.message}"
+        }
+    }
+
+    private fun buildDeviceInfo(): String {
+        return buildString {
+            append("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}\n")
+            append("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})\n")
+            append("App: ${packageManager.getPackageInfo(packageName, 0).versionName}\n")
+            append("Provider: ${AutomationPrefs.getProviderType(this@SettingsActivity)}\n")
+            append("Relay: ${AiProviderPrefs.getRelayBaseUrl(this@SettingsActivity)}\n")
+        }
+    }
+
+    private suspend fun sendLogsToServer(
+        context: android.content.Context,
+        issueType: String,
+        description: String,
+        logs: String,
+        deviceInfo: String
+    ): Result<String> = runCatching {
+        val baseUrl = AiProviderPrefs.getRelayBaseUrl(context).trimEnd('/')
+        val url = java.net.URL("$baseUrl/logs/submit")
+        val token = com.fersaiyan.cyanbridge.agent.ProSubscriptionServerPrefs.getApiToken(context)
+
+        val payload = org.json.JSONObject()
+            .put("issue_type", issueType)
+            .put("description", description)
+            .put("logs", logs)
+            .put("device_info", deviceInfo)
+            .put("app_version", context.packageManager.getPackageInfo(context.packageName, 0).versionName)
+
+        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15000
+            readTimeout = 30000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            if (token.isNotBlank()) {
+                setRequestProperty("Authorization", "Bearer $token")
+            }
+        }
+
+        java.io.OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+        val code = conn.responseCode
+        val body = if (code in 200..299) {
+            java.io.BufferedReader(java.io.InputStreamReader(conn.inputStream)).use { it.readText() }
+        } else {
+            java.io.BufferedReader(java.io.InputStreamReader(conn.errorStream ?: conn.inputStream)).use { it.readText() }
+        }
+        conn.disconnect()
+
+        if (code !in 200..299) {
+            throw IllegalStateException("HTTP $code: ${body.take(200)}")
+        }
+        org.json.JSONObject(body).optString("log_id", "submitted")
+    }
+
     private fun refreshProSubscriptionBanner() {
         val subscribed = ProSubscriptionPrefs.isActiveLocally(this)
         val planRaw = ProSubscriptionPrefs.getPlan(this)

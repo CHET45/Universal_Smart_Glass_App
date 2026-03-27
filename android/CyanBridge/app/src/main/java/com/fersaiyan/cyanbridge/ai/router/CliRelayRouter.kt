@@ -191,23 +191,24 @@ object CliRelayClient {
 
         val file = File(imagePath)
         require(file.exists()) { "Image file not found: $imagePath" }
+        require(file.length() > 1000) { "Image file too small (${file.length()} bytes), likely corrupted" }
+        
         val imageBase64 = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
-        retry {
-            val response = postJson(
-                context,
-                endpoint(context, "/image-query"),
-                JSONObject()
-                    .put("backend", (backendOverride ?: AiProviderPrefs.getRelayBackend(context)).wire)
-                    .put("filename", file.name)
-                    .put("imageBase64", imageBase64)
-                    .apply {
-                        val model = modelOverride?.trim().orEmpty()
-                        if (model.isNotBlank()) put("model", model)
-                    }
-            )
-            response.optString("reply").ifBlank {
-                throw IllegalStateException("Relay returned empty image reply")
-            }
+        
+        val response = postJson(
+            context,
+            endpoint(context, "/image-query"),
+            JSONObject()
+                .put("backend", (backendOverride ?: AiProviderPrefs.getRelayBackend(context)).wire)
+                .put("filename", file.name)
+                .put("imageBase64", imageBase64)
+                .apply {
+                    val model = modelOverride?.trim().orEmpty()
+                    if (model.isNotBlank()) put("model", model)
+                }
+        )
+        response.optString("reply").ifBlank {
+            throw IllegalStateException("Relay returned empty image reply")
         }
     }
 
