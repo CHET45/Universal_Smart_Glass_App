@@ -124,6 +124,11 @@
             android:label="Community Plugins" />
 
         <activity
+            android:name=".ui.PublishPluginActivity"
+            android:exported="false"
+            android:label="Publish Plugin" />
+
+        <activity
             android:name=".ui.localagent.PendingActionsActivity"
             android:exported="false"
             android:label="Pending actions" />

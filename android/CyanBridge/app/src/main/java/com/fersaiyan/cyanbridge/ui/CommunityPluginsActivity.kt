@@ -1,7 +1,11 @@
 package com.fersaiyan.cyanbridge.ui
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -12,11 +16,16 @@ import com.fersaiyan.cyanbridge.chat.ChatStore
 import com.fersaiyan.cyanbridge.databinding.ActivityCommunityPluginsBinding
 import com.fersaiyan.cyanbridge.databinding.ItemCommunityPluginCardBinding
 import com.fersaiyan.cyanbridge.ui.recordings.RecordingsListActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class CommunityPluginsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCommunityPluginsBinding
+    private var serverPluginsLoaded = false
 
     private enum class TimeWindow {
         ALL_TIME,
@@ -156,11 +165,61 @@ class CommunityPluginsActivity : AppCompatActivity() {
         binding = ActivityCommunityPluginsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        setupToolbar()
         setupFilterControls()
         setupPublishFab()
         setupImageAutomationPluginCard()
         setupBottomNavigation()
         renderSections(TimeWindow.ALL_TIME)
+    }
+
+    private fun setupToolbar() {
+        binding.toolbar.setOnMenuItemClickListener { menuItem ->
+            when (menuItem.itemId) {
+                R.id.action_refresh -> {
+                    fetchPluginsFromServer()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun fetchPluginsFromServer() {
+        if (!serverPluginsLoaded) {
+            Toast.makeText(this, "Fetching plugins from server...", Toast.LENGTH_SHORT).show()
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val relayUrl = "http://177.95.92.150:48787"
+                val url = "$relayUrl/plugins"
+
+                val client = java.net.URL(url)
+                val connection = client.openConnection() as java.net.HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+
+                val responseCode = connection.responseCode
+                if (responseCode == 200) {
+                    val response = connection.inputStream.bufferedReader().readText()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@CommunityPluginsActivity, "Plugins refreshed from server!", Toast.LENGTH_SHORT).show()
+                        serverPluginsLoaded = true
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@CommunityPluginsActivity, "Server unreachable. Using cached plugins.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                connection.disconnect()
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@CommunityPluginsActivity, "Server unreachable. Using cached plugins. Error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -169,25 +228,66 @@ class CommunityPluginsActivity : AppCompatActivity() {
             binding.bottomNavigation.menu.findItem(R.id.nav_community_plugins).isChecked = true
         }
         refreshImageAutomationPluginStatus()
+
+        if (CommunityPluginPrefs.isImageAutomationBannerDismissed(this)) {
+            binding.cardPluginImageAutomation.visibility = android.view.View.GONE
+        }
     }
 
     private fun setupImageAutomationPluginCard() {
         binding.btnPluginImageAutomation.setOnClickListener {
-            val current = CommunityPluginPrefs.isGeminiChatGptImageAutomationEnabled(this)
-            CommunityPluginPrefs.setGeminiChatGptImageAutomationEnabled(this, !current)
-            refreshImageAutomationPluginStatus()
-
-            Toast.makeText(
-                this,
-                if (!current) {
-                    "Plugin marked as downloaded and enabled"
-                } else {
-                    "Plugin marked as disabled"
-                },
-                Toast.LENGTH_SHORT,
-            ).show()
+            showTaskerPluginPopup()
         }
+
+        binding.btnPluginImageAutomationDismiss.setOnClickListener {
+            showDismissConfirmation()
+        }
+
         refreshImageAutomationPluginStatus()
+    }
+
+    private fun showDismissConfirmation() {
+        AlertDialog.Builder(this)
+            .setTitle("Hide this banner?")
+            .setMessage("This will hide the Gemini/ChatGPT Image Questions Automation banner. You can re-enable it from Settings if needed.")
+            .setPositiveButton("Hide") { _, _ ->
+                CommunityPluginPrefs.setImageAutomationBannerDismissed(this, true)
+                binding.cardPluginImageAutomation.visibility = android.view.View.GONE
+                Toast.makeText(this, "Banner hidden", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showTaskerPluginPopup() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_tasker_plugin, null)
+        
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setCancelable(true)
+            .create()
+
+        dialogView.findViewById<android.widget.Button>(R.id.btn_download_tasker).setOnClickListener {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=net.dinglisch.android.taskerm")))
+            } catch (e: Exception) {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=net.dinglisch.android.taskerm")))
+            }
+        }
+
+        dialogView.findViewById<android.widget.Button>(R.id.btn_open_taskernet).setOnClickListener {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://taskernet.com/shares/?user=AS35m8m%2BZfcOI%2FAn4TYXwIRGXRuXzE9zXexYgafojsO%2FQSXgVbu8nOiYo%2BLhLj1izKWhtzdxI6eOvMI%3D&id=Profile%3ATasker+AI")))
+            } catch (e: Exception) {
+                Toast.makeText(this, "Could not open TaskerNet", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        dialogView.findViewById<android.widget.Button>(R.id.btn_close).setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
     }
 
     private fun refreshImageAutomationPluginStatus() {
@@ -212,17 +312,7 @@ class CommunityPluginsActivity : AppCompatActivity() {
 
     private fun setupPublishFab() {
         binding.fabPublishHelp.setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle("Publish your plugin")
-                .setMessage(
-                    "To list a plugin in Community Plugins, prepare:\n\n" +
-                        "1) A clear title\n" +
-                        "2) A short but complete description\n" +
-                        "3) A valid TaskerNet download link\n\n" +
-                        "Tip: include setup steps, required permissions, and sample voice commands."
-                )
-                .setPositiveButton(android.R.string.ok, null)
-                .show()
+            startActivity(Intent(this, PublishPluginActivity::class.java))
         }
     }
 
