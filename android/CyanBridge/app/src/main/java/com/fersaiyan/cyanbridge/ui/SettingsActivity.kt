@@ -159,13 +159,6 @@ class SettingsActivity : AppCompatActivity() {
             sectionName = "TRANSCRIPTS",
         )
         setupCollapsibleSection(
-            card = binding.cardRedaction,
-            header = binding.headerRedaction,
-            content = binding.contentRedaction,
-            icon = binding.iconExpandRedaction,
-            sectionName = "REDACTION",
-        )
-        setupCollapsibleSection(
             card = binding.cardData,
             header = binding.headerData,
             content = binding.contentData,
@@ -688,6 +681,8 @@ class SettingsActivity : AppCompatActivity() {
     private fun bindMemoryVaultSettings() {
         MemoryVaultBootstrap.ensureInitialized(this)
 
+        val isProSubscribed = ProSubscriptionPrefs.isActiveLocally(this)
+
         fun refreshUi() {
             val mode = MemoryModeManager.getSelectedMode(this)
             binding.tvMemoryModeCurrent.text = "Current mode: ${mode.title}"
@@ -706,6 +701,20 @@ class SettingsActivity : AppCompatActivity() {
                 MemoryPrivacyMode.CONFIDENTIAL_CLOUD_BETA -> binding.rbMemoryModeConfidentialCloud.isChecked = true
             }
             suppressMemoryModeToggle = false
+
+            binding.rbMemoryModeEncryptedSync.isEnabled = isProSubscribed
+            binding.rbMemoryModeFastCloud.isEnabled = isProSubscribed
+            binding.rbMemoryModeConfidentialCloud.isEnabled = isProSubscribed
+
+            if (!isProSubscribed) {
+                binding.rbMemoryModeEncryptedSync.alpha = 0.5f
+                binding.rbMemoryModeFastCloud.alpha = 0.5f
+                binding.rbMemoryModeConfidentialCloud.alpha = 0.5f
+            } else {
+                binding.rbMemoryModeEncryptedSync.alpha = 1.0f
+                binding.rbMemoryModeFastCloud.alpha = 1.0f
+                binding.rbMemoryModeConfidentialCloud.alpha = 1.0f
+            }
 
             binding.switchMemorySyncExplicit.isChecked =
                 MemoryModeManager.isSourceSyncEnabled(this, MemorySourceType.EXPLICIT_USER_FACT)

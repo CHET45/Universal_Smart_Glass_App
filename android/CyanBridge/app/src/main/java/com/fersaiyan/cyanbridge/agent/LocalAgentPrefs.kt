@@ -124,7 +124,7 @@ object LocalAgentPrefs {
 
     fun isDailyFactsReminderEnabled(context: Context): Boolean {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_DAILY_FACTS_REMINDER_ENABLED, false)
+            .getBoolean(KEY_DAILY_FACTS_REMINDER_ENABLED, true)
     }
 
     fun setDailyFactsReminderEnabled(context: Context, enabled: Boolean) {

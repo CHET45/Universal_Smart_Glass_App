@@ -51,6 +51,37 @@
 
     <!-- Legacy/compat: kept for code added by local-agent-service worktree -->
     <string name="local_agent_accessibility_description">Local agent screen observer (MVP)</string>
+
+    <!-- Onboarding: Daily Facts -->
+    <string name="onboarding_daily_facts_title">Daily Facts &amp; Diary</string>
+    <string name="onboarding_daily_facts_desc">Get a daily notification to review facts about your day, creating a personal diary.</string>
+    <string name="onboarding_daily_facts_details">Each evening, you\'ll receive a notification asking you to confirm facts about your day. This creates an automatic diary that helps the AI remember important events, people, and experiences. The more you use it, the more personalized your AI assistant becomes.</string>
+
+    <!-- Onboarding: Screen Capture -->
+    <string name="onboarding_screen_capture_title">Screen Memory</string>
+    <string name="onboarding_screen_capture_desc">Like Windows Recall - automatically capture and remember what\'s on your screen.</string>
+    <string name="onboarding_screen_capture_details">The app can periodically capture text from your screen to help the AI assist you better. You can blacklist sensitive apps like banking apps, password managers, and messaging apps. All captures are stored locally on your device.</string>
+
+    <!-- Onboarding: Audio Capture -->
+    <string name="onboarding_audio_capture_title">Continuous Audio Recording</string>
+    <string name="onboarding_audio_capture_desc">Automatically record audio from your glasses for transcription and daily summaries.</string>
+    <string name="onboarding_audio_capture_details">When enabled, the app records audio from your glasses in 30-minute chunks, then transcribes it for automatic diary/summary generation. You can review and delete recordings at any time. All audio stays on your device.</string>
+
+    <!-- Onboarding: Agent Personality -->
+    <string name="onboarding_agent_personality_title">Personalize Your AI</string>
+    <string name="onboarding_agent_personality_desc">Customize how the AI assistant behaves and what it knows about you.</string>
+    <string name="onboarding_agent_personality_details">You can customize the agent\'s personality (how it talks, its tone) and provide facts about yourself (your job, hobbies, family, preferences). This makes the AI more personal and helpful. You can edit these anytime in Settings.</string>
+
+    <!-- Onboarding: Local Storage -->
+    <string name="onboarding_local_storage_title">Your Data Stays on Your Device</string>
+    <string name="onboarding_local_storage_desc">All your data is encrypted and stored locally on your phone.</string>
+    <string name="onboarding_local_storage_details">Your chats, screen captures, recordings, and AI memories are encrypted using industry-standard encryption and stored only on your device. Future cloud sync options will be available with a Pro Subscription, allowing you to securely sync across devices. Cloud options are currently greyed out until you activate Pro.</string>
+
+    <!-- Onboarding: Pro Subscription -->
+    <string name="onboarding_pro_sub_title">Unlock Premium Features</string>
+    <string name="onboarding_pro_sub_desc">Optional cloud features for power users.</string>
+    <string name="onboarding_pro_sub_details">You can use the ENTIRE app completely FREE with local models running on your phone (Qwen 2.5 1.7B, Whisper for transcription, etc.). No internet required!\n\nPro Subscription is ONLY needed for:\n• Cloud AI models (API costs money)\n• Cloud memory sync across devices\n\n🔒 STEALTH MODE FIRMWARE (coming soon)\nThe upcoming Stealth Mode enables silent capture of audio, photos, and videos from your glasses. This requires a one-time payment of the Standard or Max Pro plan for the modded firmware flash. You can cancel your subscription afterward and keep Stealth Mode indefinitely!\n\n🎁 FREE TRIAL\nNew users get a free 1-month Pro trial (rate-limited among all free trial users). Cancel anytime.</string>
+
     <!-- Chat deletion -->
     <string name="delete_chat_title">Delete Chat</string>
     <string name="delete_chat_message">Delete \"%s\"? This cannot be undone.</string>
