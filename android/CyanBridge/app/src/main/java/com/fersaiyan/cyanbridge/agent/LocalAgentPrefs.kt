@@ -20,6 +20,7 @@ object LocalAgentPrefs {
     private const val KEY_CAPTURE_BLACKLIST = "capture_blacklist"
     private const val KEY_HIDE_SYSTEM_APPS = "hide_system_apps"
     private const val KEY_DAILY_FACTS_REMINDER_ENABLED = "daily_facts_reminder_enabled"
+    private const val KEY_DAILY_SUMMARY_AUTO_REFRESH_HOURS = "daily_summary_auto_refresh_hours"
 
     fun getProviderType(context: Context): AgentProviderType {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -131,6 +132,19 @@ object LocalAgentPrefs {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_DAILY_FACTS_REMINDER_ENABLED, enabled)
+            .apply()
+    }
+
+    fun getDailySummaryAutoRefreshHours(context: Context): Int {
+        val v = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_DAILY_SUMMARY_AUTO_REFRESH_HOURS, 3)
+        return v.coerceIn(1, 24)
+    }
+
+    fun setDailySummaryAutoRefreshHours(context: Context, hours: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_DAILY_SUMMARY_AUTO_REFRESH_HOURS, hours.coerceIn(1, 24))
             .apply()
     }
 }

@@ -75,13 +75,26 @@ class WebSubscriptionCallbackActivity : AppCompatActivity() {
             ProSubscriptionPrefs.setProvider(this, if (isActive) "web_checkout" else "web_checkout_expired")
             ProSubscriptionPrefs.setExpiresAt(this, finalExpiry)
             ProSubscriptionPrefs.setLastVerifiedAt(this, System.currentTimeMillis())
+
+            val routeNote = if (isActive) {
+                ProSubscriptionRoutingPolicy.actionNote(
+                    ProSubscriptionRoutingPolicy.applyAfterActivation(this),
+                )
+            } else {
+                ""
+            }
+
+            val finalMessage = when {
+                message.isNotBlank() && routeNote.isNotBlank() -> "$message · $routeNote"
+                message.isNotBlank() -> message
+                isActive && routeNote.isNotBlank() -> "Web subscription completed · $routeNote"
+                isActive -> "Web subscription completed"
+                else -> "Subscription is not active. Please renew to continue Pro access."
+            }
+
             return CallbackResult(
                 success = isActive,
-                message = when {
-                    message.isNotBlank() -> message
-                    isActive -> "Web subscription completed"
-                    else -> "Subscription is not active. Please renew to continue Pro access."
-                },
+                message = finalMessage,
             )
         }
 

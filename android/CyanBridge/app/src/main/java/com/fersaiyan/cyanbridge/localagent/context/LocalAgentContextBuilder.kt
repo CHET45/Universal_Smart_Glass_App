@@ -1,6 +1,7 @@
 package com.fersaiyan.cyanbridge.localagent.context
 
 import android.content.Context
+import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryPrefs
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
 import java.io.File
 import java.text.SimpleDateFormat
@@ -12,7 +13,7 @@ import java.util.Locale
  *
  * Context timing (normal chats):
  * - [com.fersaiyan.cyanbridge.ui.ChatThreadActivity.buildRelayMessages] will:
- *   1) keep the daily summary fresh (maybeGenerateDailySummaryIfStale)
+ *   1) optionally queue daily-summary regeneration in background
  *   2) optionally add retrieval hits (LocalAgentMemorySearch)
  *   3) call [buildSystemMessage] to inject a System prompt on every send
  *
@@ -109,9 +110,15 @@ class LocalAgentContextBuilder(
 
         val sections = mutableListOf<SectionItem>()
 
-        fun addFile(title: String, file: File, maxChars: Int) {
+        fun addFile(
+            title: String,
+            file: File,
+            maxChars: Int,
+            accept: (String) -> Boolean = { true },
+        ): Boolean {
             val loaded = LocalAgentMemoryStore.readText(file).trim()
-            if (loaded.isBlank()) return
+            if (loaded.isBlank()) return false
+            if (!accept(loaded)) return false
             val raw = if (loaded.length <= maxChars) loaded else loaded.take(maxChars)
             val truncated = loaded.length > raw.length
             sections += SectionItem(
@@ -125,6 +132,7 @@ class LocalAgentContextBuilder(
                     truncated = truncated,
                 ),
             )
+            return true
         }
 
         addFile(
@@ -145,12 +153,34 @@ class LocalAgentContextBuilder(
             maxChars = maxConfirmedDailyFactsChars,
         )
 
-        // Optional: may not exist yet.
-        addFile(
+        val todaySummaryAdded = addFile(
             title = "daily_summaries/$date.md",
             file = LocalAgentMemoryStore.dailySummaryFileForDate(context, date),
             maxChars = maxDailySummaryChars,
+            accept = { isMeaningfulDailySummary(it) },
         )
+
+        if (!todaySummaryAdded) {
+            val fallbackDate = LocalAgentMemoryStore.listDailySummaryDatesDesc(context)
+                .firstOrNull { candidateDate ->
+                    candidateDate != date &&
+                        DailySummaryPrefs.getLastGeneratedAtMs(context, candidateDate) > 0L &&
+                        isMeaningfulDailySummary(
+                            LocalAgentMemoryStore.readText(
+                                LocalAgentMemoryStore.dailySummaryFileForDate(context, candidateDate),
+                            ),
+                        )
+                }
+
+            if (fallbackDate != null) {
+                addFile(
+                    title = "daily_summaries/$fallbackDate.md (latest generated)",
+                    file = LocalAgentMemoryStore.dailySummaryFileForDate(context, fallbackDate),
+                    maxChars = maxDailySummaryChars,
+                    accept = { isMeaningfulDailySummary(it) },
+                )
+            }
+        }
 
         // Non-file sections (e.g., retrieval hits).
         val cleanExtra = extraSections.filter { it.content.isNotBlank() }
@@ -222,6 +252,13 @@ class LocalAgentContextBuilder(
     private fun todayDateString(tsMs: Long = System.currentTimeMillis()): String {
         val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         return fmt.format(Date(tsMs))
+    }
+
+    private fun isMeaningfulDailySummary(text: String): Boolean {
+        val clean = text.trim()
+        if (clean.isBlank()) return false
+        if (clean.contains("(Generate from Settings", ignoreCase = true)) return false
+        return true
     }
 
 }

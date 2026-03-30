@@ -100,6 +100,19 @@ object LocalAgentMemoryStore {
     fun dailySummaryFileForToday(context: Context): File =
         dailySummaryFileForDay(context, System.currentTimeMillis())
 
+    fun listDailySummaryDatesDesc(context: Context, limit: Int = 30): List<String> {
+        val files = dailySummariesDir(context).listFiles().orEmpty()
+        if (files.isEmpty()) return emptyList()
+
+        return files.asSequence()
+            .map { it.nameWithoutExtension.trim() }
+            .filter { it.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) }
+            .distinct()
+            .sortedDescending()
+            .take(limit.coerceIn(1, 365))
+            .toList()
+    }
+
     fun dailyFactsFileForDay(context: Context, tsMs: Long): File {
         return File(dailyFactsDir(context), "${dayString(tsMs)}.md")
     }

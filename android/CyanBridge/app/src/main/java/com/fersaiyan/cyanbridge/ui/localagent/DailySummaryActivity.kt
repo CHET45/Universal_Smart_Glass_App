@@ -2,16 +2,18 @@ package com.fersaiyan.cyanbridge.ui.localagent
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.fersaiyan.cyanbridge.databinding.ActivityDailySummaryBinding
 import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryGenerator
 import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryPrefs
+import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryRegenerateWorker
+import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryRunHistory
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -19,6 +21,7 @@ import java.util.Locale
 class DailySummaryActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityDailySummaryBinding
+    private val workManager by lazy { WorkManager.getInstance(this) }
 
     private val date: String by lazy {
         intent.getStringExtra(EXTRA_DATE)?.trim().orEmpty().ifBlank {
@@ -44,6 +47,7 @@ class DailySummaryActivity : AppCompatActivity() {
         binding.btnRegenerate.setOnClickListener { regenerate() }
 
         refreshFromDisk()
+        observeRegenerationWork()
     }
 
     private fun refreshFromDisk() {
@@ -64,6 +68,7 @@ class DailySummaryActivity : AppCompatActivity() {
         binding.btnRefresh.isEnabled = !busy
         binding.btnRegenerate.isEnabled = !busy
         binding.btnShare.isEnabled = !busy
+        binding.layoutProgress.visibility = if (busy) View.VISIBLE else View.GONE
     }
 
     private fun regenerate() {
@@ -75,28 +80,110 @@ class DailySummaryActivity : AppCompatActivity() {
         }
 
         setBusy(true)
+        val inputTokens = DailySummaryGenerator.estimateInputTokensForDate(this, date)
+        val estimate = DailySummaryRunHistory.estimate(
+            context = this,
+            providerHint = DailySummaryGenerator.providerHint(this),
+            inputTokens = inputTokens,
+        )
+
+        binding.progressSummary.progress = 1
+        binding.tvProgressTitle.text = "Regenerating daily summary (${estimate.provider})"
+        binding.tvProgressEta.text = formatEtaText(
+            etaMs = estimate.expectedTotalMs,
+            sampleCount = estimate.sampleCount,
+            stage = "Queued",
+        )
         binding.tvStatus.text = "Generating…"
-        Toast.makeText(this, "Generating daily summary…", Toast.LENGTH_SHORT).show()
 
-        CoroutineScope(Dispatchers.Main).launch {
-            val result = withContext(Dispatchers.IO) {
-                DailySummaryGenerator.generateAndStore(this@DailySummaryActivity, date)
+        val request = DailySummaryRegenerateWorker.buildRequest(date)
+        workManager.enqueueUniqueWork(
+            DailySummaryRegenerateWorker.uniqueWorkName(date),
+            ExistingWorkPolicy.REPLACE,
+            request,
+        )
+
+        Toast.makeText(this, "Generating daily summary in background…", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun observeRegenerationWork() {
+        workManager.getWorkInfosForUniqueWorkLiveData(
+            DailySummaryRegenerateWorker.uniqueWorkName(date),
+        ).observe(this) { infos ->
+            val info = infos.firstOrNull() ?: run {
+                setBusy(false)
+                return@observe
             }
-
-            if (result.isSuccess) {
-                refreshFromDisk()
-                Toast.makeText(this@DailySummaryActivity, "Daily summary saved", Toast.LENGTH_SHORT).show()
-            } else {
-                binding.tvStatus.text = "Generation failed"
-                Toast.makeText(
-                    this@DailySummaryActivity,
-                    "Failed: ${result.exceptionOrNull()?.message}",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-
-            setBusy(false)
+            renderWorkInfo(info)
         }
+    }
+
+    private fun renderWorkInfo(info: WorkInfo) {
+        when (info.state) {
+            WorkInfo.State.ENQUEUED,
+            WorkInfo.State.BLOCKED,
+            WorkInfo.State.RUNNING -> {
+                setBusy(true)
+                val percent = info.progress.getInt(DailySummaryRegenerateWorker.KEY_PROGRESS_PERCENT, 0)
+                    .coerceIn(0, 100)
+                val etaMs = info.progress.getLong(DailySummaryRegenerateWorker.KEY_ETA_MS, 0L)
+                val stage = info.progress.getString(DailySummaryRegenerateWorker.KEY_STAGE)
+                    ?.trim()
+                    .orEmpty()
+                    .ifBlank { "Generating summary" }
+                val provider = info.progress.getString(DailySummaryRegenerateWorker.KEY_PROVIDER)
+                    ?.trim()
+                    .orEmpty()
+                    .ifBlank { DailySummaryGenerator.providerHint(this) }
+                val sampleCount = info.progress.getInt(DailySummaryRegenerateWorker.KEY_SAMPLE_COUNT, 0)
+
+                binding.progressSummary.progress = percent
+                binding.tvProgressTitle.text = "Regenerating daily summary (${provider})"
+                binding.tvProgressEta.text = formatEtaText(etaMs, sampleCount, stage)
+                binding.tvStatus.text = if (percent > 0) {
+                    "Generating… $percent%"
+                } else {
+                    "Generating…"
+                }
+            }
+
+            WorkInfo.State.SUCCEEDED -> {
+                setBusy(false)
+                binding.progressSummary.progress = 100
+                binding.tvStatus.text = "Generation complete"
+                refreshFromDisk()
+                Toast.makeText(this, "Daily summary saved", Toast.LENGTH_SHORT).show()
+            }
+
+            WorkInfo.State.FAILED,
+            WorkInfo.State.CANCELLED -> {
+                setBusy(false)
+                binding.tvStatus.text = "Generation failed"
+                val error = info.outputData.getString(DailySummaryRegenerateWorker.KEY_ERROR)
+                    ?.trim()
+                    .orEmpty()
+                    .ifBlank { "Failed to regenerate summary" }
+                Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun formatEtaText(etaMs: Long, sampleCount: Int, stage: String): String {
+        val safeEta = etaMs.coerceAtLeast(0L)
+        val totalSeconds = (safeEta / 1000L).coerceAtLeast(0L)
+        val minutes = totalSeconds / 60L
+        val seconds = totalSeconds % 60L
+        val etaLabel = if (minutes > 0L) {
+            String.format(Locale.US, "%dm %02ds", minutes, seconds)
+        } else {
+            String.format(Locale.US, "%ds", seconds)
+        }
+        val sampleLabel = if (sampleCount > 0) {
+            "avg of last ${sampleCount.coerceAtMost(3)} runs"
+        } else {
+            "cold-start estimate"
+        }
+        return "$stage · ETA ~$etaLabel ($sampleLabel)"
     }
 
     private fun shareCurrent() {

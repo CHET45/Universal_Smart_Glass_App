@@ -95,7 +95,20 @@ object CliRelayQueue {
 
 object CliRelayClient {
     private const val CONNECT_TIMEOUT_MS = 7000
-    private const val READ_TIMEOUT_MS = 30000
+    private const val READ_TIMEOUT_MS = 120000
+
+    data class VoiceQueryTelemetry(
+        val inputTokens: Int,
+        val outputTokens: Int,
+        val promptTokensPerSec: Double,
+        val generationTokensPerSec: Double,
+        val totalMs: Long,
+    )
+
+    data class VoiceQueryDetails(
+        val reply: String,
+        val telemetry: VoiceQueryTelemetry,
+    )
 
     suspend fun healthCheck(context: Context): Result<String> = runCatching {
         retry(times = 2) {
@@ -153,6 +166,20 @@ object CliRelayClient {
         backendOverride: CliRelayBackend? = null,
         modelOverride: String? = null,
     ): Result<String> = runCatching {
+        voiceQueryDetailed(
+            context = context,
+            prompt = prompt,
+            backendOverride = backendOverride,
+            modelOverride = modelOverride,
+        ).getOrThrow().reply
+    }
+
+    suspend fun voiceQueryDetailed(
+        context: Context,
+        prompt: String,
+        backendOverride: CliRelayBackend? = null,
+        modelOverride: String? = null,
+    ): Result<VoiceQueryDetails> = runCatching {
         RelayServerCapabilitiesClient.get(context).getOrNull()?.let { caps ->
             if (!caps.voiceQuery) {
                 throw IllegalStateException("Server capability unavailable: voice_query")
@@ -160,6 +187,7 @@ object CliRelayClient {
         }
 
         retry {
+            val started = System.currentTimeMillis()
             val response = postJson(
                 context,
                 endpoint(context, "/voice-query"),
@@ -171,9 +199,20 @@ object CliRelayClient {
                         if (model.isNotBlank()) put("model", model)
                     }
             )
-            response.optString("reply").ifBlank {
+            val elapsedMs = (System.currentTimeMillis() - started).coerceAtLeast(1L)
+            val reply = response.optString("reply").ifBlank {
                 throw IllegalStateException("Relay returned empty voice reply")
             }
+
+            VoiceQueryDetails(
+                reply = reply,
+                telemetry = parseVoiceTelemetry(
+                    prompt = prompt,
+                    reply = reply,
+                    response = response,
+                    elapsedMs = elapsedMs,
+                ),
+            )
         }
     }
 
@@ -259,6 +298,100 @@ object CliRelayClient {
             throw IllegalStateException("Relay HTTP $code: $body")
         }
         return JSONObject(body)
+    }
+
+    private fun parseVoiceTelemetry(
+        prompt: String,
+        reply: String,
+        response: JSONObject,
+        elapsedMs: Long,
+    ): VoiceQueryTelemetry {
+        val usage = response.optJSONObject("usage") ?: JSONObject()
+        val perf = response.optJSONObject("performance")
+            ?: response.optJSONObject("metrics")
+            ?: JSONObject()
+
+        val inputTokens = firstPositiveInt(
+            usage.optInt("prompt_tokens", -1),
+            usage.optInt("input_tokens", -1),
+            response.optInt("prompt_tokens", -1),
+            response.optInt("input_tokens", -1),
+            roughTokenEstimate(prompt),
+        )
+
+        val outputTokens = firstPositiveInt(
+            usage.optInt("completion_tokens", -1),
+            usage.optInt("output_tokens", -1),
+            response.optInt("completion_tokens", -1),
+            response.optInt("output_tokens", -1),
+            roughTokenEstimate(reply),
+        )
+
+        val promptMs = firstPositiveLong(
+            perf.optLong("prompt_eval_ms", -1L),
+            perf.optLong("prompt_ms", -1L),
+            perf.optLong("prefill_ms", -1L),
+            response.optLong("prompt_eval_ms", -1L),
+        )
+
+        val generationMs = firstPositiveLong(
+            perf.optLong("completion_eval_ms", -1L),
+            perf.optLong("generation_ms", -1L),
+            perf.optLong("decode_ms", -1L),
+            response.optLong("completion_eval_ms", -1L),
+        )
+
+        val promptTpsFromServer = firstPositiveDouble(
+            perf.optDouble("prompt_tokens_per_sec", -1.0),
+            perf.optDouble("prompt_tps", -1.0),
+            response.optDouble("prompt_tokens_per_sec", -1.0),
+        )
+
+        val genTpsFromServer = firstPositiveDouble(
+            perf.optDouble("generation_tokens_per_sec", -1.0),
+            perf.optDouble("completion_tokens_per_sec", -1.0),
+            perf.optDouble("gen_tps", -1.0),
+            response.optDouble("generation_tokens_per_sec", -1.0),
+        )
+
+        val promptTps = when {
+            promptTpsFromServer > 0.0 -> promptTpsFromServer
+            promptMs > 0L -> inputTokens / (promptMs / 1000.0)
+            else -> inputTokens / ((elapsedMs * 0.35) / 1000.0)
+        }.coerceAtLeast(1.0)
+
+        val generationTps = when {
+            genTpsFromServer > 0.0 -> genTpsFromServer
+            generationMs > 0L -> outputTokens / (generationMs / 1000.0)
+            else -> outputTokens / ((elapsedMs * 0.65) / 1000.0)
+        }.coerceAtLeast(1.0)
+
+        return VoiceQueryTelemetry(
+            inputTokens = inputTokens,
+            outputTokens = outputTokens,
+            promptTokensPerSec = promptTps,
+            generationTokensPerSec = generationTps,
+            totalMs = elapsedMs,
+        )
+    }
+
+    private fun roughTokenEstimate(text: String): Int {
+        val cleaned = text.trim()
+        if (cleaned.isBlank()) return 1
+        val words = cleaned.split(Regex("\\s+")).count { it.isNotBlank() }
+        return (words * 1.35).toInt().coerceAtLeast(1)
+    }
+
+    private fun firstPositiveInt(vararg values: Int): Int {
+        return values.firstOrNull { it > 0 } ?: 1
+    }
+
+    private fun firstPositiveLong(vararg values: Long): Long {
+        return values.firstOrNull { it > 0L } ?: -1L
+    }
+
+    private fun firstPositiveDouble(vararg values: Double): Double {
+        return values.firstOrNull { it.isFinite() && it > 0.0 } ?: -1.0
     }
 }
 

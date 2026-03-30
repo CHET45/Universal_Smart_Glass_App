@@ -2,12 +2,14 @@ package com.fersaiyan.cyanbridge.localagent.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.KeyguardManager
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -71,6 +73,7 @@ class LocalAgentAccessibilityService : AccessibilityService() {
         // MVP: periodic capture of accessibility text into local JSONL memory.
         if (!LocalAgentPrefs.isAutoCaptureEnabled(applicationContext)) return
         if (!MemoryModeManager.isScreenOcrCaptureEnabled(applicationContext)) return
+        if (!isDeviceInteractiveAndUnlocked()) return
         if (VaultLockStateManager.isLocked(applicationContext)) return
 
         MemoryVaultBootstrap.ensureInitialized(applicationContext)
@@ -110,6 +113,16 @@ class LocalAgentAccessibilityService : AccessibilityService() {
 
         lastAutoCaptureAtMs = now
         Log.i(TAG, "Auto-captured screen text: pkg=$pkg chars=${text.length} intervalMin=$intervalMin")
+    }
+
+    private fun isDeviceInteractiveAndUnlocked(): Boolean {
+        val power = getSystemService(POWER_SERVICE) as? PowerManager
+        if (power != null && !power.isInteractive) return false
+
+        val keyguard = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager
+        if (keyguard?.isKeyguardLocked == true) return false
+
+        return true
     }
 
     // --- Core automation primitives ---

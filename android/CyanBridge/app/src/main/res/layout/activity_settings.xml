@@ -456,6 +456,27 @@
                             android:paddingTop="4dp"
                             android:paddingBottom="4dp" />
 
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/til_local_agent_daily_summary_refresh_hours"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:hint="Auto-regenerate summary every (hours)">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/edit_local_agent_daily_summary_refresh_hours"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="number" />
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="If enough time has passed, regeneration is queued in background and won't block chat replies."
+                            android:textColor="@color/text_secondary"
+                            android:textSize="11sp" />
+
                         <com.google.android.material.switchmaterial.SwitchMaterial
                             android:id="@+id/switch_local_agent_auto_save_daily_facts"
                             android:layout_width="match_parent"

@@ -8,8 +8,11 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkManager
 import com.fersaiyan.cyanbridge.MainActivity
 import com.fersaiyan.cyanbridge.R
+import com.fersaiyan.cyanbridge.agent.LocalAgentPrefs as AutomationPrefs
 import com.fersaiyan.cyanbridge.agent.LocalModelsConfigureActivity
 import com.fersaiyan.cyanbridge.agent.ProSubscriptionAiPrefs
 import com.fersaiyan.cyanbridge.agent.ProSubscriptionRelayClient
@@ -26,8 +29,8 @@ import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsStorage
 import com.fersaiyan.cyanbridge.localagent.userfacts.CandidateUserFactsStorage
 import com.fersaiyan.cyanbridge.localagent.userfacts.UserFactsStorage
 import com.fersaiyan.cyanbridge.localagent.userfacts.ChatMemoryAutoUpdater
-import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryGenerator
 import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryPrefs
+import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryRegenerateWorker
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemorySearch
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
@@ -826,25 +829,24 @@ class ChatThreadActivity : AppCompatActivity() {
         return compact.take(48)
     }
 
-    private suspend fun maybeGenerateDailySummaryIfStale(date: String) {
+    private fun maybeQueueDailySummaryIfDue(date: String) {
         runCatching {
-            // Only generate if we have captures and the summary is missing/stale.
-            if (!LocalAgentMemoryStore.hasScreenCapturesForDate(this, date)) return
-
-            val summaryFile = LocalAgentMemoryStore.dailySummaryFileForDate(this, date)
-
-            val cooldown = DailySummaryPrefs.remainingCooldownMs(this, date)
-            if (cooldown > 0L) return
+            // Only queue if we have at least one capture for the day.
+            val captureUpdatedAt = LocalAgentMemoryStore.screenCaptureLastUpdatedAtMs(this, date)
+            if (captureUpdatedAt <= 0L) return
 
             val lastGenerated = DailySummaryPrefs.getLastGeneratedAtMs(this, date)
-            val summaryText = LocalAgentMemoryStore.readText(summaryFile)
-            val screenUpdatedAt = LocalAgentMemoryStore.screenCaptureLastUpdatedAtMs(this, date)
-            val summaryStale = summaryText.isBlank() || lastGenerated < screenUpdatedAt
+            val intervalHours = AutomationPrefs.getDailySummaryAutoRefreshHours(this)
+            val intervalMs = intervalHours * 60L * 60L * 1000L
+            val due = lastGenerated <= 0L ||
+                (System.currentTimeMillis() - lastGenerated) >= intervalMs
+            if (!due) return
 
-            // Generate at least once per day, and also regenerate if captures advanced.
-            if (lastGenerated <= 0L || summaryStale) {
-                DailySummaryGenerator.generateAndStore(this, date)
-            }
+            WorkManager.getInstance(this).enqueueUniqueWork(
+                DailySummaryRegenerateWorker.uniqueWorkName(date),
+                ExistingWorkPolicy.KEEP,
+                DailySummaryRegenerateWorker.buildRequest(date),
+            )
         }
     }
 
@@ -860,8 +862,8 @@ class ChatThreadActivity : AppCompatActivity() {
             val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
                 .format(java.util.Date(System.currentTimeMillis()))
 
-            // Keep daily summary reasonably fresh so normal chats feel grounded.
-            maybeGenerateDailySummaryIfStale(today)
+            // Keep daily summary reasonably fresh without blocking chat response/title generation.
+            maybeQueueDailySummaryIfDue(today)
 
             val relevantMemory = LocalAgentMemorySearch.buildRelevantMemoryBlock(
                 context = this,

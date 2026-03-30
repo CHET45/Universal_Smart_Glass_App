@@ -62,6 +62,11 @@ class ProSubscriptionActivity : AppCompatActivity() {
         applyWebCheckoutVisibility()
         maybeShowCallbackToast(intent)
 
+        // Set default selection if none selected
+        if (rgPlan.checkedRadioButtonId == View.NO_ID) {
+            rbTrial.isChecked = true
+        }
+
         if (ProSubscriptionPrefs.getProvider(this) == "debug_mock") {
             ProSubscriptionPrefs.clearEntitlement(
                 context = this,
@@ -223,6 +228,8 @@ class ProSubscriptionActivity : AppCompatActivity() {
                         ProSubscriptionPrefs.setPurchaseToken(this, "free_trial_${System.currentTimeMillis()}")
                         ProSubscriptionPrefs.setProvider(this, "server_verified")
                         ProSubscriptionPrefs.setLastVerifiedAt(this, System.currentTimeMillis())
+                        val routeAction = ProSubscriptionRoutingPolicy.applyAfterActivation(this)
+                        val routeNote = ProSubscriptionRoutingPolicy.actionNote(routeAction)
                         val displayPlan = when (plan) {
                             "free_trial" -> "Free Trial (30 days)"
                             "cheap" -> "Cheap ($1/mo)"
@@ -230,7 +237,12 @@ class ProSubscriptionActivity : AppCompatActivity() {
                             "max" -> "Max ($20/mo)"
                             else -> plan
                         }
-                        Toast.makeText(this, "✓ $message — $displayPlan", Toast.LENGTH_LONG).show()
+                        val finalMessage = if (routeNote.isBlank()) {
+                            "✓ $message — $displayPlan"
+                        } else {
+                            "✓ $message — $displayPlan · $routeNote"
+                        }
+                        Toast.makeText(this, finalMessage, Toast.LENGTH_LONG).show()
                         updateStatusDisplay()
                         setResult(RESULT_OK)
                         openProSettingsAfterSubscribe()
@@ -396,6 +408,8 @@ class ProSubscriptionActivity : AppCompatActivity() {
         ProSubscriptionPrefs.setPurchaseToken(this, purchaseToken)
         ProSubscriptionPrefs.setProvider(this, source)
         ProSubscriptionPrefs.setLastVerifiedAt(this, now)
+        val routeAction = ProSubscriptionRoutingPolicy.applyAfterActivation(this)
+        val routeNote = ProSubscriptionRoutingPolicy.actionNote(routeAction)
 
         val planName = when (plan) {
             "free_trial" -> "Free Trial (30 days)"
@@ -405,7 +419,13 @@ class ProSubscriptionActivity : AppCompatActivity() {
             else -> plan
         }
 
-        Toast.makeText(this, "✓ Subscribed to $planName", Toast.LENGTH_LONG).show()
+        val finalMessage = if (routeNote.isBlank()) {
+            "✓ Subscribed to $planName"
+        } else {
+            "✓ Subscribed to $planName · $routeNote"
+        }
+
+        Toast.makeText(this, finalMessage, Toast.LENGTH_LONG).show()
         updateStatusDisplay()
         setResult(RESULT_OK)
         openProSettingsAfterSubscribe()

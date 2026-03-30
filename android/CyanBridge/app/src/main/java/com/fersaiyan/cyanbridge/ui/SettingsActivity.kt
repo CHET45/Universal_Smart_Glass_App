@@ -616,6 +616,21 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(Intent(this, DailySummaryActivity::class.java))
         }
 
+        binding.editLocalAgentDailySummaryRefreshHours.setText(
+            AutomationPrefs.getDailySummaryAutoRefreshHours(this).toString(),
+        )
+        binding.editLocalAgentDailySummaryRefreshHours.doAfterTextChanged {
+            val parsed = it?.toString()?.trim()?.toIntOrNull()
+            if (parsed != null && parsed in 1..24) {
+                AutomationPrefs.setDailySummaryAutoRefreshHours(this, parsed)
+                binding.tilLocalAgentDailySummaryRefreshHours.error = null
+            } else if (!it.isNullOrBlank()) {
+                binding.tilLocalAgentDailySummaryRefreshHours.error = "Enter 1-24"
+            } else {
+                binding.tilLocalAgentDailySummaryRefreshHours.error = null
+            }
+        }
+
         binding.switchLocalAgentAutoSaveDailyFacts.isChecked = ChatMemoryPrefs.isAutoSaveDailyFactsEnabled(this)
         binding.switchLocalAgentAutoSaveDailyFacts.setOnCheckedChangeListener { _, isChecked ->
             ChatMemoryPrefs.setAutoSaveDailyFactsEnabled(this, isChecked)
