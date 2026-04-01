@@ -96,7 +96,7 @@
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="Import GGUF" />
+                            android:text="Import Model File" />
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/btn_refresh_state"
@@ -113,7 +113,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="12dp"
-                        android:text="No local model installed yet. Start with Qwen2.5 0.5B (Fast) or import a GGUF file."
+                        android:text="No local model installed yet. Start with a catalog download or import GGUF/LiteRT files (.gguf/.litertlm/.task)."
                         android:textColor="@color/text_secondary"
                         android:textSize="12sp" />
 
@@ -251,7 +251,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
-                            android:text="Gemma entries may be gated. Use Import GGUF after accepting model terms in source platform."
+                            android:text="Some Gemma entries are gated on Hugging Face. Add your token below after accepting model terms."
                             android:textColor="@color/text_secondary"
                             android:textSize="12sp" />
                     </LinearLayout>
@@ -319,6 +319,29 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="4dp" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="Model runtime"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
+
+                        <Spinner
+                            android:id="@+id/spinner_model_runtime"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp" />
+
+                        <TextView
+                            android:id="@+id/tv_model_runtime_note"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:text=""
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp" />
 
                         <TextView
                             android:layout_width="match_parent"

@@ -29,6 +29,7 @@ import com.fersaiyan.cyanbridge.localmodels.session.LocalChatSessionManager
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalComputeBackend
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalGenerationSettings
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelPerformanceProfile
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelRuntime
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
 import com.fersaiyan.cyanbridge.localmodels.storage.InstalledLocalModel
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelFileUtils
@@ -66,6 +67,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
 
     private lateinit var spinnerInstalled: Spinner
     private lateinit var spinnerProfile: Spinner
+    private lateinit var spinnerModelRuntime: Spinner
     private lateinit var spinnerComputeBackend: Spinner
     private lateinit var spinnerTemplateOverride: Spinner
 
@@ -80,6 +82,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
     private lateinit var editSeed: TextInputEditText
     private lateinit var editSystemPrompt: TextInputEditText
     private lateinit var editHfToken: TextInputEditText
+    private lateinit var tvModelRuntimeNote: TextView
     private lateinit var tvComputeBackendNote: TextView
 
     private lateinit var switchExperimentalJson: SwitchMaterial
@@ -145,6 +148,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
 
         spinnerInstalled = findViewById(R.id.spinner_installed_models)
         spinnerProfile = findViewById(R.id.spinner_profile)
+        spinnerModelRuntime = findViewById(R.id.spinner_model_runtime)
         spinnerComputeBackend = findViewById(R.id.spinner_compute_backend)
         spinnerTemplateOverride = findViewById(R.id.spinner_template_override)
 
@@ -159,6 +163,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
         editSeed = findViewById(R.id.edit_seed)
         editSystemPrompt = findViewById(R.id.edit_system_prompt)
         editHfToken = findViewById(R.id.edit_hf_token)
+        tvModelRuntimeNote = findViewById(R.id.tv_model_runtime_note)
         tvComputeBackendNote = findViewById(R.id.tv_compute_backend_note)
 
         switchExperimentalJson = findViewById(R.id.switch_experimental_json)
@@ -263,6 +268,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
                         computeBackend = selectedComputeBackendFromUi(),
                         cpuThreads = parseCpuThreadsInput(fallback = defaults.cpuThreads),
                         gpuLayers = parseGpuLayersInput(fallback = defaults.gpuLayers),
+                        modelRuntime = defaults.modelRuntime,
                     ),
                 )
             }
@@ -278,6 +284,19 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
                 id: Long,
             ) {
                 updateComputeBackendUi()
+            }
+
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+        }
+
+        spinnerModelRuntime.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(
+                parent: android.widget.AdapterView<*>?,
+                view: View?,
+                position: Int,
+                id: Long,
+            ) {
+                updateRuntimeUi()
             }
 
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
@@ -339,6 +358,9 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
         val profiles = LocalModelPerformanceProfile.entries.map { it.label }
         spinnerProfile.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, profiles)
 
+        val runtimes = LocalModelRuntime.entries.map { it.label }
+        spinnerModelRuntime.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, runtimes)
+
         val backends = LocalComputeBackend.entries.map { it.label }
         spinnerComputeBackend.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, backends)
 
@@ -347,6 +369,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
             "${it.label} (${it.id})"
         }
         spinnerTemplateOverride.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, templateItems)
+        updateRuntimeUi()
         updateComputeBackendUi()
     }
 
@@ -356,7 +379,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
         val snapshot = DeviceCapabilityService.snapshot(this)
         val ramGb = snapshot.totalRamBytes / (1024.0 * 1024.0 * 1024.0)
         val freeGb = snapshot.freeStorageBytes / (1024.0 * 1024.0 * 1024.0)
-        tvEngineStatus.text = "Backend: llama.cpp via Kotlin binding"
+        tvEngineStatus.text = "Runtimes available: llama.cpp + LiteRT"
         tvDeviceSummary.text =
             "ABI: ${snapshot.primaryAbi} | RAM: ${String.format("%.1f", ramGb)} GB | Free storage: ${String.format("%.2f", freeGb)} GB"
 
@@ -432,12 +455,12 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
             val buttonRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
             }
-            val canDownload = !entry.gatedDownload && !entry.sourceUrl.isNullOrBlank() && !installedByCatalogId.containsKey(entry.id)
+            val canDownload = !entry.sourceUrl.isNullOrBlank() && !installedByCatalogId.containsKey(entry.id)
             val btnDownload = MaterialButton(this).apply {
                 text = when {
-                    entry.gatedDownload -> "Gated"
                     installedByCatalogId.containsKey(entry.id) -> "Installed"
                     entry.sourceUrl.isNullOrBlank() -> "Manual Import"
+                    entry.gatedDownload -> "Download (Token)"
                     else -> "Download"
                 }
                 tag = canDownload
@@ -462,8 +485,8 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
 
     private fun statusText(entry: LocalModelCatalogEntry, installed: InstalledLocalModel?): String {
         if (installed != null) return "Status: ready"
-        if (entry.gatedDownload) return "Status: gated (manual import)"
         if (entry.sourceUrl.isNullOrBlank()) return "Status: manual import recommended"
+        if (entry.gatedDownload) return "Status: downloadable (requires token + accepted terms)"
         return "Status: not downloaded"
     }
 
@@ -473,12 +496,18 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
             return
         }
 
-        if (entry.gatedDownload) {
-            Toast.makeText(this, "This model is gated. Use manual import after accepting terms.", Toast.LENGTH_LONG).show()
-            return
-        }
         if (entry.sourceUrl.isNullOrBlank()) {
             Toast.makeText(this, "No direct source URL for this entry. Use manual import.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val hfToken = LocalModelsPrefs.getHuggingFaceToken(this).trim().ifBlank { null }
+        if (entry.gatedDownload && hfToken == null) {
+            Toast.makeText(
+                this,
+                "This model is gated. Add a Hugging Face token below after accepting model terms.",
+                Toast.LENGTH_LONG,
+            ).show()
             return
         }
 
@@ -500,6 +529,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
                     downloadManager.downloadCatalogModel(
                         context = this@LocalModelsConfigureActivity,
                         entry = entry,
+                        authToken = hfToken,
                         cancelled = downloadCancelled,
                         onProgress = { p -> onDownloadProgress(p) },
                     )
@@ -593,9 +623,9 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
                         uri = uri,
                         preferredName = name,
                     )
-                    if (!LocalModelFileUtils.isGgufFile(file)) {
+                    if (!LocalModelFileUtils.isSupportedModelFile(file)) {
                         file.delete()
-                        throw IllegalStateException("Imported file is not GGUF")
+                        throw IllegalStateException("Imported file must be GGUF or LiteRT (.litertlm/.task)")
                     }
                     LocalModelStorageRepository.registerImportedModel(
                         context = this@LocalModelsConfigureActivity,
@@ -653,6 +683,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
 
     private fun applySettingsToInputs(settings: LocalGenerationSettings) {
         editTemperature.setText(settings.temperature.toString())
+        spinnerModelRuntime.setSelection(settings.modelRuntime.ordinal)
         spinnerComputeBackend.setSelection(settings.computeBackend.ordinal)
         editCpuThreads.setText(settings.cpuThreads.toString())
         editGpuLayers.setText(settings.gpuLayers.toString())
@@ -664,11 +695,13 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
         editSeed.setText(settings.seed.toString())
         editSystemPrompt.setText(settings.systemPromptOverride)
         switchExperimentalJson.isChecked = settings.experimentalStructuredJson
+        updateRuntimeUi()
         updateComputeBackendUi()
     }
 
     private fun clearSettingsInputs() {
         editTemperature.setText("")
+        spinnerModelRuntime.setSelection(LocalModelRuntime.LLAMA_CPP.ordinal)
         spinnerComputeBackend.setSelection(LocalComputeBackend.CPU.ordinal)
         editCpuThreads.setText(LocalGenerationSettings.defaultCpuThreads().toString())
         editGpuLayers.setText("35")
@@ -680,6 +713,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
         editSeed.setText("")
         editSystemPrompt.setText("")
         switchExperimentalJson.isChecked = false
+        updateRuntimeUi()
         updateComputeBackendUi()
     }
 
@@ -711,6 +745,7 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
             systemPromptOverride = editSystemPrompt.text?.toString().orEmpty().trim(),
             templateOverrideId = selectedTemplateOverrideId(),
             experimentalStructuredJson = switchExperimentalJson.isChecked,
+            modelRuntime = selectedModelRuntimeFromUi(),
             computeBackend = selectedComputeBackendFromUi(),
             cpuThreads = parseCpuThreadsInput(fallback = existing.cpuThreads),
             gpuLayers = parseGpuLayersInput(fallback = existing.gpuLayers),
@@ -803,6 +838,12 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
         }
     }
 
+    private fun selectedModelRuntimeFromUi(): LocalModelRuntime {
+        return LocalModelRuntime.entries.getOrElse(spinnerModelRuntime.selectedItemPosition) {
+            LocalModelRuntime.LLAMA_CPP
+        }
+    }
+
     private fun selectedComputeBackendFromUi(): LocalComputeBackend {
         return LocalComputeBackend.entries.getOrElse(spinnerComputeBackend.selectedItemPosition) {
             LocalComputeBackend.CPU
@@ -820,14 +861,33 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
     }
 
     private fun updateComputeBackendUi() {
+        val runtime = selectedModelRuntimeFromUi()
         val backend = selectedComputeBackendFromUi()
         val gpuSelected = backend == LocalComputeBackend.GPU_EXPERIMENTAL
         editGpuLayers.isEnabled = gpuSelected
         tvComputeBackendNote.text = if (gpuSelected) {
-            "GPU is experimental. Use -1 for auto layer offload. If GPU init fails, the app retries lower layer counts and then falls back to CPU."
+            if (runtime == LocalModelRuntime.LITERT) {
+                "LiteRT GPU backend is device-dependent. If GPU init fails, CyanBridge falls back to CPU."
+            } else {
+                "GPU is experimental. Use -1 for auto layer offload. If GPU init fails, the app retries lower layer counts and then falls back to CPU."
+            }
         } else {
-            "CPU mode is the most compatible option. Increase CPU threads for speed if your device remains responsive."
+            if (runtime == LocalModelRuntime.LITERT) {
+                "LiteRT CPU mode is safest for first runs. Move to GPU after a successful warm-up."
+            } else {
+                "CPU mode is the most compatible option. Increase CPU threads for speed if your device remains responsive."
+            }
         }
+    }
+
+    private fun updateRuntimeUi() {
+        val runtime = selectedModelRuntimeFromUi()
+        tvModelRuntimeNote.text = when (runtime) {
+            LocalModelRuntime.LLAMA_CPP -> "Use llama.cpp for GGUF models."
+            LocalModelRuntime.LITERT -> "Use LiteRT for Google LiteRT-LM packages (.litertlm/.task)."
+        }
+        tvEngineStatus.text = "Selected runtime: ${runtime.label}"
+        updateComputeBackendUi()
     }
 
     private fun showSelectedModelInfo() {
@@ -861,6 +921,8 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
             .setMessage(
                 buildString {
                     appendLine("Family: ${entry.family}")
+                    appendLine("Runtime: ${entry.engine}")
+                    appendLine("Format: ${entry.format}")
                     appendLine("Quantization: ${entry.quantization}")
                     appendLine("File size: ${humanSize(entry.sizeBytes)}")
                     appendLine("Prompt template: ${entry.promptTemplateId}")

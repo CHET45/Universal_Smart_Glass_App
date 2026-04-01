@@ -6,10 +6,12 @@ import com.fersaiyan.cyanbridge.localmodels.device.DeviceCapabilityService
 import com.fersaiyan.cyanbridge.localmodels.engine.EngineLoadConfig
 import com.fersaiyan.cyanbridge.localmodels.engine.GenerationConfig
 import com.fersaiyan.cyanbridge.localmodels.engine.GenerationResult
+import com.fersaiyan.cyanbridge.localmodels.engine.LiteRtLocalInferenceEngine
 import com.fersaiyan.cyanbridge.localmodels.engine.LlamaCppLocalInferenceEngine
 import com.fersaiyan.cyanbridge.localmodels.engine.LocalInferenceEngine
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalComputeBackend
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalGenerationSettings
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelRuntime
 import com.fersaiyan.cyanbridge.localmodels.storage.InstalledLocalModel
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import kotlinx.coroutines.Dispatchers
@@ -133,7 +135,8 @@ object LocalChatSessionManager {
             if (
                 loadedModelId == model.id &&
                 loadedModelPath == model.absolutePath &&
-                loadedConfig == loadConfig
+                loadedConfig == loadConfig &&
+                isEngineCompatibleWithRuntime(settings.modelRuntime)
             ) {
                 state = LocalSessionState.Ready(model.id)
                 return@withLock LocalModelLoadDetails(
@@ -147,8 +150,13 @@ object LocalChatSessionManager {
                 )
             }
 
+            if (engine != null && !isEngineCompatibleWithRuntime(settings.modelRuntime)) {
+                runCatching { engine?.unloadModel() }
+                engine = null
+            }
+
             state = LocalSessionState.Loading(model.id)
-            val llm = engine ?: LlamaCppLocalInferenceEngine().also { engine = it }
+            val llm = engine ?: createEngine(settings.modelRuntime, context).also { engine = it }
 
             runCatching {
                 llm.loadModel(
@@ -311,5 +319,20 @@ object LocalChatSessionManager {
             backend = backend,
             fallbackReason = fallback,
         )
+    }
+
+    private fun isEngineCompatibleWithRuntime(runtime: LocalModelRuntime): Boolean {
+        val currentEngine = engine ?: return false
+        return when (runtime) {
+            LocalModelRuntime.LLAMA_CPP -> currentEngine is LlamaCppLocalInferenceEngine
+            LocalModelRuntime.LITERT -> currentEngine is LiteRtLocalInferenceEngine
+        }
+    }
+
+    private fun createEngine(runtime: LocalModelRuntime, context: Context): LocalInferenceEngine {
+        return when (runtime) {
+            LocalModelRuntime.LLAMA_CPP -> LlamaCppLocalInferenceEngine()
+            LocalModelRuntime.LITERT -> LiteRtLocalInferenceEngine(context)
+        }
     }
 }

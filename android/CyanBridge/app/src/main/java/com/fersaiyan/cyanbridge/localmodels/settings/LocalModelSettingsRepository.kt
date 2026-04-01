@@ -64,6 +64,9 @@ object LocalModelSettingsRepository {
                 .coerceIn(1, 16),
             gpuLayers = existing.optInt("gpu_layers", defaults.gpuLayers)
                 .coerceIn(-1, 999),
+            modelRuntime = runCatching {
+                LocalModelRuntime.valueOf(existing.optString("model_runtime", defaults.modelRuntime.name))
+            }.getOrElse { defaults.modelRuntime },
         )
     }
 
@@ -85,7 +88,8 @@ object LocalModelSettingsRepository {
                 .put("experimental_structured_json", settings.experimentalStructuredJson)
                 .put("compute_backend", settings.computeBackend.name)
                 .put("cpu_threads", settings.cpuThreads)
-                .put("gpu_layers", settings.gpuLayers),
+                .put("gpu_layers", settings.gpuLayers)
+                .put("model_runtime", settings.modelRuntime.name),
         )
         prefs(context).edit().putString(KEY_SETTINGS_BY_MODEL, all.toString()).apply()
     }

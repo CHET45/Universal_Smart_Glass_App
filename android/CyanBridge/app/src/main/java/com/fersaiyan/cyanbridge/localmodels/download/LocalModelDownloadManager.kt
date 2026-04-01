@@ -31,17 +31,17 @@ class LocalModelDownloadManager(
     suspend fun downloadCatalogModel(
         context: Context,
         entry: LocalModelCatalogEntry,
+        authToken: String?,
         cancelled: AtomicBoolean,
         onProgress: (LocalModelDownloadProgress) -> Unit,
     ): InstalledLocalModel = withContext(Dispatchers.IO) {
         require(entry.enabled) { "Model is disabled in catalog" }
-        require(!entry.gatedDownload) { "This model requires manual gated download/import" }
         val source = entry.sourceUrl ?: throw IllegalStateException("No direct source URL for this model")
 
         LocalModelStorageRepository.ensureDirs(context)
         LocalModelStorageRepository.findByCatalogId(context, entry.id)?.let { existing ->
             val f = File(existing.absolutePath)
-            if (f.exists() && LocalModelFileUtils.isGgufFile(f)) {
+            if (f.exists() && LocalModelFileUtils.isFileCompatibleWithFormat(f, entry.format)) {
                 return@withContext existing
             }
         }
@@ -61,7 +61,11 @@ class LocalModelDownloadManager(
         )
         if (tmpFile.exists()) tmpFile.delete()
 
-        val request = Request.Builder().url(source).get().build()
+        val requestBuilder = Request.Builder().url(source).get()
+        if (!authToken.isNullOrBlank() && source.contains("huggingface.co", ignoreCase = true)) {
+            requestBuilder.addHeader("Authorization", "Bearer ${authToken.trim()}")
+        }
+        val request = requestBuilder.build()
         val call = client.newCall(request)
         coroutineContext.ensureActive()
         if (cancelled.get()) {
@@ -70,10 +74,25 @@ class LocalModelDownloadManager(
 
         call.execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("Download failed: HTTP ${response.code}")
+                val reason = when (response.code) {
+                    401, 403 -> {
+                        if (entry.gatedDownload) {
+                            "gated model access denied. Accept terms on Hugging Face and set a valid token"
+                        } else {
+                            "authorization failed"
+                        }
+                    }
+                    else -> "HTTP ${response.code}"
+                }
+                throw IllegalStateException("Download failed: $reason")
             }
             val body = response.body ?: throw IllegalStateException("Download failed: empty body")
-            val total = body.contentLength().coerceAtLeast(entry.sizeBytes)
+            val serverContentLength = body.contentLength()
+            val total = when {
+                serverContentLength > 0L -> serverContentLength
+                entry.sizeBytes > 0L -> entry.sizeBytes
+                else -> 0L
+            }
 
             val free = LocalModelStorageRepository.availableStorageBytes(context)
             if (total > 0 && free <= total + 250L * 1024L * 1024L) {
@@ -104,13 +123,22 @@ class LocalModelDownloadManager(
                         )
                     }
                     output.flush()
+
+                    if (serverContentLength > 0L && downloaded != serverContentLength) {
+                        throw IllegalStateException(
+                            "Download incomplete: expected ${serverContentLength} bytes, got $downloaded bytes",
+                        )
+                    }
                 }
             }
         }
 
-        if (!LocalModelFileUtils.isGgufFile(tmpFile)) {
+        if (!LocalModelFileUtils.isFileCompatibleWithFormat(tmpFile, entry.format)) {
             tmpFile.delete()
-            throw IllegalStateException("Downloaded file is not a GGUF model")
+            throw IllegalStateException(
+                "Downloaded file is not a valid ${entry.format} model package. " +
+                    "For gated models, verify Hugging Face token + accepted terms.",
+            )
         }
 
         val fileSha = LocalModelFileUtils.sha256Hex(tmpFile)

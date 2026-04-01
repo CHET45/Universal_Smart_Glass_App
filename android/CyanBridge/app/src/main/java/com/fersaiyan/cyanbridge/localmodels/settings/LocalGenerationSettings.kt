@@ -13,6 +13,11 @@ enum class LocalComputeBackend(val label: String) {
     GPU_EXPERIMENTAL("GPU (Experimental)"),
 }
 
+enum class LocalModelRuntime(val label: String) {
+    LLAMA_CPP("llama.cpp"),
+    LITERT("LiteRT"),
+}
+
 data class LocalGenerationSettings(
     val profile: LocalModelPerformanceProfile,
     val temperature: Double,
@@ -28,6 +33,7 @@ data class LocalGenerationSettings(
     val computeBackend: LocalComputeBackend,
     val cpuThreads: Int,
     val gpuLayers: Int,
+    val modelRuntime: LocalModelRuntime,
 ) {
     companion object {
         fun defaultCpuThreads(): Int {
@@ -39,6 +45,10 @@ data class LocalGenerationSettings(
             profile: LocalModelPerformanceProfile,
         ): LocalGenerationSettings {
             val baseCtx = entry?.contextSizeDefault ?: 4096
+            val defaultRuntime = when (entry?.engine?.lowercase()) {
+                "litert" -> LocalModelRuntime.LITERT
+                else -> LocalModelRuntime.LLAMA_CPP
+            }
             return when (profile) {
                 LocalModelPerformanceProfile.FAST -> LocalGenerationSettings(
                     profile = profile,
@@ -55,6 +65,7 @@ data class LocalGenerationSettings(
                     computeBackend = LocalComputeBackend.CPU,
                     cpuThreads = defaultCpuThreads(),
                     gpuLayers = -1,
+                    modelRuntime = defaultRuntime,
                 )
 
                 LocalModelPerformanceProfile.BALANCED -> LocalGenerationSettings(
@@ -72,6 +83,7 @@ data class LocalGenerationSettings(
                     computeBackend = LocalComputeBackend.CPU,
                     cpuThreads = defaultCpuThreads(),
                     gpuLayers = -1,
+                    modelRuntime = defaultRuntime,
                 )
 
                 LocalModelPerformanceProfile.HIGH_QUALITY -> LocalGenerationSettings(
@@ -89,6 +101,7 @@ data class LocalGenerationSettings(
                     computeBackend = LocalComputeBackend.CPU,
                     cpuThreads = defaultCpuThreads(),
                     gpuLayers = -1,
+                    modelRuntime = defaultRuntime,
                 )
             }
         }
