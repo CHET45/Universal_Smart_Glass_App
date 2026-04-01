@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
@@ -132,7 +133,7 @@ class LlamaCppLocalInferenceEngine : LocalInferenceEngine {
                 runCatching {
                     eventCollectorJob?.cancel()
                     eventCollectorJob = null
-                    engine?.unsetEventCollector(ctx)
+                    if (engine != null) invokeLegacyUnsetEventCollector(engine, ctx)
                 }
                 runCatching { engine?.releaseContext(ctx) }
             }
@@ -384,9 +385,18 @@ class LlamaCppLocalInferenceEngine : LocalInferenceEngine {
 
         runCatching {
             eventCollectorJob?.cancel()
-            val eventFlow = engine.setEventCollector(ctx, eventScope)
+
+            val setCollectorMethod = engine.javaClass.methods.firstOrNull {
+                it.name == "setEventCollector" && it.parameterTypes.size == 2
+            } ?: return
+
+            val eventFlowAny = setCollectorMethod.invoke(engine, ctx, eventScope) ?: return
+            @Suppress("UNCHECKED_CAST")
+            val eventFlow = eventFlowAny as? Flow<Any?> ?: return
+
             eventCollectorJob = eventScope.launch {
-                eventFlow.collect { pair ->
+                eventFlow.collect { event ->
+                    val pair = event as? Pair<*, *> ?: return@collect
                     if (pair.first != "token" && pair.first != "tokenResult") return@collect
                     val payload = pair.second
                     val token = when (payload) {
@@ -402,6 +412,13 @@ class LlamaCppLocalInferenceEngine : LocalInferenceEngine {
                 }
             }
         }
+    }
+
+    private fun invokeLegacyUnsetEventCollector(engine: LlamaAndroid, ctx: Int) {
+        val unsetCollectorMethod = engine.javaClass.methods.firstOrNull {
+            it.name == "unsetEventCollector" && it.parameterTypes.size == 1
+        } ?: return
+        unsetCollectorMethod.invoke(engine, ctx)
     }
 
     private enum class LlamaRuntimeApi {
