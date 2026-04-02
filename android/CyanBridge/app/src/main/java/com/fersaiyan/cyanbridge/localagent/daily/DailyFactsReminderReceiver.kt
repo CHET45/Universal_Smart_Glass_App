@@ -10,6 +10,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.fersaiyan.cyanbridge.R
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
+import com.fersaiyan.cyanbridge.memoryvault.MemoryModeManager
 import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
 
 class DailyFactsReminderReceiver : BroadcastReceiver() {
@@ -24,11 +25,13 @@ class DailyFactsReminderReceiver : BroadcastReceiver() {
 
         val date = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .format(java.util.Date(System.currentTimeMillis()))
+        val retentionDays = MemoryModeManager.getScreenOcrRetentionDays(context)
 
         val openIntent = Intent(context, ChatThreadActivity::class.java)
             .putExtra(ChatThreadActivity.EXTRA_CREATE_THREAD_TITLE, "Daily facts review")
             .putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_REVIEW, true)
             .putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_DATE, date)
+            .putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_LOOKBACK_DAYS, retentionDays)
 
         val openPi = PendingIntent.getActivity(
             context,

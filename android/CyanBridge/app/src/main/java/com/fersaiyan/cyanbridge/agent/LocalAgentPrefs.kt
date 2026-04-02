@@ -98,13 +98,19 @@ object LocalAgentPrefs {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getStringSet(KEY_CAPTURE_BLACKLIST, null)
             ?: emptySet()
-        return raw.map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        return raw
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .toSet()
     }
 
     fun setCaptureBlacklistPackages(context: Context, packages: Set<String>) {
         // Use commit() for reliability: users may blacklist many apps at once and immediately
         // leave the screen; apply() is async and can be lost if the process is killed.
-        val clean = packages.map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        val clean = packages
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .toSet()
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putStringSet(KEY_CAPTURE_BLACKLIST, HashSet(clean))

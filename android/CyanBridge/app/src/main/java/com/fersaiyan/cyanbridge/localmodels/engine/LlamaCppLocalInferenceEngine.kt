@@ -183,9 +183,13 @@ class LlamaCppLocalInferenceEngine : LocalInferenceEngine {
             }
         }
 
-        val text = (result["text"] as? String)
-            ?.takeIf { it.isNotBlank() }
-            ?: tokenBuilder.toString()
+        val streamedText = tokenBuilder.toString()
+        val resultText = (result["text"] as? String).orEmpty()
+        val text = when {
+            streamedText.isNotBlank() -> streamedText
+            resultText.isNotBlank() -> resultText
+            else -> ""
+        }
 
         return GenerationResult(
             text = text,

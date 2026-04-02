@@ -65,15 +65,19 @@ object LocalEmbeddingService {
     }
 
     fun extractTags(text: String): List<String> {
-        return text
+        val counts = linkedMapOf<String, Int>()
+        text
             .lowercase(Locale.US)
             .split(Regex("[^\\p{L}\\p{N}]+"))
+            .asSequence()
             .map { it.trim() }
             .filter { it.length >= 4 }
-            .groupingBy { it }
-            .eachCount()
-            .entries
-            .sortedByDescending { it.value }
+            .forEach { token ->
+                counts[token] = (counts[token] ?: 0) + 1
+            }
+
+        return counts.entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
             .map { it.key }
             .take(8)
     }

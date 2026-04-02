@@ -3,6 +3,7 @@ package com.fersaiyan.cyanbridge.ui
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
+import android.app.DatePickerDialog
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -14,9 +15,15 @@ import com.fersaiyan.cyanbridge.ai.router.AiProviderPrefs
 import com.fersaiyan.cyanbridge.ai.router.AiProviderType
 import com.fersaiyan.cyanbridge.chat.ChatStore
 import com.fersaiyan.cyanbridge.databinding.ActivityChatListBinding
+import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsReviewThreadStore
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
+import com.fersaiyan.cyanbridge.memoryvault.MemoryModeManager
 import com.fersaiyan.cyanbridge.ui.chat.ChatAppearancePrefs
 import com.fersaiyan.cyanbridge.ui.chat.ChatThreadAdapter
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 class ChatListActivity : AppCompatActivity() {
     private lateinit var binding: ActivityChatListBinding
@@ -44,9 +51,7 @@ class ChatListActivity : AppCompatActivity() {
 
         adapter = ChatThreadAdapter(
             onClick = { thread ->
-                startActivity(Intent(this, ChatThreadActivity::class.java).apply {
-                    putExtra(ChatThreadActivity.EXTRA_CHAT_ID, thread.id)
-                })
+                startActivity(buildOpenChatIntent(thread.id))
             },
             onDelete = { thread ->
                 deleteChat(thread)
@@ -60,7 +65,7 @@ class ChatListActivity : AppCompatActivity() {
             if (isLocalModelsMissingSelection()) {
                 promptLocalModelSetup()
             } else {
-                startActivity(Intent(this, ChatThreadActivity::class.java))
+                showNewChatTypePicker()
             }
         }
         binding.btnChatAppearance.setOnClickListener {
@@ -81,8 +86,22 @@ class ChatListActivity : AppCompatActivity() {
 
     private fun deleteChat(thread: com.fersaiyan.cyanbridge.chat.ChatThread) {
         ChatStore.deleteThread(thread.id)
+        DailyFactsReviewThreadStore.remove(this, thread.id)
         Toast.makeText(this, getString(R.string.chat_deleted), Toast.LENGTH_SHORT).show()
         refreshList()
+    }
+
+    private fun buildOpenChatIntent(chatId: String): Intent {
+        return Intent(this, ChatThreadActivity::class.java).apply {
+            putExtra(ChatThreadActivity.EXTRA_CHAT_ID, chatId)
+
+            val cfg = DailyFactsReviewThreadStore.load(this@ChatListActivity, chatId)
+            if (cfg != null) {
+                putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_REVIEW, true)
+                putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_DATE, cfg.date)
+                putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_LOOKBACK_DAYS, cfg.lookbackDays)
+            }
+        }
     }
 
     private fun refreshList() {
@@ -129,7 +148,13 @@ class ChatListActivity : AppCompatActivity() {
 
                         val intent = Intent(this, ChatThreadActivity::class.java)
                         if (openChatId != null) {
+                            val cfg = DailyFactsReviewThreadStore.load(this@ChatListActivity, openChatId)
                             intent.putExtra(ChatThreadActivity.EXTRA_CHAT_ID, openChatId)
+                            if (cfg != null) {
+                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_REVIEW, true)
+                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_DATE, cfg.date)
+                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_LOOKBACK_DAYS, cfg.lookbackDays)
+                            }
                         }
                         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                         startActivity(intent)
@@ -171,6 +196,115 @@ class ChatListActivity : AppCompatActivity() {
                 else -> false
             }
         }
+    }
+
+    private fun showNewChatTypePicker() {
+        val items = arrayOf(
+            "Normal chat",
+            "Daily review chat",
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Start a new chat")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> startNormalChat()
+                    1 -> showDailyReviewDateChooser()
+                }
+            }
+            .show()
+    }
+
+    private fun startNormalChat() {
+        startActivity(Intent(this, ChatThreadActivity::class.java))
+    }
+
+    private fun showDailyReviewDateChooser() {
+        val retentionDays = MemoryModeManager.getScreenOcrRetentionDays(this).coerceIn(1, 365)
+        val maxQuick = retentionDays.coerceAtMost(7)
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
+        val cal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 12)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+
+        val dateOptions = ArrayList<String>(maxQuick)
+        val labels = ArrayList<String>(maxQuick + 1)
+        for (i in 0 until maxQuick) {
+            val dayCal = (cal.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -i) }
+            val date = fmt.format(dayCal.time)
+            dateOptions += date
+            val human = when (i) {
+                0 -> "Today"
+                1 -> "Yesterday"
+                else -> "${i} days ago"
+            }
+            labels += "$human ($date)"
+        }
+
+        val customLabel = "Pick another date..."
+        val allLabels = (labels + customLabel).toTypedArray()
+        val todayDate = fmt.format(cal.time)
+
+        AlertDialog.Builder(this)
+            .setTitle("Daily review date")
+            .setItems(allLabels) { _, which ->
+                if (which in dateOptions.indices) {
+                    startDailyReviewChat(dateOptions[which], retentionDays)
+                } else {
+                    showDailyReviewDatePicker(retentionDays)
+                }
+            }
+            .setPositiveButton("Open calendar") { _, _ ->
+                showDailyReviewDatePicker(retentionDays)
+            }
+            .setNeutralButton("Today") { _, _ ->
+                startDailyReviewChat(todayDate, retentionDays)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showDailyReviewDatePicker(retentionDays: Int) {
+        val now = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 12)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val min = (now.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -(retentionDays - 1)) }
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
+        DatePickerDialog(
+            this,
+            { _, year, month, dayOfMonth ->
+                val picked = Calendar.getInstance().apply {
+                    set(year, month, dayOfMonth, 12, 0, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                val date = fmt.format(Date(picked.timeInMillis))
+                startDailyReviewChat(date, retentionDays)
+            },
+            now.get(Calendar.YEAR),
+            now.get(Calendar.MONTH),
+            now.get(Calendar.DAY_OF_MONTH),
+        ).apply {
+            datePicker.minDate = min.timeInMillis
+            datePicker.maxDate = now.timeInMillis
+        }.show()
+    }
+
+    private fun startDailyReviewChat(date: String, lookbackDays: Int) {
+        startActivity(
+            Intent(this, ChatThreadActivity::class.java)
+                .putExtra(ChatThreadActivity.EXTRA_CREATE_THREAD_TITLE, "Daily review ($date)")
+                .putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_REVIEW, true)
+                .putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_DATE, date)
+                .putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_LOOKBACK_DAYS, lookbackDays),
+        )
     }
 
     private fun showChatAppearanceMenu() {

@@ -9,6 +9,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.fersaiyan.cyanbridge.MainActivity
 import com.fersaiyan.cyanbridge.R
@@ -26,6 +27,8 @@ import com.fersaiyan.cyanbridge.localagent.LocalAgentPrefs
 import com.fersaiyan.cyanbridge.localagent.context.LocalAgentContextBuilder
 import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsReviewProtocol
 import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsStorage
+import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsReviewThreadStore
+import com.fersaiyan.cyanbridge.localagent.dailyfacts.OcrDailyFactsSeeder
 import com.fersaiyan.cyanbridge.localagent.userfacts.CandidateUserFactsStorage
 import com.fersaiyan.cyanbridge.localagent.userfacts.UserFactsStorage
 import com.fersaiyan.cyanbridge.localagent.userfacts.ChatMemoryAutoUpdater
@@ -33,13 +36,17 @@ import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryPrefs
 import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryRegenerateWorker
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemorySearch
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
+import com.fersaiyan.cyanbridge.memoryvault.MemoryModeManager
 import com.fersaiyan.cyanbridge.ui.chat.ChatAppearancePrefs
 import com.fersaiyan.cyanbridge.ui.chat.ChatMessageAdapter
 import com.fersaiyan.cyanbridge.ui.chat.ThinkingIndicatorController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.LinkedHashMap
+import java.util.LinkedHashSet
 
 class ChatThreadActivity : AppCompatActivity() {
 
@@ -49,6 +56,8 @@ class ChatThreadActivity : AppCompatActivity() {
 
     private var isDailyFactsReview: Boolean = false
     private var dailyFactsDate: String? = null
+    private var dailyFactsLookbackDays: Int = 1
+    private var dailyFactsSeededFromOcr: Boolean = false
     private var thinkingIndicator: ThinkingIndicatorController? = null
     private var pendingAssistantRequests: Int = 0
     private var localGenerationRunning: Boolean = false
@@ -84,6 +93,10 @@ class ChatThreadActivity : AppCompatActivity() {
 
         isDailyFactsReview = intent.getBooleanExtra(EXTRA_DAILY_FACTS_REVIEW, false)
         dailyFactsDate = intent.getStringExtra(EXTRA_DAILY_FACTS_DATE)
+        val configuredRetention = MemoryModeManager.getScreenOcrRetentionDays(this)
+        dailyFactsLookbackDays = intent
+            .getIntExtra(EXTRA_DAILY_FACTS_LOOKBACK_DAYS, configuredRetention)
+            .coerceIn(1, configuredRetention.coerceAtLeast(1))
 
         chatId = intent.getStringExtra(EXTRA_CHAT_ID)
 
@@ -94,6 +107,9 @@ class ChatThreadActivity : AppCompatActivity() {
                 chatId = ChatStore.createThread(title = title).id
             }
         }
+
+        restoreDailyReviewConfigForCurrentThread()
+        registerDailyReviewThreadIfNeeded()
 
         var thread = chatId?.let { ChatStore.getThread(it) }
         if (chatId != null && thread == null) {
@@ -170,7 +186,9 @@ class ChatThreadActivity : AppCompatActivity() {
         setupBottomNavigation()
         refreshModelBadge("Ready")
         updateComposerForGenerationState()
+        observeDailySummaryQueueProgress()
         refreshMessages()
+        refreshDailyReviewQueueStatusAsync()
 
         // Auto-kickoff daily facts review.
         val cid = chatId
@@ -188,6 +206,7 @@ class ChatThreadActivity : AppCompatActivity() {
         applyChatAppearance()
         refreshModelBadge("Ready")
         updateComposerForGenerationState()
+        refreshDailyReviewQueueStatusAsync()
     }
 
     override fun onDestroy() {
@@ -203,6 +222,13 @@ class ChatThreadActivity : AppCompatActivity() {
     override fun onNewIntent(intent: android.content.Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+        isDailyFactsReview = intent?.getBooleanExtra(EXTRA_DAILY_FACTS_REVIEW, false) ?: false
+        dailyFactsDate = intent?.getStringExtra(EXTRA_DAILY_FACTS_DATE)
+        val configuredRetention = MemoryModeManager.getScreenOcrRetentionDays(this)
+        dailyFactsLookbackDays = intent
+            ?.getIntExtra(EXTRA_DAILY_FACTS_LOOKBACK_DAYS, configuredRetention)
+            ?.coerceIn(1, configuredRetention.coerceAtLeast(1))
+            ?: configuredRetention.coerceAtLeast(1)
         chatId = intent?.getStringExtra(EXTRA_CHAT_ID)
 
         if (chatId == null) {
@@ -211,6 +237,9 @@ class ChatThreadActivity : AppCompatActivity() {
                 chatId = ChatStore.createThread(title = title).id
             }
         }
+
+        restoreDailyReviewConfigForCurrentThread()
+        registerDailyReviewThreadIfNeeded()
 
         val cid = chatId
         if (cid != null) {
@@ -224,11 +253,48 @@ class ChatThreadActivity : AppCompatActivity() {
                 ?.let { binding.inputMessage.setText(it) }
 
             refreshMessages()
+            refreshDailyReviewQueueStatusAsync()
         } else {
             binding.tvToolbarTitle.text = "New chat"
             adapter.submitList(emptyList())
+            binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
         }
         applyChatAppearance()
+    }
+
+    private fun restoreDailyReviewConfigForCurrentThread() {
+        val cid = chatId ?: return
+        if (!isDailyFactsReview) {
+            val stored = DailyFactsReviewThreadStore.load(this, cid)
+            if (stored != null) {
+                isDailyFactsReview = true
+                dailyFactsDate = stored.date
+                dailyFactsLookbackDays = stored.lookbackDays.coerceAtLeast(1)
+                return
+            }
+        }
+
+        if (isDailyFactsReview && dailyFactsDate.isNullOrBlank()) {
+            val title = ChatStore.getThread(cid)?.title.orEmpty()
+            val m = Regex("Daily review \\((\\d{4}-\\d{2}-\\d{2})\\)").find(title)
+            val parsedDate = m?.groupValues?.getOrNull(1)
+            if (!parsedDate.isNullOrBlank()) {
+                dailyFactsDate = parsedDate
+            }
+        }
+    }
+
+    private fun registerDailyReviewThreadIfNeeded() {
+        if (!isDailyFactsReview) return
+        val cid = chatId ?: return
+        val date = dailyFactsDate?.trim().orEmpty()
+        if (date.isBlank()) return
+        DailyFactsReviewThreadStore.save(
+            context = this,
+            chatId = cid,
+            date = date,
+            lookbackDays = dailyFactsLookbackDays,
+        )
     }
 
     private fun applyChatAppearance() {
@@ -463,6 +529,56 @@ class ChatThreadActivity : AppCompatActivity() {
         }
     }
 
+    private fun observeDailySummaryQueueProgress() {
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            .format(java.util.Date(System.currentTimeMillis()))
+        WorkManager.getInstance(this)
+            .getWorkInfosForUniqueWorkLiveData(DailySummaryRegenerateWorker.uniqueWorkName(today))
+            .observe(this) { infos ->
+                val info = infos.firstOrNull()
+                renderDailySummaryQueueProgress(info)
+            }
+    }
+
+    private fun renderDailySummaryQueueProgress(info: WorkInfo?) {
+        if (info == null || (info.state != WorkInfo.State.ENQUEUED && info.state != WorkInfo.State.RUNNING)) {
+            binding.layoutDailySummaryProgress.visibility = android.view.View.GONE
+            return
+        }
+
+        val bulletTotal = info.progress.getInt(DailySummaryRegenerateWorker.KEY_BULLET_TOTAL, 0)
+        if (bulletTotal <= 0) {
+            binding.layoutDailySummaryProgress.visibility = android.view.View.GONE
+            return
+        }
+
+        val bulletDone = info.progress.getInt(DailySummaryRegenerateWorker.KEY_BULLET_DONE, 0)
+            .coerceIn(0, bulletTotal)
+        val stage = info.progress.getString(DailySummaryRegenerateWorker.KEY_STAGE)
+            ?.trim()
+            .orEmpty()
+            .ifBlank { "Queued" }
+        val etaMs = info.progress.getLong(DailySummaryRegenerateWorker.KEY_ETA_MS, 0L)
+            .coerceAtLeast(0L)
+        val etaSeconds = (etaMs / 1000L).coerceAtLeast(0L)
+        val etaText = if (etaSeconds >= 60L) {
+            val m = etaSeconds / 60L
+            val s = etaSeconds % 60L
+            "~${m}m ${s}s"
+        } else {
+            "~${etaSeconds}s"
+        }
+
+        val percent = ((bulletDone.toDouble() / bulletTotal.toDouble()) * 100.0)
+            .toInt()
+            .coerceIn(0, 100)
+
+        binding.layoutDailySummaryProgress.visibility = android.view.View.VISIBLE
+        binding.progressDailySummaryBullets.progress = percent
+        binding.tvDailySummaryProgress.text =
+            "Daily summary bullets $bulletDone/$bulletTotal · $stage · ETA $etaText"
+    }
+
     private fun showRelayDownToastIfNeeded(message: String?) {
         val hint = ProSubscriptionRelayClient.relayUnavailableHintFromText(message.orEmpty()) ?: return
         android.widget.Toast.makeText(this, hint, android.widget.Toast.LENGTH_LONG).show()
@@ -546,6 +662,7 @@ class ChatThreadActivity : AppCompatActivity() {
 
         val created = ChatStore.createThread()
         chatId = created.id
+        registerDailyReviewThreadIfNeeded()
         binding.tvToolbarTitle.text = created.title
         return created.id
     }
@@ -602,6 +719,7 @@ class ChatThreadActivity : AppCompatActivity() {
                 } else {
                     val streamed = streamingAssistantDraft.orEmpty().trim()
                     val finalReply = when {
+                        useLocalStreaming && streamed.isNotBlank() -> streamed
                         assistantReply.isNotBlank() -> assistantReply
                         streamed.isNotBlank() -> streamed
                         useLocalStreaming -> "I couldn't generate a reply yet. Loading the model and retrying can take a moment; please try again."
@@ -677,17 +795,25 @@ class ChatThreadActivity : AppCompatActivity() {
             onAssistantRequestStarted()
             try {
                 val assistantReply = withContext(Dispatchers.IO) {
+                    ensureDailyFactsDraftHydratedFromOcrIfNeeded(date)
                     val state = DailyFactsStorage.load(this@ChatThreadActivity, date)
                     LocalAgentMemoryStore.ensureSeedFiles(this@ChatThreadActivity)
                     val userFactsMd = LocalAgentMemoryStore.readText(LocalAgentMemoryStore.userFactsFile(this@ChatThreadActivity))
                     val candidateUserFacts = CandidateUserFactsStorage.load(this@ChatThreadActivity, date)
-                    val system = DailyFactsReviewProtocol.buildSystemMessage(state, userFactsMd, candidateUserFacts)
+                    val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(state, candidateUserFacts)
+                    val system = DailyFactsReviewProtocol.buildSystemMessage(
+                        state = state,
+                        userFactsMd = userFactsMd,
+                        candidateUserFacts = candidateUserFacts,
+                        dailyFactsBatch = dailyBatch,
+                        userFactsBatch = userBatch,
+                    )
 
                     val msgs = listOf(
                         mapOf("role" to "System", "content" to system),
                         mapOf(
                             "role" to "User",
-                            "content" to "Start the daily facts review. Ask me about up to 3 facts at a time.",
+                            "content" to "Start the daily facts review from the current batch. Ask me about 3 to 5 items.",
                         ),
                     )
 
@@ -852,7 +978,23 @@ class ChatThreadActivity : AppCompatActivity() {
 
     private suspend fun buildRelayMessages(chatId: String, lastUserPrompt: String): List<Map<String, String>> {
         if (!isDailyFactsReview) {
-            val history = ChatStore.listMessages(chatId).map { m ->
+            val selectedLocalModel = if (isLocalModelsProviderSelected()) {
+                LocalModelStorageRepository.resolveSelectedModel(this)
+            } else {
+                null
+            }
+            val localContextSize = if (selectedLocalModel != null) {
+                LocalModelSettingsRepository.getForModel(this, selectedLocalModel.id).contextSize
+            } else {
+                4096
+            }
+            val contextBudgets = computeContextBudgets(
+                isDailyReview = false,
+                selectedModel = selectedLocalModel,
+                contextSize = localContextSize,
+            )
+
+            val historyRaw = ChatStore.listMessages(chatId).map { m ->
                 mapOf(
                     "role" to if (m.role == ChatRole.USER) "User" else "Assistant",
                     "content" to m.content,
@@ -882,7 +1024,8 @@ class ChatThreadActivity : AppCompatActivity() {
                 )
             }
 
-            val ctx = LocalAgentContextBuilder().buildSystemMessageWithDebug(
+            val contextBuilder = buildLocalAgentContextBuilder(contextBudgets.systemChars)
+            val ctx = contextBuilder.buildSystemMessageWithDebug(
                 context = this,
                 date = today,
                 extraSections = extra,
@@ -894,84 +1037,343 @@ class ChatThreadActivity : AppCompatActivity() {
             )
 
             val system = ctx.systemMessage
-            if (system.isBlank()) return history
+            val trimmedHistory = trimHistoryForContext(
+                history = historyRaw,
+                maxApproxTokens = contextBudgets.historyTokens,
+            )
+            if (system.isBlank()) return trimmedHistory
 
-            return listOf(mapOf("role" to "System", "content" to system)) + history
+            return listOf(mapOf("role" to "System", "content" to system)) + trimmedHistory
         }
 
         val date = dailyFactsDate ?: java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .format(java.util.Date(System.currentTimeMillis()))
 
+        ensureDailyFactsDraftHydratedFromOcrIfNeeded(date)
         val state = DailyFactsStorage.load(this, date)
         LocalAgentMemoryStore.ensureSeedFiles(this)
         val userFactsMd = LocalAgentMemoryStore.readText(LocalAgentMemoryStore.userFactsFile(this))
         val candidateUserFacts = CandidateUserFactsStorage.load(this, date)
-        val system = DailyFactsReviewProtocol.buildSystemMessage(state, userFactsMd, candidateUserFacts)
+        val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(state, candidateUserFacts)
+        val system = DailyFactsReviewProtocol.buildSystemMessage(
+            state = state,
+            userFactsMd = userFactsMd,
+            candidateUserFacts = candidateUserFacts,
+            dailyFactsBatch = dailyBatch,
+            userFactsBatch = userBatch,
+        )
 
-        val history = ChatStore.listMessages(chatId).map { m ->
+        val historyRaw = ChatStore.listMessages(chatId).map { m ->
             mapOf(
                 "role" to if (m.role == ChatRole.USER) "User" else "Assistant",
                 "content" to m.content,
             )
         }
 
+        val history = trimHistoryForContext(
+            history = historyRaw,
+            maxApproxTokens = computeContextBudgets(
+                isDailyReview = true,
+                selectedModel = if (isLocalModelsProviderSelected()) LocalModelStorageRepository.resolveSelectedModel(this) else null,
+                contextSize = if (isLocalModelsProviderSelected()) {
+                    LocalModelStorageRepository.resolveSelectedModel(this)
+                        ?.let { LocalModelSettingsRepository.getForModel(this, it.id).contextSize }
+                        ?: 2048
+                } else {
+                    4096
+                },
+            ).historyTokens,
+        )
+
         return listOf(mapOf("role" to "System", "content" to system)) + history
     }
 
-    private fun handleDailyFactsAiReply(chatId: String, raw: String) {
+    private suspend fun ensureDailyFactsDraftHydratedFromOcrIfNeeded(date: String) {
+        if (!isDailyFactsReview || dailyFactsSeededFromOcr) return
+        dailyFactsSeededFromOcr = true
+
+        val retentionDays = MemoryModeManager.getScreenOcrRetentionDays(this)
+        val lookback = dailyFactsLookbackDays.coerceIn(1, retentionDays.coerceAtLeast(1))
+        runCatching {
+            OcrDailyFactsSeeder.seedDraftFactsFromScreenCaptures(
+                context = this,
+                targetDate = date,
+                lookbackDays = lookback,
+            )
+        }
+    }
+
+    private fun buildDailyFactsReviewBatch(
+        state: DailyFactsStorage.State,
+        candidateUserFacts: List<String>,
+    ): Pair<List<String>, List<String>> {
+        val maxBatch = 5
+        val dailyTarget = 3
+        val userTarget = 2
+
+        var dailyTake = state.draft.take(dailyTarget)
+        var userTake = candidateUserFacts.take(userTarget)
+
+        var remaining = maxBatch - dailyTake.size - userTake.size
+        if (remaining > 0) {
+            val extraDaily = state.draft.drop(dailyTake.size).take(remaining)
+            dailyTake = dailyTake + extraDaily
+            remaining -= extraDaily.size
+        }
+        if (remaining > 0) {
+            val extraUser = candidateUserFacts.drop(userTake.size).take(remaining)
+            userTake = userTake + extraUser
+        }
+
+        return dailyTake to userTake
+    }
+
+    private data class ContextBudgets(
+        val systemChars: Int,
+        val historyTokens: Int,
+    )
+
+    private fun computeContextBudgets(
+        isDailyReview: Boolean,
+        selectedModel: com.fersaiyan.cyanbridge.localmodels.storage.InstalledLocalModel?,
+        contextSize: Int,
+    ): ContextBudgets {
+        val normalizedCtx = contextSize.coerceIn(1024, 8192)
+        if (!isLocalModelsProviderSelected()) {
+            return if (isDailyReview) {
+                ContextBudgets(systemChars = 3000, historyTokens = 2200)
+            } else {
+                ContextBudgets(systemChars = 6000, historyTokens = 5000)
+            }
+        }
+
+        val modelName = selectedModel?.displayName.orEmpty().lowercase()
+        val smallModel = modelName.contains("1b") || (selectedModel?.sizeBytes ?: Long.MAX_VALUE) < 2_500_000_000L
+
+        val systemFraction = when {
+            isDailyReview -> 0.32
+            smallModel -> 0.16
+            else -> 0.30
+        }
+        val historyFraction = when {
+            isDailyReview -> 0.30
+            smallModel -> 0.34
+            else -> 0.52
+        }
+
+        val systemTokens = (normalizedCtx * systemFraction).toInt().coerceAtLeast(220)
+        val historyTokens = (normalizedCtx * historyFraction).toInt().coerceAtLeast(260)
+        val systemChars = (systemTokens * 4).coerceIn(900, 7000)
+
+        return ContextBudgets(systemChars = systemChars, historyTokens = historyTokens)
+    }
+
+    private fun buildLocalAgentContextBuilder(maxTotalChars: Int): LocalAgentContextBuilder {
+        val ratio = (maxTotalChars.toDouble() / 14_000.0).coerceIn(0.12, 1.0)
+        fun scaled(base: Int, min: Int): Int = (base * ratio).toInt().coerceAtLeast(min)
+
+        return LocalAgentContextBuilder(
+            maxAgentPersonaChars = scaled(base = 3_000, min = 280),
+            maxUserFactsChars = scaled(base = 3_000, min = 320),
+            maxConfirmedDailyFactsChars = scaled(base = 4_000, min = 420),
+            maxDailySummaryChars = scaled(base = 5_000, min = 520),
+            maxTotalChars = maxTotalChars,
+        )
+    }
+
+    private fun trimHistoryForContext(
+        history: List<Map<String, String>>,
+        maxApproxTokens: Int,
+    ): List<Map<String, String>> {
+        if (history.isEmpty()) return history
+        var budget = maxApproxTokens.coerceAtLeast(120)
+        val kept = ArrayList<Map<String, String>>()
+
+        for (i in history.indices.reversed()) {
+            val msg = history[i]
+            val content = msg["content"].orEmpty()
+            val role = msg["role"].orEmpty()
+            val approxTokens = ((content.length + role.length) / 4).coerceAtLeast(10)
+            if (kept.isNotEmpty() && budget - approxTokens < 0) break
+            kept.add(msg)
+            budget -= approxTokens
+        }
+
+        return kept.asReversed()
+    }
+
+    private suspend fun handleDailyFactsAiReply(chatId: String, raw: String) {
         val date = dailyFactsDate ?: java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .format(java.util.Date(System.currentTimeMillis()))
 
-        try {
-            val update = DailyFactsReviewProtocol.parseUpdate(raw)
+        val parsed = runCatching { DailyFactsReviewProtocol.parseUpdate(raw) }.getOrNull()
+            ?: attemptRepairDailyFactsUpdate(date = date, raw = raw)
 
-            if (update.draftFacts != null) {
-                DailyFactsStorage.writeDraft(this, date, update.draftFacts)
-            }
-
-            if (update.newFacts.isNotEmpty()) {
-                val cur = DailyFactsStorage.load(this, date)
-                DailyFactsStorage.writeDraft(this, date, cur.draft + update.newFacts)
-            }
-
-            val toRemove = update.confirmedFacts + update.rejectedFacts
-            if (toRemove.isNotEmpty()) {
-                DailyFactsStorage.removeFromDraft(this, date, toRemove)
-            }
-
-            if (update.confirmedFacts.isNotEmpty()) {
-                DailyFactsStorage.appendConfirmed(this, date, update.confirmedFacts)
-            }
-
-            // USER FACTS review flow
-            if (update.newUserFactsCandidates.isNotEmpty()) {
-                CandidateUserFactsStorage.append(this, date, update.newUserFactsCandidates)
-            }
-
-            val resolvedUserFacts = update.confirmedUserFacts + update.rejectedUserFacts
-            if (resolvedUserFacts.isNotEmpty()) {
-                CandidateUserFactsStorage.remove(this, date, resolvedUserFacts)
-            }
-
-            if (update.confirmedUserFacts.isNotEmpty()) {
-                UserFactsStorage.appendUniqueFacts(this, update.confirmedUserFacts)
-            }
-
-            ChatStore.addMessage(chatId, ChatRole.ASSISTANT, update.assistantMessage)
-        } catch (_: Throwable) {
-            // Fallback: show raw output
-            ChatStore.addMessage(chatId, ChatRole.ASSISTANT, raw)
+        if (parsed == null) {
+            ChatStore.addMessage(
+                chatId,
+                ChatRole.ASSISTANT,
+                "I couldn't parse that review update safely, so I kept your queue unchanged. Please answer once more and I'll continue with the same pending facts.",
+            )
+            refreshDailyReviewQueueStatusAsync()
+            return
         }
+
+        applyDailyFactsUpdate(chatId = chatId, date = date, update = parsed)
+    }
+
+    private fun applyDailyFactsUpdate(
+        chatId: String,
+        date: String,
+        update: DailyFactsReviewProtocol.AiUpdate,
+    ) {
+        val preState = DailyFactsStorage.load(this, date)
+        val preCandidates = CandidateUserFactsStorage.load(this, date)
+        val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(preState, preCandidates)
+
+        val confirmedDaily = resolveFactsAgainstBatch(update.confirmedFacts, dailyBatch)
+        val rejectedDaily = resolveFactsAgainstBatch(update.rejectedFacts, dailyBatch)
+        val confirmedUser = resolveFactsAgainstBatch(update.confirmedUserFacts, userBatch)
+        val rejectedUser = resolveFactsAgainstBatch(update.rejectedUserFacts, userBatch)
+
+        val filteredNewDailyFacts = update.newFacts
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .take(8)
+
+        val filteredNewUserFactCandidates = update.newUserFactsCandidates
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .take(8)
+
+        if (filteredNewDailyFacts.isNotEmpty()) {
+            val cur = DailyFactsStorage.load(this, date)
+            DailyFactsStorage.writeDraft(this, date, cur.draft + filteredNewDailyFacts)
+        }
+
+        val toRemove = confirmedDaily + rejectedDaily
+        if (toRemove.isNotEmpty()) {
+            DailyFactsStorage.removeFromDraft(this, date, toRemove)
+        }
+
+        if (confirmedDaily.isNotEmpty()) {
+            DailyFactsStorage.appendConfirmed(this, date, confirmedDaily)
+        }
+
+        if (filteredNewUserFactCandidates.isNotEmpty()) {
+            CandidateUserFactsStorage.append(this, date, filteredNewUserFactCandidates)
+        }
+
+        val resolvedUserFacts = confirmedUser + rejectedUser
+        if (resolvedUserFacts.isNotEmpty()) {
+            CandidateUserFactsStorage.remove(this, date, resolvedUserFacts)
+        }
+
+        if (confirmedUser.isNotEmpty()) {
+            UserFactsStorage.appendUniqueFacts(this, confirmedUser)
+        }
+
+        refreshDailyReviewQueueStatusAsync()
+        val assistantText = update.assistantMessage.trim().ifBlank {
+            "Got it. I updated the queue and prepared the next facts to review."
+        }
+        ChatStore.addMessage(chatId, ChatRole.ASSISTANT, assistantText)
+    }
+
+    private suspend fun attemptRepairDailyFactsUpdate(
+        date: String,
+        raw: String,
+    ): DailyFactsReviewProtocol.AiUpdate? {
+        return runCatching {
+            val state = DailyFactsStorage.load(this, date)
+            val candidateUserFacts = CandidateUserFactsStorage.load(this, date)
+            val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(state, candidateUserFacts)
+
+            val prompt = buildString {
+                appendLine("Convert the following daily-review assistant output into strict JSON only.")
+                appendLine("Do not add markdown. Return one JSON object with keys:")
+                appendLine("assistant_message, confirmed_facts, rejected_facts, new_facts, confirmed_user_facts, rejected_user_facts, new_user_facts_candidates")
+                appendLine("Use only facts from the provided batches when filling confirmed/rejected arrays.")
+                appendLine()
+                appendLine("DATE: $date")
+                appendLine("DAILY_BATCH:")
+                dailyBatch.forEachIndexed { idx, item -> appendLine("${idx + 1}. $item") }
+                appendLine("USER_BATCH:")
+                userBatch.forEachIndexed { idx, item -> appendLine("${idx + 1}. $item") }
+                appendLine()
+                appendLine("OUTPUT_TO_CONVERT:")
+                appendLine(raw.take(4000))
+            }
+
+            val repairedRaw = withContext(Dispatchers.IO) {
+                RelayAiAssistantRouter.textReply(this@ChatThreadActivity, prompt)
+            }
+            DailyFactsReviewProtocol.parseUpdate(repairedRaw)
+        }.getOrNull()
+    }
+
+    private fun resolveFactsAgainstBatch(
+        returnedFacts: List<String>,
+        batchFacts: List<String>,
+    ): List<String> {
+        if (returnedFacts.isEmpty() || batchFacts.isEmpty()) return emptyList()
+
+        val out = LinkedHashSet<String>()
+        val canonicalByNorm = LinkedHashMap<String, String>()
+        batchFacts.forEach { fact ->
+            val norm = normalizeFactForMatching(fact)
+            if (norm.isNotBlank() && !canonicalByNorm.containsKey(norm)) {
+                canonicalByNorm[norm] = fact
+            }
+        }
+
+        for (raw in returnedFacts) {
+            val candidate = raw.trim()
+            if (candidate.isBlank()) continue
+            val norm = normalizeFactForMatching(candidate)
+            if (norm.isBlank()) continue
+
+            val exact = canonicalByNorm[norm]
+            if (exact != null) {
+                out += exact
+                continue
+            }
+
+            val fuzzy = canonicalByNorm.entries.firstOrNull { (batchNorm, _) ->
+                batchNorm.contains(norm) || norm.contains(batchNorm)
+            }?.value
+            if (fuzzy != null) out += fuzzy
+        }
+
+        return out.toList()
+    }
+
+    private fun normalizeFactForMatching(value: String): String {
+        return value
+            .lowercase(java.util.Locale.US)
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(260)
     }
 
     private fun refreshMessages() {
         val cid = chatId
         if (cid == null) {
             adapter.submitList(emptyList())
+            binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
             return
         }
         val stored = ChatStore.listMessages(cid)
         val draft = streamingAssistantDraft
+        val layoutManager = binding.recyclerMessages.layoutManager as? LinearLayoutManager
+        val previousCount = adapter.itemCount
+        val wasNearBottom = if (previousCount <= 1) {
+            true
+        } else {
+            (layoutManager?.findLastVisibleItemPosition() ?: -1) >= (previousCount - 2)
+        }
+        val forceKeepBottom = draft != null
         val msgs = if (draft != null) {
             stored + com.fersaiyan.cyanbridge.chat.ChatMessage(
                 id = "streaming-${System.currentTimeMillis()}",
@@ -984,14 +1386,50 @@ class ChatThreadActivity : AppCompatActivity() {
             stored
         }
         adapter.submitList(msgs)
-        if (msgs.isNotEmpty()) {
-            binding.recyclerMessages.smoothScrollToPosition(msgs.size - 1)
+        if (msgs.isNotEmpty() && (forceKeepBottom || wasNearBottom)) {
+            binding.recyclerMessages.post {
+                binding.recyclerMessages.scrollToPosition(msgs.size - 1)
+            }
         }
 
         // Update title if changed
         val thread = ChatStore.getThread(cid)
         if (thread != null && thread.title != binding.tvToolbarTitle.text) {
             binding.tvToolbarTitle.text = thread.title
+        }
+    }
+
+    private fun refreshDailyReviewQueueStatusAsync() {
+        if (!isDailyFactsReview) {
+            binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
+            return
+        }
+
+        val date = dailyFactsDate?.trim().orEmpty()
+        if (date.isBlank()) {
+            binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
+            return
+        }
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val draftCount = runCatching { DailyFactsStorage.load(this@ChatThreadActivity, date).draft.size }
+                .getOrDefault(0)
+            val confirmedCount = runCatching { DailyFactsStorage.load(this@ChatThreadActivity, date).confirmed.size }
+                .getOrDefault(0)
+            val candidateCount = runCatching { CandidateUserFactsStorage.load(this@ChatThreadActivity, date).size }
+                .getOrDefault(0)
+
+            val queueOk = draftCount >= 0 && confirmedCount >= 0 && candidateCount >= 0
+            val text = if (queueOk) {
+                "Queue integrity: ok · pending $draftCount · confirmed $confirmedCount · user candidates $candidateCount"
+            } else {
+                "Queue integrity: check needed"
+            }
+
+            withContext(Dispatchers.Main) {
+                binding.tvDailyReviewQueueStatus.visibility = android.view.View.VISIBLE
+                binding.tvDailyReviewQueueStatus.text = text
+            }
         }
     }
 
@@ -1076,5 +1514,6 @@ class ChatThreadActivity : AppCompatActivity() {
         // Daily facts review mode
         const val EXTRA_DAILY_FACTS_REVIEW = "daily_facts_review"
         const val EXTRA_DAILY_FACTS_DATE = "daily_facts_date"
+        const val EXTRA_DAILY_FACTS_LOOKBACK_DAYS = "daily_facts_lookback_days"
     }
 }

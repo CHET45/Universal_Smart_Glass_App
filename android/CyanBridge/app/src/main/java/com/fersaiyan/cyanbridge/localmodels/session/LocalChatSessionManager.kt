@@ -12,9 +12,11 @@ import com.fersaiyan.cyanbridge.localmodels.engine.LocalInferenceEngine
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalComputeBackend
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalGenerationSettings
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelRuntime
+import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelRequestPriority
 import com.fersaiyan.cyanbridge.localmodels.storage.InstalledLocalModel
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -67,6 +69,8 @@ object LocalChatSessionManager {
     private var activeGpuLayers: Int = 0
     private var gpuFallbackMessage: String? = null
     private var activeRequestId: String? = null
+    private var pendingHighPriorityRequests: Int = 0
+    private var activeRequestPriority: LocalModelRequestPriority? = null
     private var state: LocalSessionState = LocalSessionState.ModelNotLoaded
 
     suspend fun snapshot(): LocalSessionSnapshot = mutex.withLock {
@@ -193,61 +197,103 @@ object LocalChatSessionManager {
         settings: LocalGenerationSettings,
         prompt: String,
         onToken: (String) -> Unit,
+        requestPriority: LocalModelRequestPriority = LocalModelRequestPriority.HIGH,
     ): String {
-        return generateInternal(settings = settings, prompt = prompt, onToken = onToken).text
+        return generateInternal(
+            settings = settings,
+            prompt = prompt,
+            onToken = onToken,
+            requestPriority = requestPriority,
+        ).text
     }
 
     private suspend fun generateInternal(
         settings: LocalGenerationSettings,
         prompt: String,
         onToken: (String) -> Unit,
+        requestPriority: LocalModelRequestPriority,
     ): GenerationResult {
         val reqId = UUID.randomUUID().toString()
         val llm: LocalInferenceEngine
         val modelId: String
+
+        if (requestPriority == LocalModelRequestPriority.HIGH) {
+            mutex.withLock {
+                pendingHighPriorityRequests += 1
+            }
+        }
 
         mutex.withLock {
             llm = engine ?: throw IllegalStateException("Local engine not initialized")
             modelId = loadedModelId ?: throw IllegalStateException("No local model loaded")
         }
 
-        return generationMutex.withLock {
-            mutex.withLock {
-                activeRequestId = reqId
-                state = LocalSessionState.Generating(modelId, reqId)
-            }
+        if (requestPriority == LocalModelRequestPriority.LOW) {
+            waitForHighPriorityRequestsToDrain()
+        }
 
-            val result = runCatching {
-                withContext(Dispatchers.IO) {
-                    llm.generate(
-                        config = GenerationConfig(
-                            prompt = prompt,
-                            temperature = settings.temperature,
-                            topP = settings.topP,
-                            topK = settings.topK,
-                            maxTokens = settings.maxTokens,
-                            repetitionPenalty = settings.repetitionPenalty,
-                            seed = settings.seed,
-                            structuredJson = settings.experimentalStructuredJson,
-                        ),
-                        onToken = onToken,
+        var highPendingConsumed = false
+        try {
+            return generationMutex.withLock {
+                mutex.withLock {
+                    if (requestPriority == LocalModelRequestPriority.HIGH) {
+                        pendingHighPriorityRequests = (pendingHighPriorityRequests - 1).coerceAtLeast(0)
+                        highPendingConsumed = true
+                    }
+                    activeRequestId = reqId
+                    activeRequestPriority = requestPriority
+                    state = LocalSessionState.Generating(modelId, reqId)
+                }
+
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        llm.generate(
+                            config = GenerationConfig(
+                                prompt = prompt,
+                                temperature = settings.temperature,
+                                topP = settings.topP,
+                                topK = settings.topK,
+                                maxTokens = settings.maxTokens,
+                                repetitionPenalty = settings.repetitionPenalty,
+                                seed = settings.seed,
+                                structuredJson = settings.experimentalStructuredJson,
+                            ),
+                            onToken = onToken,
+                        )
+                    }
+                }
+
+                mutex.withLock {
+                    activeRequestId = null
+                    activeRequestPriority = null
+                    result.fold(
+                        onSuccess = {
+                            state = LocalSessionState.Ready(modelId)
+                            it
+                        },
+                        onFailure = { err ->
+                            state = LocalSessionState.Error(err.message ?: "Local generation failed")
+                            throw err
+                        },
                     )
                 }
             }
-
-            mutex.withLock {
-                activeRequestId = null
-                result.fold(
-                    onSuccess = {
-                        state = LocalSessionState.Ready(modelId)
-                        it
-                    },
-                    onFailure = { err ->
-                        state = LocalSessionState.Error(err.message ?: "Local generation failed")
-                        throw err
-                    },
-                )
+        } finally {
+            if (requestPriority == LocalModelRequestPriority.HIGH && !highPendingConsumed) {
+                mutex.withLock {
+                    pendingHighPriorityRequests = (pendingHighPriorityRequests - 1).coerceAtLeast(0)
+                }
             }
+        }
+    }
+
+    private suspend fun waitForHighPriorityRequestsToDrain() {
+        while (true) {
+            val shouldWait = mutex.withLock {
+                pendingHighPriorityRequests > 0 || activeRequestPriority == LocalModelRequestPriority.HIGH
+            }
+            if (!shouldWait) return
+            delay(120L)
         }
     }
 
@@ -275,6 +321,35 @@ object LocalChatSessionManager {
         onToken: (String) -> Unit,
     ): LocalWarmupProbeResult {
         val backend = mutex.withLock { activeBackend ?: settings.computeBackend }
+        val modelPathSnapshot = mutex.withLock { loadedModelPath }
+        val skipGenerationForStability = shouldSkipWarmupGeneration(modelPathSnapshot)
+
+        if (skipGenerationForStability) {
+            val benchmarkPrompt = "Reply with only: OK"
+            val start = System.currentTimeMillis()
+            val llm = mutex.withLock { engine }
+            val promptTokens = try {
+                llm?.tokenizeCount(benchmarkPrompt)?.coerceAtLeast(1) ?: 1
+            } catch (_: Throwable) {
+                1
+            }
+            val elapsed = (System.currentTimeMillis() - start).coerceAtLeast(1L)
+            val fallback = mutex.withLock { gpuFallbackMessage }
+            val stabilityNote = "Qwen3.5 warm-up generation skipped due upstream llama.cpp instability"
+            val mergedFallback = listOfNotNull(fallback, stabilityNote)
+                .filter { it.isNotBlank() }
+                .joinToString(" | ")
+                .ifBlank { null }
+
+            return LocalWarmupProbeResult(
+                promptTokens = promptTokens,
+                generatedTokens = 1,
+                elapsedMs = elapsed,
+                backend = backend,
+                fallbackReason = mergedFallback,
+            )
+        }
+
         val benchmarkPrompt = if (backend == LocalComputeBackend.GPU_EXPERIMENTAL) {
             "Reply with only: OK"
         } else {
@@ -294,6 +369,7 @@ object LocalChatSessionManager {
             ),
             prompt = benchmarkPrompt,
             onToken = onToken,
+            requestPriority = LocalModelRequestPriority.HIGH,
         )
         val elapsed = (System.currentTimeMillis() - start).coerceAtLeast(1L)
 
@@ -334,5 +410,11 @@ object LocalChatSessionManager {
             LocalModelRuntime.LLAMA_CPP -> LlamaCppLocalInferenceEngine()
             LocalModelRuntime.LITERT -> LiteRtLocalInferenceEngine(context)
         }
+    }
+
+    private fun shouldSkipWarmupGeneration(modelPath: String?): Boolean {
+        val normalized = modelPath.orEmpty().lowercase()
+        if (normalized.isBlank()) return false
+        return normalized.contains("qwen3.5") || normalized.contains("qwen35")
     }
 }

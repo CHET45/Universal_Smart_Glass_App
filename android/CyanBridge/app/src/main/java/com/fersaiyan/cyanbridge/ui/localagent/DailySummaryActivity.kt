@@ -136,10 +136,18 @@ class DailySummaryActivity : AppCompatActivity() {
                     .orEmpty()
                     .ifBlank { DailySummaryGenerator.providerHint(this) }
                 val sampleCount = info.progress.getInt(DailySummaryRegenerateWorker.KEY_SAMPLE_COUNT, 0)
+                val bulletDone = info.progress.getInt(DailySummaryRegenerateWorker.KEY_BULLET_DONE, 0)
+                val bulletTotal = info.progress.getInt(DailySummaryRegenerateWorker.KEY_BULLET_TOTAL, 0)
 
                 binding.progressSummary.progress = percent
                 binding.tvProgressTitle.text = "Regenerating daily summary (${provider})"
-                binding.tvProgressEta.text = formatEtaText(etaMs, sampleCount, stage)
+                binding.tvProgressEta.text = formatEtaText(
+                    etaMs = etaMs,
+                    sampleCount = sampleCount,
+                    stage = stage,
+                    bulletDone = bulletDone,
+                    bulletTotal = bulletTotal,
+                )
                 binding.tvStatus.text = if (percent > 0) {
                     "Generating… $percent%"
                 } else {
@@ -168,7 +176,13 @@ class DailySummaryActivity : AppCompatActivity() {
         }
     }
 
-    private fun formatEtaText(etaMs: Long, sampleCount: Int, stage: String): String {
+    private fun formatEtaText(
+        etaMs: Long,
+        sampleCount: Int,
+        stage: String,
+        bulletDone: Int = 0,
+        bulletTotal: Int = 0,
+    ): String {
         val safeEta = etaMs.coerceAtLeast(0L)
         val totalSeconds = (safeEta / 1000L).coerceAtLeast(0L)
         val minutes = totalSeconds / 60L
@@ -183,7 +197,12 @@ class DailySummaryActivity : AppCompatActivity() {
         } else {
             "cold-start estimate"
         }
-        return "$stage · ETA ~$etaLabel ($sampleLabel)"
+        val bulletLabel = if (bulletTotal > 0) {
+            " · bullets $bulletDone/$bulletTotal"
+        } else {
+            ""
+        }
+        return "$stage$bulletLabel · ETA ~$etaLabel ($sampleLabel)"
     }
 
     private fun shareCurrent() {

@@ -12,22 +12,47 @@ import java.util.Date
 import java.util.Locale
 import com.fersaiyan.cyanbridge.ai.router.AiAssistantRouter
 import com.fersaiyan.cyanbridge.ai.router.CliRelayClient
+import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelRequestPriority
 import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelsProvider
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
 
 object DailySummaryGenerator {
     private val localModelsProvider = LocalModelsProvider()
+    private const val MAX_LOCAL_EVENT_BULLETIZER_CALLS = 24
+    private const val MAX_LOCAL_EVENT_BULLETS_RENDERED = 72
+    private const val MAX_LOCAL_EVENT_BULLETS_CHARS = 14_000
+    private const val MAX_INCREMENTAL_APPEND_BULLETS = 20
+    private const val DEDUPE_EVENT_WINDOW_MS = 8 * 60 * 1000L
 
     private data class ProviderResponse(
         val text: String,
         val metrics: DailySummaryRunHistory.RunMetrics,
     )
 
-    data class Input(
+    private data class ScreenCaptureEvent(
+        val tsMs: Long,
+        val packageName: String,
+        val text: String,
+    )
+
+    private data class EventBullet(
+        val tsMs: Long,
+        val packageName: String,
+        val bullet: String,
+    )
+
+    data class BulletProgress(
+        val done: Int,
+        val total: Int,
+    )
+
+    private data class Input(
         val date: String,
         val confirmedFacts: String,
         val previousSummary: String?,
         val newScreenSnippets: String,
+        val screenEvents: List<ScreenCaptureEvent>,
+        val processedCaptureMaxTsMs: Long,
         val isIncremental: Boolean,
         val outputFile: File,
     )
@@ -53,7 +78,16 @@ object DailySummaryGenerator {
         return DailySummaryRunHistory.estimateTokenCount(prompt)
     }
 
-    fun buildInputForDate(
+    fun estimateBulletEventsForDate(
+        context: Context,
+        date: String = todayString(),
+    ): Int {
+        if (AutomationPrefs.getProviderType(context) != AgentProviderType.LOCAL_AGENT) return 0
+        val input = buildInputForDate(context = context, date = date)
+        return input.screenEvents.size
+    }
+
+    private fun buildInputForDate(
         context: Context,
         date: String = todayString(),
         maxCaptureLines: Int = 80,
@@ -84,22 +118,22 @@ object DailySummaryGenerator {
         }
 
         val allCaptureLines = LocalAgentMemoryStore.readScreenCaptureLines(context, date, maxCaptureLines * 3)
-        
-        val newCapturesOnly = if (lastProcessedAtMs > 0L && allCaptureLines.isNotEmpty() && previousSummary != null && !forceFullRebuild) {
-            val filtered = allCaptureLines.filter { line ->
-                val obj = runCatching { JSONObject(line) }.getOrNull()
-                val ts = obj?.optLong("ts_ms", 0L) ?: 0L
-                ts > lastProcessedAtMs
-            }
-            filtered.takeLast(maxCaptureLines)
+        val allEvents = parseScreenCaptureEvents(
+            lines = allCaptureLines,
+            maxCharsPerCapture = maxCharsPerCapture,
+        )
+
+        val newEvents = if (lastProcessedAtMs > 0L && allEvents.isNotEmpty() && previousSummary != null && !forceFullRebuild) {
+            allEvents
+                .filter { it.tsMs > lastProcessedAtMs }
+                .takeLast(maxCaptureLines)
         } else {
-            allCaptureLines.takeLast(maxCaptureLines)
+            allEvents.takeLast(maxCaptureLines)
         }
 
-        val snippets = if (newCapturesOnly.isNotEmpty()) {
+        val snippets = if (newEvents.isNotEmpty()) {
             formatTailScreenCaptures(
-                lines = newCapturesOnly,
-                maxCharsPerCapture = maxCharsPerCapture,
+                events = newEvents,
                 maxTotalChars = maxTotalChars,
             )
         } else {
@@ -115,26 +149,23 @@ object DailySummaryGenerator {
             confirmedFacts = confirmedFacts,
             previousSummary = previousSummary,
             newScreenSnippets = snippets,
+            screenEvents = newEvents,
+            processedCaptureMaxTsMs = newEvents.maxOfOrNull { it.tsMs } ?: 0L,
             isIncremental = isIncremental,
             outputFile = out,
         )
     }
 
-    private fun formatTailScreenCaptures(
+    private fun parseScreenCaptureEvents(
         lines: List<String>,
         maxCharsPerCapture: Int,
-        maxTotalChars: Int,
-    ): String {
-        if (lines.isEmpty()) return "(screen captures file is empty)"
+    ): List<ScreenCaptureEvent> {
+        if (lines.isEmpty()) return emptyList()
 
-        val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
-
-        val out = StringBuilder()
-        var remaining = maxTotalChars
-        val seen = HashSet<String>()
+        val lastSeenTsByKey = HashMap<String, Long>()
+        val out = ArrayList<ScreenCaptureEvent>(lines.size)
 
         for (line in lines) {
-            if (remaining <= 0) break
             val obj = runCatching { JSONObject(line) }.getOrNull() ?: continue
             val ts = obj.optLong("ts_ms", 0L)
             val pkg = obj.optString("package", "?").ifBlank { "?" }
@@ -148,15 +179,41 @@ object DailySummaryGenerator {
                 .take(maxCharsPerCapture)
             if (!looksLikeUsefulCapture(text)) continue
 
-            val dedupeKey = text
+            val dedupeKey = "${pkg.lowercase(Locale.US)}|" + text
                 .lowercase(Locale.US)
                 .replace(Regex("\\s+"), " ")
-                .take(180)
-            if (!seen.add(dedupeKey)) continue
+                .take(500)
+            val previousTs = lastSeenTsByKey[dedupeKey]
+            if (previousTs != null && ts > 0L && previousTs > 0L && (ts - previousTs) in 0 until DEDUPE_EVENT_WINDOW_MS) {
+                continue
+            }
+            lastSeenTsByKey[dedupeKey] = ts
 
-            val time = if (ts > 0L) timeFmt.format(Date(ts)) else "??:??"
+            out += ScreenCaptureEvent(
+                tsMs = ts,
+                packageName = pkg,
+                text = text,
+            )
+        }
 
-            val row = "- [$time] $pkg: $text\n"
+        return out
+    }
+
+    private fun formatTailScreenCaptures(
+        events: List<ScreenCaptureEvent>,
+        maxTotalChars: Int,
+    ): String {
+        if (events.isEmpty()) return "(screen captures file is empty)"
+
+        val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
+
+        val out = StringBuilder()
+        var remaining = maxTotalChars
+
+        for (event in events) {
+            if (remaining <= 0) break
+            val time = if (event.tsMs > 0L) timeFmt.format(Date(event.tsMs)) else "??:??"
+            val row = "- [$time] ${event.packageName}: ${event.text}\n"
             if (row.length > remaining) {
                 val clipped = row.take(remaining.coerceAtLeast(0))
                 out.append(clipped)
@@ -174,6 +231,291 @@ object DailySummaryGenerator {
         }
     }
 
+    private suspend fun prepareInputForGeneration(
+        context: Context,
+        input: Input,
+        onBulletProgress: ((BulletProgress) -> Unit)? = null,
+    ): Input {
+        val isLocalProvider = AutomationPrefs.getProviderType(context) == AgentProviderType.LOCAL_AGENT
+        if (!isLocalProvider || input.screenEvents.isEmpty()) return input
+
+        val mergedEventBullets = buildMergedEventBulletsForLocalModel(
+            context = context,
+            events = input.screenEvents,
+            onBulletProgress = onBulletProgress,
+        )
+
+        if (mergedEventBullets.isBlank()) return input
+        return input.copy(newScreenSnippets = mergedEventBullets)
+    }
+
+    private suspend fun buildMergedEventBulletsForLocalModel(
+        context: Context,
+        events: List<ScreenCaptureEvent>,
+        onBulletProgress: ((BulletProgress) -> Unit)? = null,
+    ): String {
+        if (events.isEmpty()) return ""
+
+        val started = System.currentTimeMillis()
+        val bullets = ArrayList<EventBullet>(events.size)
+        var modelCalls = 0
+        var processed = 0
+        onBulletProgress?.invoke(BulletProgress(done = 0, total = events.size))
+
+        for (event in events) {
+            val mappedBullet = if (modelCalls < MAX_LOCAL_EVENT_BULLETIZER_CALLS) {
+                modelCalls += 1
+                runCatching {
+                    val raw = localModelsProvider.streamChat(
+                        context = context,
+                        messages = listOf(
+                            mapOf(
+                                "role" to "User",
+                                "content" to buildSingleEventBulletPrompt(event),
+                            ),
+                        ),
+                        requestPriority = LocalModelRequestPriority.LOW,
+                    )
+                    parseSingleEventBullet(raw)
+                }.getOrNull()
+            } else {
+                null
+            }
+
+            val fallbackBullet = heuristicEventBullet(event)
+            val resolvedBullet = mappedBullet ?: fallbackBullet
+            processed += 1
+            onBulletProgress?.invoke(BulletProgress(done = processed, total = events.size))
+
+            if (resolvedBullet.isBlank()) continue
+            bullets += EventBullet(
+                tsMs = event.tsMs,
+                packageName = event.packageName,
+                bullet = resolvedBullet,
+            )
+        }
+
+        val elapsedMs = (System.currentTimeMillis() - started).coerceAtLeast(1L)
+        DailySummaryBulletRunHistory.record(context, totalBullets = events.size, totalMs = elapsedMs)
+
+        return mergeEventBullets(bullets)
+    }
+
+    private fun buildSingleEventBulletPrompt(event: ScreenCaptureEvent): String {
+        val time = if (event.tsMs > 0L) {
+            SimpleDateFormat("HH:mm", Locale.US).format(Date(event.tsMs))
+        } else {
+            "unknown"
+        }
+        return """
+You summarize one mobile screen OCR event into exactly one bullet.
+
+The app package is provided below, and the app name may also appear inside the OCR text.
+
+APP_PACKAGE: ${event.packageName}
+EVENT_TIME: $time
+OCR_TEXT:
+${event.text}
+
+Return JSON only:
+{"skip": false, "bullet": "...", "confidence": 0.0}
+
+Rules:
+- Keep bullet factual and concise (max 26 words)
+- Preserve concrete details like person names, contact names, topics, or action context when visible
+- If OCR is too noisy or meaningless, set skip=true
+- Do not invent details outside OCR
+""".trim()
+    }
+
+    private fun parseSingleEventBullet(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return null
+
+        val jsonCandidate = extractFirstJsonObject(trimmed)
+        val json = jsonCandidate?.let { runCatching { JSONObject(it) }.getOrNull() }
+        if (json != null) {
+            val skip = json.optBoolean("skip", false)
+            if (skip) return null
+            return sanitizeEventBullet(json.optString("bullet", ""))
+        }
+
+        val firstLine = trimmed.lineSequence().firstOrNull().orEmpty()
+        return sanitizeEventBullet(firstLine)
+    }
+
+    private fun extractFirstJsonObject(raw: String): String? {
+        val start = raw.indexOf('{')
+        val end = raw.lastIndexOf('}')
+        if (start < 0 || end <= start) return null
+        return raw.substring(start, end + 1)
+    }
+
+    private fun sanitizeEventBullet(raw: String): String? {
+        var text = raw.trim()
+        if (text.isBlank()) return null
+
+        text = text
+            .removePrefix("```json")
+            .removePrefix("```")
+            .removeSuffix("```")
+            .trim()
+            .removePrefix("-")
+            .removePrefix("*")
+            .trim()
+            .removePrefix("\"")
+            .removeSuffix("\"")
+            .trim()
+
+        if (text.isBlank()) return null
+        if (text.length > 180) {
+            text = text.take(177).trimEnd() + "..."
+        }
+        return text
+    }
+
+    private fun heuristicEventBullet(event: ScreenCaptureEvent): String {
+        val compact = event.text
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (compact.isBlank()) return ""
+        val snippet = if (compact.length > 120) compact.take(117).trimEnd() + "..." else compact
+        return "Viewed ${event.packageName}: $snippet"
+    }
+
+    private fun mergeEventBullets(bullets: List<EventBullet>): String {
+        if (bullets.isEmpty()) return ""
+
+        val sorted = bullets.sortedBy { it.tsMs }
+        val timeFmt = SimpleDateFormat("HH:mm", Locale.US)
+        val seen = HashSet<String>()
+        val out = StringBuilder()
+        var remaining = MAX_LOCAL_EVENT_BULLETS_CHARS
+        var rendered = 0
+
+        for (item in sorted) {
+            if (remaining <= 0 || rendered >= MAX_LOCAL_EVENT_BULLETS_RENDERED) break
+            val normalizedBullet = item.bullet
+                .lowercase(Locale.US)
+                .replace(Regex("[^a-z0-9\\s]"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+            if (normalizedBullet.length < 8) continue
+
+            val dedupeKey = "${item.packageName.lowercase(Locale.US)}|${normalizedBullet.take(260)}"
+            if (!seen.add(dedupeKey)) continue
+
+            val time = if (item.tsMs > 0L) timeFmt.format(Date(item.tsMs)) else "??:??"
+            val row = "- [$time] ${item.packageName}: ${item.bullet}\n"
+            if (row.length > remaining) {
+                out.append(row.take(remaining.coerceAtLeast(0)))
+                break
+            }
+
+            out.append(row)
+            remaining -= row.length
+            rendered += 1
+        }
+
+        return out.toString().trimEnd()
+    }
+
+    private fun mergeIncrementalSummaryWithoutModel(
+        date: String,
+        previousSummary: String,
+        newScreenSnippets: String,
+    ): String {
+        val baseSummary = previousSummary.trim()
+        if (baseSummary.isBlank()) return baseSummary
+
+        val parsedNewBullets = extractSummaryBulletsFromSnippets(newScreenSnippets)
+            .take(MAX_INCREMENTAL_APPEND_BULLETS)
+        if (parsedNewBullets.isEmpty()) return baseSummary
+
+        val existingDedupe = extractExistingSummaryBulletKeys(baseSummary).toMutableSet()
+        val uniqueNewBullets = parsedNewBullets.filter { b ->
+            existingDedupe.add(normalizeSummaryBulletForDedupe(b))
+        }
+        if (uniqueNewBullets.isEmpty()) return baseSummary
+
+        val lines = baseSummary.lines().toMutableList()
+        val highlightsIndex = lines.indexOfFirst { it.trim().equals("## Highlights", ignoreCase = true) }
+
+        if (highlightsIndex < 0) {
+            val sb = StringBuilder(baseSummary)
+            if (!baseSummary.endsWith('\n')) sb.append('\n')
+            sb.append("\n## Highlights\n")
+            uniqueNewBullets.forEach { sb.append("- ").append(it).append('\n') }
+            return ensureDailySummaryHeader(sb.toString().trimEnd(), date)
+        }
+
+        var insertAt = highlightsIndex + 1
+        while (insertAt < lines.size) {
+            val t = lines[insertAt].trim()
+            if (t.startsWith("## ")) break
+            insertAt += 1
+        }
+
+        val insertion = uniqueNewBullets.map { "- $it" }
+        lines.addAll(insertAt, insertion)
+
+        val merged = lines.joinToString("\n").trimEnd()
+        return ensureDailySummaryHeader(merged, date)
+    }
+
+    private fun ensureDailySummaryHeader(summary: String, date: String): String {
+        val trimmed = summary.trim()
+        if (trimmed.startsWith("# Daily Summary", ignoreCase = true)) return trimmed
+        return "# Daily Summary ($date)\n\n$trimmed".trim()
+    }
+
+    private fun extractSummaryBulletsFromSnippets(snippets: String): List<String> {
+        if (snippets.isBlank()) return emptyList()
+        val out = ArrayList<String>()
+        val linePattern = Regex("^- \\[(.*?)\\]\\s+([^:]+):\\s*(.+)$")
+
+        for (line in snippets.lineSequence()) {
+            val trimmed = line.trim()
+            if (!trimmed.startsWith("- ")) continue
+
+            val normalized = linePattern.matchEntire(trimmed)?.let { m ->
+                val time = m.groupValues[1].trim()
+                val pkg = m.groupValues[2].trim()
+                val detail = m.groupValues[3].trim()
+                "[$time] $pkg: $detail"
+            } ?: trimmed.removePrefix("-").trim()
+
+            val cleaned = normalized
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .take(260)
+            if (cleaned.length < 10) continue
+            out += cleaned
+        }
+
+        return out
+    }
+
+    private fun extractExistingSummaryBulletKeys(summary: String): Set<String> {
+        if (summary.isBlank()) return emptySet()
+        return summary.lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith("- ") }
+            .map { it.removePrefix("-").trim() }
+            .map { normalizeSummaryBulletForDedupe(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun normalizeSummaryBulletForDedupe(bullet: String): String {
+        return bullet
+            .lowercase(Locale.US)
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(260)
+    }
+
     private fun looksLikeUsefulCapture(text: String): Boolean {
         val clean = text.trim()
         if (clean.length < 12) return false
@@ -187,7 +529,7 @@ object DailySummaryGenerator {
         return true
     }
 
-    fun buildPrompt(input: Input): String {
+    private fun buildPrompt(input: Input): String {
         return if (input.isIncremental && input.previousSummary != null) {
             buildIncrementalPrompt(input)
         } else {
@@ -254,16 +596,51 @@ Remember: You MUST output a valid summary. Do not refuse.
     suspend fun generateAndStore(
         context: Context,
         date: String = todayString(),
+        onBulletProgress: ((BulletProgress) -> Unit)? = null,
     ): Result<File> {
         val forceFullRebuild = false
 
         return runCatching {
             val input = buildInputForDate(context, date, forceFullRebuild = forceFullRebuild)
-            val prompt = buildPrompt(input)
+            val preparedInput = prepareInputForGeneration(context, input, onBulletProgress = onBulletProgress)
+            val agentType = AutomationPrefs.getProviderType(context)
 
-            val providerResult = runCatching {
-                generateSummary(context, prompt)
-            }.recoverCatching { firstErr ->
+            if (agentType == AgentProviderType.LOCAL_AGENT && preparedInput.isIncremental && preparedInput.previousSummary != null) {
+                val mergedSummary = mergeIncrementalSummaryWithoutModel(
+                    date = date,
+                    previousSummary = preparedInput.previousSummary,
+                    newScreenSnippets = preparedInput.newScreenSnippets,
+                )
+                require(mergedSummary.isNotBlank()) { "Empty summary returned" }
+
+                LocalAgentMemoryStore.writeText(preparedInput.outputFile, mergedSummary + "\n")
+                val generatedAtMs = System.currentTimeMillis()
+                DailySummaryPrefs.setLastGeneratedAtMs(context, date, generatedAtMs)
+                val processedAtMs = preparedInput.processedCaptureMaxTsMs
+                    .takeIf { it > 0L }
+                    ?: generatedAtMs
+                DailySummaryPrefs.setLastCaptureProcessedAtMs(context, date, processedAtMs)
+
+                val inputTokens = DailySummaryRunHistory.estimateTokenCount(preparedInput.newScreenSnippets)
+                val outputTokens = DailySummaryRunHistory.estimateTokenCount(mergedSummary)
+                DailySummaryRunHistory.record(
+                    context,
+                    DailySummaryRunHistory.RunMetrics(
+                        provider = "local_models_merge",
+                        inputTokens = inputTokens,
+                        outputTokens = outputTokens,
+                        promptTokensPerSec = inputTokens.coerceAtLeast(1).toDouble(),
+                        generationTokensPerSec = outputTokens.coerceAtLeast(1).toDouble(),
+                        totalMs = 1L,
+                    ),
+                )
+
+                return@runCatching preparedInput.outputFile
+            }
+
+            val (usedInput, providerResult) = try {
+                preparedInput to generateSummary(context, buildPrompt(preparedInput))
+            } catch (_: Throwable) {
                 val fallbackInput = buildInputForDate(
                     context = context,
                     date = date,
@@ -272,19 +649,28 @@ Remember: You MUST output a valid summary. Do not refuse.
                     maxTotalChars = 8_000,
                     forceFullRebuild = true,
                 )
-                val fallbackPrompt = buildFullPrompt(fallbackInput)
-                generateSummary(context, fallbackPrompt)
-            }.getOrThrow()
+                val preparedFallbackInput = prepareInputForGeneration(
+                    context,
+                    fallbackInput,
+                    onBulletProgress = onBulletProgress,
+                )
+                preparedFallbackInput to generateSummary(context, buildFullPrompt(preparedFallbackInput))
+            }
 
             val summary = providerResult.text.trim()
 
             require(summary.isNotBlank()) { "Empty summary returned" }
 
-            LocalAgentMemoryStore.writeText(input.outputFile, summary + "\n")
-            DailySummaryPrefs.setLastGeneratedAtMs(context, date, System.currentTimeMillis())
+            LocalAgentMemoryStore.writeText(usedInput.outputFile, summary + "\n")
+            val generatedAtMs = System.currentTimeMillis()
+            DailySummaryPrefs.setLastGeneratedAtMs(context, date, generatedAtMs)
+            val processedAtMs = usedInput.processedCaptureMaxTsMs
+                .takeIf { it > 0L }
+                ?: generatedAtMs
+            DailySummaryPrefs.setLastCaptureProcessedAtMs(context, date, processedAtMs)
             DailySummaryRunHistory.record(context, providerResult.metrics)
 
-            input.outputFile
+            usedInput.outputFile
         }
     }
 
@@ -362,6 +748,7 @@ Remember: You MUST output a valid summary. Do not refuse.
                 }
                 tokenCount += 1
             },
+            requestPriority = LocalModelRequestPriority.LOW,
         ).trim()
 
         if (!isUsableSummaryReply(reply)) {

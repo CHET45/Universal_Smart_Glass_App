@@ -10,7 +10,6 @@ object DailyFactsReviewProtocol {
         val confirmedFacts: List<String> = emptyList(),
         val rejectedFacts: List<String> = emptyList(),
         val newFacts: List<String> = emptyList(),
-        val draftFacts: List<String>? = null,
         // User facts flow (reviewed here; written to USER_FACTS.md only when user confirms)
         val confirmedUserFacts: List<String> = emptyList(),
         val rejectedUserFacts: List<String> = emptyList(),
@@ -21,6 +20,8 @@ object DailyFactsReviewProtocol {
         state: DailyFactsStorage.State,
         userFactsMd: String,
         candidateUserFacts: List<String>,
+        dailyFactsBatch: List<String>,
+        userFactsBatch: List<String>,
     ): String {
         return buildString {
             appendLine("You are a helpful, casual, playful assistant helping the user verify DAILY FACTS.")
@@ -35,49 +36,55 @@ object DailyFactsReviewProtocol {
             appendLine("    \"confirmed_facts\": string[],")
             appendLine("    \"rejected_facts\": string[],")
             appendLine("    \"new_facts\": string[],")
-            appendLine("    \"draft_facts\": string[] | null,")
             appendLine("    \"confirmed_user_facts\": string[],")
             appendLine("    \"rejected_user_facts\": string[],")
             appendLine("    \"new_user_facts_candidates\": string[]")
             appendLine("  }")
             appendLine()
             appendLine("RULES:")
-            appendLine("- Ask about at most 3 items at a time total (mix daily facts + user facts if you want).")
+            appendLine("- Ask about 3 to 5 items at a time (never more than 5).")
             appendLine("- Only confirm facts that the USER explicitly confirms.")
             appendLine("- If the user confirms a daily fact, include it in confirmed_facts.")
             appendLine("- If a daily fact is wrong, include it in rejected_facts.")
             appendLine("- If the user mentions new daily facts, include them in new_facts.")
-            appendLine("- If you want to fully rewrite the draft list, set draft_facts (else null).")
+            appendLine("- If user says a fact was only an ad / not their intention / about another person, reject original fact and add corrected fact.")
             appendLine("- For USER FACTS:")
             appendLine("  - Candidate user facts must be approved by the user before adding to USER_FACTS.md.")
             appendLine("  - If user approves a candidate user fact -> confirmed_user_facts.")
             appendLine("  - If user rejects a candidate user fact -> rejected_user_facts.")
             appendLine("  - If user mentions a new durable fact about themselves -> new_user_facts_candidates.")
+            appendLine("  - If fact is actually about someone else (mother/friend/company), do NOT store it as a user fact.")
             appendLine("- assistant_message must be friendly and include the next 1–3 questions.")
             appendLine()
             appendLine("DATE: ${state.date}")
             appendLine()
-            appendLine("CURRENT DRAFT DAILY FACTS (unconfirmed):")
-            state.draft.take(50).forEachIndexed { idx, f -> appendLine("${idx + 1}. $f") }
+            appendLine("QUEUE STATUS:")
+            appendLine("- pending_daily_facts_total: ${state.draft.size}")
+            appendLine("- pending_user_fact_candidates_total: ${candidateUserFacts.size}")
+            appendLine("- confirmed_daily_facts_total: ${state.confirmed.size}")
             appendLine()
-            appendLine("ALREADY CONFIRMED DAILY FACTS:")
-            state.confirmed.take(50).forEachIndexed { idx, f -> appendLine("${idx + 1}. $f") }
-            appendLine()
-            appendLine("CURRENT USER FACTS (reference only; do not rewrite blindly):")
-            userFactsMd.trim().lineSequence().take(80).forEach { appendLine(it) }
-            appendLine()
-            appendLine("CANDIDATE USER FACTS TO REVIEW (from today's chats):")
-            if (candidateUserFacts.isEmpty()) {
+            appendLine("CURRENT REVIEW BATCH: DAILY FACTS")
+            if (dailyFactsBatch.isEmpty()) {
                 appendLine("(none)")
             } else {
-                candidateUserFacts.take(50).forEachIndexed { idx, f -> appendLine("${idx + 1}. $f") }
+                dailyFactsBatch.forEachIndexed { idx, f -> appendLine("${idx + 1}. $f") }
             }
+            appendLine()
+            appendLine("CURRENT REVIEW BATCH: USER FACT CANDIDATES")
+            if (userFactsBatch.isEmpty()) {
+                appendLine("(none)")
+            } else {
+                userFactsBatch.forEachIndexed { idx, f -> appendLine("${idx + 1}. $f") }
+            }
+            appendLine()
+            appendLine("CURRENT USER FACTS (reference only; do not rewrite blindly):")
+            userFactsMd.trim().lineSequence().take(60).forEach { appendLine(it) }
         }
     }
 
     fun parseUpdate(raw: String): AiUpdate {
         val jsonText = extractJsonObject(raw)
-        val obj = JSONObject(jsonText)
+        val obj = parseJsonObjectWithRepair(jsonText)
 
         fun arr(key: String): List<String> {
             val a = obj.optJSONArray(key) ?: JSONArray()
@@ -89,16 +96,11 @@ object DailyFactsReviewProtocol {
             throw IllegalArgumentException("Missing assistant_message")
         }
 
-        val draftFacts = obj.optJSONArray("draft_facts")?.let { a ->
-            (0 until a.length()).mapNotNull { i -> a.optString(i)?.trim()?.takeIf { it.isNotBlank() } }
-        }
-
         return AiUpdate(
             assistantMessage = assistant,
             confirmedFacts = arr("confirmed_facts"),
             rejectedFacts = arr("rejected_facts"),
             newFacts = arr("new_facts"),
-            draftFacts = draftFacts,
             confirmedUserFacts = arr("confirmed_user_facts"),
             rejectedUserFacts = arr("rejected_user_facts"),
             newUserFactsCandidates = arr("new_user_facts_candidates"),
@@ -138,5 +140,19 @@ object DailyFactsReviewProtocol {
         }
 
         throw IllegalArgumentException("Could not extract JSON object")
+    }
+
+    private fun parseJsonObjectWithRepair(jsonText: String): JSONObject {
+        return runCatching { JSONObject(jsonText) }
+            .recoverCatching {
+                val repaired = jsonText
+                    .replace(Regex("(?m)(^|[,{]\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*:"), "$1\"$2\":")
+                    .replace(Regex("(?<!\\\\)'"), "\"")
+                    .replace(Regex(",\\s*([}\\]])"), "$1")
+                JSONObject(repaired)
+            }
+            .getOrElse {
+                throw IllegalArgumentException("Failed to parse JSON update")
+            }
     }
 }

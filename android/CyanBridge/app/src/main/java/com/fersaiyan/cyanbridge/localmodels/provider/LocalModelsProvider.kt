@@ -11,12 +11,18 @@ import com.fersaiyan.cyanbridge.localmodels.settings.LocalComputeBackend
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+enum class LocalModelRequestPriority {
+    HIGH,
+    LOW,
+}
+
 class LocalModelsProvider {
     suspend fun streamChat(
         context: Context,
         messages: List<Map<String, String>>,
         onStatus: ((String) -> Unit)? = null,
         onToken: ((String) -> Unit)? = null,
+        requestPriority: LocalModelRequestPriority = LocalModelRequestPriority.HIGH,
     ): String {
         return withContext(Dispatchers.IO) {
             LocalModelStorageRepository.cleanupMissingModels(context)
@@ -68,6 +74,7 @@ class LocalModelsProvider {
                 settings = settings,
                 prompt = prompt,
                 onToken = { token -> onToken?.invoke(token) },
+                requestPriority = requestPriority,
             )
 
             if (firstReply.isNotBlank()) {
@@ -93,6 +100,7 @@ class LocalModelsProvider {
                 settings = settings,
                 prompt = prompt,
                 onToken = { token -> onToken?.invoke(token) },
+                requestPriority = requestPriority,
             )
 
             if (retryReply.isNotBlank()) {

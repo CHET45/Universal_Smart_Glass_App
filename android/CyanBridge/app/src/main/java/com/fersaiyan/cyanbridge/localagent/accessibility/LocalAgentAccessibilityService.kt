@@ -85,13 +85,19 @@ class LocalAgentAccessibilityService : AccessibilityService() {
         val last = lastAutoCaptureAtMs
         if (last > 0L && now - last < intervalMs) return
 
-        val pkg = event?.packageName?.toString()?.trim()
-            ?: rootInActiveWindow?.packageName?.toString()?.trim()
-            ?: ""
+        val pkg = resolveCapturePackageName(event)
         if (pkg.isBlank()) return
 
         val blacklist = LocalAgentPrefs.getCaptureBlacklistPackages(applicationContext)
-        if (blacklist.contains(pkg)) return
+        if (blacklist.contains(pkg)) {
+            Log.d(TAG, "Skipping auto-capture for blacklisted package: $pkg")
+            return
+        }
+
+        if (isOverlayPackage(pkg)) {
+            Log.d(TAG, "Skipping overlay/system package capture: $pkg")
+            return
+        }
 
         val text = dumpActiveWindowText() ?: return
         if (text.isBlank()) return
@@ -113,6 +119,66 @@ class LocalAgentAccessibilityService : AccessibilityService() {
 
         lastAutoCaptureAtMs = now
         Log.i(TAG, "Auto-captured screen text: pkg=$pkg chars=${text.length} intervalMin=$intervalMin")
+    }
+
+    private fun resolveCapturePackageName(event: AccessibilityEvent?): String {
+        val candidates = LinkedHashSet<String>()
+
+        fun addCandidate(raw: CharSequence?) {
+            val pkg = normalizePackageName(raw)
+            if (pkg.isNotBlank()) candidates.add(pkg)
+        }
+
+        addCandidate(event?.packageName)
+        addCandidate(event?.source?.packageName)
+        addCandidate(rootInActiveWindow?.packageName)
+        addCandidate(extractPackageFromActiveWindow())
+        addCandidate(lastForegroundNonOverlayPackage)
+
+        val chosen = candidates.firstOrNull { !isOverlayPackage(it) }
+            ?: candidates.firstOrNull().orEmpty()
+
+        if (chosen.isNotBlank() && !isOverlayPackage(chosen)) {
+            lastForegroundNonOverlayPackage = chosen
+        }
+        return chosen
+    }
+
+    private fun extractPackageFromActiveWindow(): String {
+        val allWindows = windows.orEmpty()
+        if (allWindows.isEmpty()) return ""
+
+        var fallback: String = ""
+        for (win in allWindows) {
+            val root = runCatching { win.root }.getOrNull() ?: continue
+            val pkg = normalizePackageName(root.packageName)
+            if (pkg.isBlank()) continue
+
+            if (fallback.isBlank()) fallback = pkg
+
+            val activeOrFocused = runCatching { win.isActive || win.isFocused }.getOrDefault(false)
+            if (!activeOrFocused) continue
+
+            if (!isOverlayPackage(pkg)) {
+                return pkg
+            }
+
+            if (fallback.isBlank()) {
+                fallback = pkg
+            }
+        }
+
+        return fallback
+    }
+
+    private fun normalizePackageName(raw: CharSequence?): String {
+        return raw?.toString()?.trim()?.lowercase().orEmpty()
+    }
+
+    private fun isOverlayPackage(pkg: String): Boolean {
+        if (pkg.isBlank()) return true
+        if (OVERLAY_PACKAGE_PREFIXES.any { pkg.startsWith(it) }) return true
+        return OVERLAY_PACKAGE_NAMES.contains(pkg)
     }
 
     private fun isDeviceInteractiveAndUnlocked(): Boolean {
@@ -391,6 +457,14 @@ class LocalAgentAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "LocalAgentAccSvc"
         private const val PERIODIC_TICK_MS = 30_000L
+        private val OVERLAY_PACKAGE_NAMES = setOf(
+            "com.android.systemui",
+        )
+        private val OVERLAY_PACKAGE_PREFIXES = setOf(
+            "com.android.launcher",
+            "com.google.android.launcher",
+            "com.samsung.android.launcher",
+        )
 
         @Volatile
         var instance: LocalAgentAccessibilityService? = null
@@ -398,6 +472,9 @@ class LocalAgentAccessibilityService : AccessibilityService() {
 
         @Volatile
         private var lastAutoCaptureAtMs: Long = 0L
+
+        @Volatile
+        private var lastForegroundNonOverlayPackage: String? = null
 
         fun isRunning(): Boolean = instance != null
     }

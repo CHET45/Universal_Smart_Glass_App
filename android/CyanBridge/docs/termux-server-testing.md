@@ -85,8 +85,8 @@ ls data/backups
 ## G. Boot startup test
 
 1. Install Termux:Boot app.
-2. Copy `termux-boot/start-on-boot.sh` to `~/.termux/boot/cyanbridge-termux-server.sh`.
-3. Set executable permission.
+2. Run `./enable-termux-boot.sh` inside `~/cyanbridge_termux_server/_local_termux_server`.
+3. Ensure battery optimization is disabled for Termux and Tailscale.
 4. Reboot phone and verify with `./status-server.sh`.
 
 ## H. Known MVP limits

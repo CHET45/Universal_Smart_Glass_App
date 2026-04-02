@@ -14,6 +14,7 @@ import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -113,13 +114,33 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
         }
 
         return try {
-            val responseMessage = withContext(Dispatchers.IO) {
-                conversation.sendMessage(config.prompt, emptyMap())
+            val text = withContext(Dispatchers.IO) {
+                var lastText = ""
+                var finalText = ""
+
+                val stream = conversation.sendMessageAsync(config.prompt, emptyMap<String, Any>())
+                stream.collect { message ->
+                    val current = extractText(message)
+                    if (current.isBlank()) return@collect
+                    val delta = incrementalDelta(previous = lastText, current = current)
+                    if (delta.isNotEmpty()) {
+                        onToken(delta)
+                    }
+                    lastText = current
+                    finalText = current
+                }
+
+                if (finalText.isBlank()) {
+                    val fallback = extractText(conversation.sendMessage(config.prompt, emptyMap<String, Any>()))
+                    if (fallback.isNotBlank()) {
+                        onToken(fallback)
+                    }
+                    fallback
+                } else {
+                    finalText
+                }
             }
-            val text = extractText(responseMessage)
-            if (text.isNotEmpty()) {
-                onToken(text)
-            }
+
             GenerationResult(
                 text = text,
                 tokenCount = tokenizeEstimate(text),
@@ -181,6 +202,28 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
     private fun closeConversationLocked() {
         runCatching { activeConversation?.close() }
         activeConversation = null
+    }
+
+    private fun incrementalDelta(previous: String, current: String): String {
+        if (previous.isBlank()) return current
+        if (current.startsWith(previous)) {
+            return current.substring(previous.length)
+        }
+        if (previous.startsWith(current)) {
+            return ""
+        }
+
+        val maxPrefix = previous.length.coerceAtMost(current.length)
+        var overlap = 0
+        var i = maxPrefix
+        while (i > 0) {
+            if (previous.endsWith(current.substring(0, i))) {
+                overlap = i
+                break
+            }
+            i--
+        }
+        return current.substring(overlap)
     }
 
     private fun closeEngineLocked() {

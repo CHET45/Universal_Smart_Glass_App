@@ -14,9 +14,6 @@ import com.oudmon.ble.base.communication.LargeDataHandler
 import com.fersaiyan.cyanbridge.agent.LocalAgentPrefs
 import com.fersaiyan.cyanbridge.ai.router.AiProviderPrefs
 import com.fersaiyan.cyanbridge.ai.router.AiProviderType
-import com.fersaiyan.cyanbridge.localmodels.catalog.LocalModelCatalogRepository
-import com.fersaiyan.cyanbridge.localmodels.session.LocalChatSessionManager
-import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import com.fersaiyan.cyanbridge.localagent.daily.DailyFactsReminderScheduler
 import com.fersaiyan.cyanbridge.memoryvault.MemoryVaultBootstrap
@@ -75,16 +72,6 @@ class MyApplication : Application(){
         appScope.launch {
             runCatching {
                 LocalModelStorageRepository.cleanupMissingModels(this@MyApplication)
-                val selected = LocalModelStorageRepository.resolveSelectedModel(this@MyApplication)
-                    ?: return@runCatching
-                val catalogEntry = LocalModelCatalogRepository.findById(selected.catalogId ?: selected.id)
-                val settings = LocalModelSettingsRepository.getForModel(this@MyApplication, selected.id)
-                LocalChatSessionManager.ensureModelLoaded(
-                    context = this@MyApplication,
-                    model = selected,
-                    catalogEntry = catalogEntry,
-                    settings = settings,
-                )
             }
         }
     }
