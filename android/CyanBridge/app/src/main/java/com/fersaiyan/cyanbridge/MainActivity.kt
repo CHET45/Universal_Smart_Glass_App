@@ -251,6 +251,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var lastP2pResetAtMs: Long = 0L
     private var downloadWifiP2pManager: WifiP2pManagerSingleton? = null
     private var downloadWifiP2pCallback: WifiP2pManagerSingleton.WifiP2pCallback? = null
+    private var downloadCancelledByUser = false
+    private var lastDownloadBleIpAtMs: Long = 0L
 
     // Guard against concurrent/duplicate image queries
     private val imageQueryInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -532,11 +534,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             // binding.btnNotes,
             binding.btnMeetingStart,
             binding.btnMeetingStop,
-            binding.btnMeetingBannerStop
+            binding.btnMeetingBannerStop,
+            binding.btnTransferStop,
         ) {
             // Safety: stop glasses audio recording before most actions.
             // Users often press camera/video/etc while audio is running.
-            val shouldStopGlassesAudio = this != binding.btnScan && this != binding.btnConnect
+            val shouldStopGlassesAudio = this != binding.btnScan && this != binding.btnConnect && this != binding.btnTransferStop
             if (shouldStopGlassesAudio) {
                 controlAudioRecording(false)
                 // If auto audio capture is enabled, give the user a short window to operate other controls.
@@ -789,6 +792,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         // Android 12 and below start download directly
                         startDataDownload()
                     }
+                }
+                binding.btnTransferStop -> {
+                    cancelDataDownloadAttempt(
+                        reason = "Sync stopped by user",
+                        showToast = true,
+                    )
                 }
                 binding.btnOtaInfo -> {
                     Toast.makeText(this@MainActivity, "Dumping OTA server info…", Toast.LENGTH_SHORT).show()
@@ -2447,6 +2456,47 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private fun currentBleMacNoColonUpper(): String? {
+        return try {
+            DeviceManager.getInstance().deviceAddress
+                ?.replace(":", "")
+                ?.uppercase(Locale.US)
+                ?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun isLikelyGlassesPeer(device: WifiP2pDevice, bleMacNoColon: String?): Boolean {
+        val name = (device.deviceName ?: "").uppercase(Locale.US)
+        if (name.isBlank()) return false
+
+        if (!bleMacNoColon.isNullOrBlank() && name.contains(bleMacNoColon)) {
+            return true
+        }
+
+        if (name.startsWith("AIM") || name.contains("AIMB-") || name.contains("GLASS")) {
+            return true
+        }
+
+        // Many glasses broadcast names include a trailing 12-hex device token.
+        return Regex("[A-F0-9]{12}").containsMatchIn(name)
+    }
+
+    private fun selectBestLikelyGlassesPeer(peers: Collection<WifiP2pDevice>): WifiP2pDevice? {
+        if (peers.isEmpty()) return null
+
+        val bleMacNoColon = currentBleMacNoColonUpper()
+        val byBleMac = peers.firstOrNull { p ->
+            val p2pName = (p.deviceName ?: "").uppercase(Locale.US)
+            !bleMacNoColon.isNullOrBlank() && p2pName.contains(bleMacNoColon)
+        }
+        if (byBleMac != null) return byBleMac
+
+        val likely = peers.filter { isLikelyGlassesPeer(it, bleMacNoColon) }
+        return likely.firstOrNull()
+    }
+
     private fun startDataDownload() {
         Log.i("DataDownload", "Starting BLE+WiFi P2P data download...")
 
@@ -2486,16 +2536,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        // Tear down any stale session first so retries do not stack callbacks/jobs.
+        teardownDownloadP2pSession(sendExitTransfer = false, hideTransferUi = false)
+        downloadCancelledByUser = false
+
         // Reset state for a fresh run
         downloadP2pConnected = false
         downloadBleIp = null
         downloadWifiIp = null
         downloadInProgress = false
-        downloadAttemptJob?.cancel()
-        downloadAttemptJob = null
         downloadResolvedHttpIp = null
-        downloadP2pNetwork = null
-        unbindProcessFromNetwork()
+        lastDownloadBleIpAtMs = 0L
 
         resetTransferUiState()
         setTransferUiVisible(true)
@@ -2539,29 +2590,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     return
                 }
 
-                val target = if (peers.size == 1) {
-                    // Single peer — unambiguous, connect directly.
-                    peers.first()
-                } else {
-                    // Multiple peers — try to match the currently-BLE-paired glasses.
-                    val bleMacNoColon = try {
-                        DeviceManager.getInstance().deviceAddress
-                            ?.replace(":", "")
-                            ?.uppercase()
-                    } catch (_: Exception) { null }
-
-                    val matched = peers.firstOrNull { p ->
-                        val p2pName = (p.deviceName ?: "").uppercase()
-                        if (!bleMacNoColon.isNullOrBlank() && p2pName.contains(bleMacNoColon)) {
-                            Log.i("DataDownload", "Peer ${p.deviceName} matched by BLE MAC suffix in name")
-                            true
-                        } else false
-                    }
-
-                    if (matched == null) {
-                        Log.w("DataDownload", "No peer matched BLE MAC; picking first. Peers: ${peers.map { "${it.deviceName}/${it.deviceAddress}" }}")
-                    }
-                    matched ?: peers.first()
+                val target = selectBestLikelyGlassesPeer(peers)
+                if (target == null) {
+                    Log.i(
+                        "DataDownload",
+                        "No likely glasses peer yet; ignoring discovered peers: ${peers.map { "${it.deviceName}/${it.deviceAddress}" }}"
+                    )
+                    setTransferDetail("Waiting for glasses P2P peer...")
+                    return
                 }
 
                 Log.i(
@@ -2591,6 +2627,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 downloadP2pConnected = false
                 downloadP2pNetwork = null
                 unbindProcessFromNetwork()
+
+                val shouldRecover = !downloadCancelledByUser &&
+                    (downloadAttemptJob?.isActive == true || downloadInProgress)
+                if (shouldRecover) {
+                    Log.i("DataDownload", "P2P disconnected during sync; restarting peer discovery")
+                    setTransferDetail("P2P disconnected; retrying discovery...")
+                    downloadWifiP2pManager?.discoverPeersStable()
+                    downloadWifiP2pManager?.startPeerDiscovery()
+                }
             }
 
             override fun onPeerDiscoveryStarted() {
@@ -3580,14 +3625,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return crc
     }
     
-    private fun cleanupP2pAfterDownload() {
+    private fun teardownDownloadP2pSession(sendExitTransfer: Boolean, hideTransferUi: Boolean) {
         downloadAttemptJob?.cancel()
         downloadAttemptJob = null
         unbindProcessFromNetwork()
 
-        runOnUiThread {
-            setTransferUiVisible(false)
-            resetTransferUiState()
+        if (hideTransferUi) {
+            runOnUiThread {
+                setTransferUiVisible(false)
+                resetTransferUiState()
+            }
         }
 
         // Stop receiving download-mode notify frames.
@@ -3601,18 +3648,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        // Tell the glasses to exit transfer mode (official app does this after downloads finish).
-        try {
-            LargeDataHandler.getInstance().glassesControl(
-                byteArrayOf(0x02, 0x01, 0x09)
-            ) { _, resp ->
-                Log.i(
-                    "DataDownload",
-                    "glassesControl[0x02,0x01,0x09] -> dataType=${resp.dataType}, error=${resp.errorCode}"
-                )
+        if (sendExitTransfer) {
+            // Tell the glasses to exit transfer mode (official app does this after downloads finish).
+            try {
+                LargeDataHandler.getInstance().glassesControl(
+                    byteArrayOf(0x02, 0x01, 0x09)
+                ) { _, resp ->
+                    Log.i(
+                        "DataDownload",
+                        "glassesControl[0x02,0x01,0x09] -> dataType=${resp.dataType}, error=${resp.errorCode}"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w("DataDownload", "Failed to send exit-transfer command [0x02,0x01,0x09]", e)
             }
-        } catch (e: Exception) {
-            Log.w("DataDownload", "Failed to send exit-transfer command [0x02,0x01,0x09]", e)
         }
 
         val manager = downloadWifiP2pManager
@@ -3634,6 +3683,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadInProgress = false
         downloadP2pNetwork = null
         downloadResolvedHttpIp = null
+    }
+
+    private fun cleanupP2pAfterDownload() {
+        teardownDownloadP2pSession(
+            sendExitTransfer = true,
+            hideTransferUi = true,
+        )
+    }
+
+    private fun cancelDataDownloadAttempt(reason: String, showToast: Boolean) {
+        Log.i("DataDownload", reason)
+        downloadCancelledByUser = true
+        setTransferDetail("Stopping sync...")
+        teardownDownloadP2pSession(
+            sendExitTransfer = true,
+            hideTransferUi = true,
+        )
+        if (showToast) {
+            Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showDownloadSuccess(message: String) {
@@ -3735,6 +3804,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun mediaConfigOk(ip: String, timeoutMs: Int, logFailures: Boolean = false): Boolean {
+        if (!isPortOpen(ip, 80, (timeoutMs / 2).coerceAtLeast(400))) {
+            if (logFailures) {
+                Log.w("DataDownload", "media.config probe skipped for $ip (port 80 closed/unreachable)")
+            }
+            return false
+        }
         val url = URL("http://$ip/files/media.config")
         val ok = httpGet(url, timeoutMs, timeoutMs)
         if (!ok && logFailures) {
@@ -3815,6 +3890,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun onDownloadBleIp(ip: String) {
+        val now = System.currentTimeMillis()
+        if (ip == downloadBleIp && (now - lastDownloadBleIpAtMs) < 1200L) {
+            Log.i("DataDownload", "Ignoring duplicate BLE IP report: $ip")
+            return
+        }
+        lastDownloadBleIpAtMs = now
         Log.i("DataDownload", "BLE reported device WiFi IP: $ip")
         downloadBleIp = ip
 
@@ -3842,10 +3923,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun maybeStartHttpDownload(source: String) {
+        if (downloadCancelledByUser) {
+            Log.i("DataDownload", "Ignoring HTTP start trigger from $source after user stop")
+            return
+        }
         if (downloadInProgress || downloadAttemptJob?.isActive == true) {
             Log.i("DataDownload", "Download already in progress, ignoring trigger from $source")
             return
         }
+
+        if (!downloadP2pConnected) {
+            Log.i("DataDownload", "Ignoring HTTP start trigger from $source; P2P not connected yet")
+            return
+        }
+
+        val hasDeviceIp = !downloadBleIp.isNullOrBlank() || !bleIpBridge.ip.value.isNullOrBlank()
+        if (!hasDeviceIp) {
+            setTransferDetail("Waiting for BLE-reported glasses IP...")
+            Log.i("DataDownload", "Ignoring HTTP start trigger from $source; waiting for device IP notify")
+            return
+        }
+
         val bridgeIp = bleIpBridge.ip.value
         Log.i(
             "DataDownload",
@@ -3853,8 +3951,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         )
 
         downloadAttemptJob = CoroutineScope(Dispatchers.IO).launch {
+            // Official app waits briefly after both P2P+BLE-IP signals before fetching media.config.
+            delay(1000)
+
             val startMs = System.currentTimeMillis()
-            val overallTimeoutMs = 90_000L
+            val overallTimeoutMs = 45_000L
             var lastStatusLogMs = 0L
             var didSubnetScan = false
 
@@ -3913,20 +4014,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             withContext(Dispatchers.Main) {
-                // Do not immediately tear down P2P; the glasses sometimes report IP late.
                 showDownloadError(
                     "Could not resolve glasses HTTP IP (bleIp=$downloadBleIp, groupOwnerIp=$downloadWifiIp, p2p=$downloadP2pConnected)",
-                    cleanup = false
+                    cleanup = true
                 )
-            }
-
-            // Avoid leaving the P2P group around forever.
-            delay(15_000)
-            withContext(Dispatchers.Main) {
-                if (!downloadInProgress) {
-                    Log.i("DataDownload", "Cleaning up P2P after unresolved download")
-                    cleanupP2pAfterDownload()
-                }
             }
         }
     }
@@ -4024,25 +4115,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 return true
             }
             conn.disconnect()
-        } catch (_: Exception) {}
-
-        if (isVpnActive()) {
-            val client = vpnSafeHttpClient(connectTimeoutMs, readTimeoutMs) ?: return false
-            return try {
-                val request = okhttp3.Request.Builder().url(url).build()
-                client.newCall(request).execute().use { resp ->
-                    if (resp.isSuccessful && resp.body != null) {
-                        onStream?.invoke(resp.body!!.byteStream(), resp.body!!.contentLength())
-                        true
-                    } else false
-                }
-            } catch (e: Exception) {
-                Log.w("DataDownload", "VPN-safe httpGet failed for $url: ${e.message}")
-                false
-            }
+        } catch (e: Exception) {
+            Log.w("DataDownload", "httpGet default path failed for $url: ${e.message}")
         }
 
-        return false
+        val client = vpnSafeHttpClient(connectTimeoutMs, readTimeoutMs) ?: return false
+        return try {
+            val request = okhttp3.Request.Builder().url(url).build()
+            client.newCall(request).execute().use { resp ->
+                if (resp.isSuccessful && resp.body != null) {
+                    onStream?.invoke(resp.body!!.byteStream(), resp.body!!.contentLength())
+                    true
+                } else false
+            }
+        } catch (e: Exception) {
+            Log.w("DataDownload", "P2P-bound httpGet fallback failed for $url: ${e.message}")
+            false
+        }
     }
 
     private fun findLikelyP2pNetwork(): Network? {
