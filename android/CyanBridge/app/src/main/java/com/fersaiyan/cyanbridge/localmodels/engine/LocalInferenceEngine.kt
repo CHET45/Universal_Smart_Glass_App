@@ -29,6 +29,7 @@ data class GenerationConfig(
 data class GenerationResult(
     val text: String,
     val tokenCount: Int,
+    val cappedByMaxTokens: Boolean = false,
 )
 
 interface LocalInferenceEngine {

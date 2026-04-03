@@ -17,6 +17,10 @@ enum class LocalModelRequestPriority {
 }
 
 class LocalModelsProvider {
+    companion object {
+        const val STATUS_MAX_TOKENS_REACHED = "__MAX_TOKENS_REACHED__"
+    }
+
     suspend fun streamChat(
         context: Context,
         messages: List<Map<String, String>>,
@@ -77,6 +81,11 @@ class LocalModelsProvider {
                 requestPriority = requestPriority,
             )
 
+            val firstCapped = LocalChatSessionManager.consumeLastGenerationCappedFlag()
+            if (firstCapped) {
+                onStatus?.invoke(STATUS_MAX_TOKENS_REACHED)
+            }
+
             if (firstReply.isNotBlank()) {
                 return@withContext firstReply
             }
@@ -102,6 +111,11 @@ class LocalModelsProvider {
                 onToken = { token -> onToken?.invoke(token) },
                 requestPriority = requestPriority,
             )
+
+            val retryCapped = LocalChatSessionManager.consumeLastGenerationCappedFlag()
+            if (retryCapped) {
+                onStatus?.invoke(STATUS_MAX_TOKENS_REACHED)
+            }
 
             if (retryReply.isNotBlank()) {
                 retryReply

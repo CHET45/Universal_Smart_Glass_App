@@ -51,8 +51,11 @@ object DailyFactsStorage {
 
     fun removeFromDraft(context: Context, date: String, facts: List<String>) {
         val current = parseMarkdownFacts(LocalAgentMemoryStore.readText(LocalAgentMemoryStore.dailyFactsFileForDate(context, date)))
-        val removeSet = uniqueClean(facts).map { it.lowercase() }.toSet()
-        val remaining = current.filterNot { removeSet.contains(it.lowercase()) }
+        val removeSet = uniqueClean(facts)
+            .map { normalizeFactForMatching(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+        val remaining = current.filterNot { removeSet.contains(normalizeFactForMatching(it)) }
         writeDraft(context, date, remaining)
     }
 
@@ -73,11 +76,24 @@ object DailyFactsStorage {
     }
 
     private fun uniqueClean(items: List<String>): List<String> {
-        val set = LinkedHashSet<String>()
+        val byNorm = LinkedHashSet<String>()
+        val out = ArrayList<String>()
         for (i in items) {
             val c = i.trim().removePrefix("- ").removePrefix("* ").trim()
-            if (c.isNotBlank()) set.add(c)
+            if (c.isBlank()) continue
+            val norm = normalizeFactForMatching(c)
+            if (norm.isBlank()) continue
+            if (byNorm.add(norm)) out.add(c)
         }
-        return set.toList()
+        return out
+    }
+
+    private fun normalizeFactForMatching(value: String): String {
+        return value
+            .lowercase()
+            .replace(Regex("[^a-z0-9\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(260)
     }
 }

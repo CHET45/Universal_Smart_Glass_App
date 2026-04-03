@@ -17,6 +17,7 @@ import com.fersaiyan.cyanbridge.localmodels.storage.InstalledLocalModel
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -58,6 +59,9 @@ data class LocalWarmupProbeResult(
 }
 
 object LocalChatSessionManager {
+    private const val APPROX_CHARS_PER_TOKEN = 4
+    private const val TOKEN_GUARD_SAFETY_MARGIN = 1
+
     private val mutex = Mutex()
     private val generationMutex = Mutex()
 
@@ -71,6 +75,7 @@ object LocalChatSessionManager {
     private var activeRequestId: String? = null
     private var pendingHighPriorityRequests: Int = 0
     private var activeRequestPriority: LocalModelRequestPriority? = null
+    private var lastGenerationCappedByMaxTokens: Boolean = false
     private var state: LocalSessionState = LocalSessionState.ModelNotLoaded
 
     suspend fun snapshot(): LocalSessionSnapshot = mutex.withLock {
@@ -207,6 +212,12 @@ object LocalChatSessionManager {
         ).text
     }
 
+    suspend fun consumeLastGenerationCappedFlag(): Boolean = mutex.withLock {
+        val capped = lastGenerationCappedByMaxTokens
+        lastGenerationCappedByMaxTokens = false
+        capped
+    }
+
     private suspend fun generateInternal(
         settings: LocalGenerationSettings,
         prompt: String,
@@ -240,6 +251,7 @@ object LocalChatSessionManager {
                         pendingHighPriorityRequests = (pendingHighPriorityRequests - 1).coerceAtLeast(0)
                         highPendingConsumed = true
                     }
+                    lastGenerationCappedByMaxTokens = false
                     activeRequestId = reqId
                     activeRequestPriority = requestPriority
                     state = LocalSessionState.Generating(modelId, reqId)
@@ -247,18 +259,62 @@ object LocalChatSessionManager {
 
                 val result = runCatching {
                     withContext(Dispatchers.IO) {
-                        llm.generate(
-                            config = GenerationConfig(
-                                prompt = prompt,
-                                temperature = settings.temperature,
-                                topP = settings.topP,
-                                topK = settings.topK,
-                                maxTokens = settings.maxTokens,
-                                repetitionPenalty = settings.repetitionPenalty,
-                                seed = settings.seed,
-                                structuredJson = settings.experimentalStructuredJson,
-                            ),
-                            onToken = onToken,
+                        val maxTokens = settings.maxTokens.coerceAtLeast(1)
+                        val streamedText = StringBuilder()
+                        var approxGeneratedTokens = 0
+                        var guardTriggered = false
+                        var raw: GenerationResult? = null
+
+                        try {
+                            raw = llm.generate(
+                                config = GenerationConfig(
+                                    prompt = prompt,
+                                    temperature = settings.temperature,
+                                    topP = settings.topP,
+                                    topK = settings.topK,
+                                    maxTokens = settings.maxTokens,
+                                    repetitionPenalty = settings.repetitionPenalty,
+                                    seed = settings.seed,
+                                    structuredJson = settings.experimentalStructuredJson,
+                                ),
+                                onToken = { chunk ->
+                                    if (chunk.isBlank() || guardTriggered) return@generate
+
+                                    streamedText.append(chunk)
+                                    onToken(chunk)
+
+                                    approxGeneratedTokens += estimateApproxTokens(chunk)
+                                    if (approxGeneratedTokens >= (maxTokens + TOKEN_GUARD_SAFETY_MARGIN)) {
+                                        guardTriggered = true
+                                        runCatching {
+                                            runBlocking { llm.cancelGeneration() }
+                                        }
+                                    }
+                                },
+                            )
+                        } catch (err: Throwable) {
+                            if (!guardTriggered) throw err
+                        }
+
+                        val preferredText = if (streamedText.isNotBlank()) {
+                            streamedText.toString()
+                        } else {
+                            raw?.text.orEmpty()
+                        }
+
+                        val guardedText = truncateToApproxTokens(preferredText, maxTokens)
+                        val guardedTokenCount = (raw?.tokenCount ?: 0)
+                            .coerceAtLeast(estimateApproxTokens(guardedText))
+                            .coerceAtMost(maxTokens)
+                        val capped = guardTriggered ||
+                            guardedTokenCount >= maxTokens ||
+                            estimateApproxTokens(preferredText) > maxTokens ||
+                            (raw?.cappedByMaxTokens == true)
+
+                        GenerationResult(
+                            text = guardedText,
+                            tokenCount = guardedTokenCount,
+                            cappedByMaxTokens = capped,
                         )
                     }
                 }
@@ -268,10 +324,12 @@ object LocalChatSessionManager {
                     activeRequestPriority = null
                     result.fold(
                         onSuccess = {
+                            lastGenerationCappedByMaxTokens = it.cappedByMaxTokens
                             state = LocalSessionState.Ready(modelId)
                             it
                         },
                         onFailure = { err ->
+                            lastGenerationCappedByMaxTokens = false
                             state = LocalSessionState.Error(err.message ?: "Local generation failed")
                             throw err
                         },
@@ -295,6 +353,18 @@ object LocalChatSessionManager {
             if (!shouldWait) return
             delay(120L)
         }
+    }
+
+    private fun estimateApproxTokens(text: String): Int {
+        if (text.isBlank()) return 0
+        return (text.length / APPROX_CHARS_PER_TOKEN).coerceAtLeast(1)
+    }
+
+    private fun truncateToApproxTokens(text: String, maxTokens: Int): String {
+        if (text.isBlank()) return text
+        val cap = maxTokens.coerceAtLeast(1) * APPROX_CHARS_PER_TOKEN
+        if (text.length <= cap) return text
+        return text.take(cap).trimEnd()
     }
 
     suspend fun cancelActiveGeneration() {

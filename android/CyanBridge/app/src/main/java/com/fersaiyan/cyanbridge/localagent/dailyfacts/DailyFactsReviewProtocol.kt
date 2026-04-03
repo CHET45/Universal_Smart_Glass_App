@@ -5,6 +5,16 @@ import org.json.JSONObject
 
 object DailyFactsReviewProtocol {
 
+    enum class OutputMode {
+        JSON,
+        LINE_IDS,
+    }
+
+    data class ReviewBatchItem(
+        val id: String,
+        val text: String,
+    )
+
     data class AiUpdate(
         val assistantMessage: String,
         val confirmedFacts: List<String> = emptyList(),
@@ -20,8 +30,9 @@ object DailyFactsReviewProtocol {
         state: DailyFactsStorage.State,
         userFactsMd: String,
         candidateUserFacts: List<String>,
-        dailyFactsBatch: List<String>,
-        userFactsBatch: List<String>,
+        dailyFactsBatch: List<ReviewBatchItem>,
+        userFactsBatch: List<ReviewBatchItem>,
+        outputMode: OutputMode,
     ): String {
         return buildString {
             appendLine("You are a helpful, casual, playful assistant helping the user verify DAILY FACTS.")
@@ -29,30 +40,59 @@ object DailyFactsReviewProtocol {
             appendLine("You also review CANDIDATE USER FACTS collected from normal chats.")
             appendLine()
             appendLine("IMPORTANT OUTPUT FORMAT:")
-            appendLine("- You MUST respond with a single JSON object and nothing else (no markdown, no code fences).")
-            appendLine("- JSON schema:")
-            appendLine("  {")
-            appendLine("    \"assistant_message\": string,")
-            appendLine("    \"confirmed_facts\": string[],")
-            appendLine("    \"rejected_facts\": string[],")
-            appendLine("    \"new_facts\": string[],")
-            appendLine("    \"confirmed_user_facts\": string[],")
-            appendLine("    \"rejected_user_facts\": string[],")
-            appendLine("    \"new_user_facts_candidates\": string[]")
-            appendLine("  }")
+            if (outputMode == OutputMode.LINE_IDS) {
+                appendLine("- First write a natural assistant reply for the user.")
+                appendLine("- Then include an <UPDATE> block with exact lines below.")
+                appendLine("- Use ONLY IDs from current batches for confirm/reject.")
+                appendLine("- Do NOT use JSON unless explicitly asked.")
+                appendLine()
+                appendLine("<UPDATE>")
+                appendLine("CONFIRM_DAILY: D1,D2")
+                appendLine("REJECT_DAILY: D3")
+                appendLine("ADD_DAILY: text A | text B")
+                appendLine("CONFIRM_USER: U1")
+                appendLine("REJECT_USER: U2")
+                appendLine("ADD_USER: text C")
+                appendLine("</UPDATE>")
+            } else {
+                appendLine("- You MUST respond with a single JSON object and nothing else (no markdown, no code fences).")
+                appendLine("- JSON schema:")
+                appendLine("  {")
+                appendLine("    \"assistant_message\": string,")
+                appendLine("    \"confirmed_facts\": string[],")
+                appendLine("    \"rejected_facts\": string[],")
+                appendLine("    \"new_facts\": string[],")
+                appendLine("    \"confirmed_user_facts\": string[],")
+                appendLine("    \"rejected_user_facts\": string[],")
+                appendLine("    \"new_user_facts_candidates\": string[]")
+                appendLine("  }")
+                appendLine("- Use exact fact strings from the current batch in confirm/reject arrays when possible.")
+            }
             appendLine()
             appendLine("RULES:")
             appendLine("- Ask about 3 to 5 items at a time (never more than 5).")
             appendLine("- Only confirm facts that the USER explicitly confirms.")
-            appendLine("- If the user confirms a daily fact, include it in confirmed_facts.")
-            appendLine("- If a daily fact is wrong, include it in rejected_facts.")
-            appendLine("- If the user mentions new daily facts, include them in new_facts.")
+            if (outputMode == OutputMode.LINE_IDS) {
+                appendLine("- If user confirms a daily fact, add its ID to CONFIRM_DAILY.")
+                appendLine("- If a daily fact is wrong, add its ID to REJECT_DAILY.")
+                appendLine("- If user mentions new daily facts, place them in ADD_DAILY.")
+            } else {
+                appendLine("- If user confirms a daily fact, include it in confirmed_facts.")
+                appendLine("- If a daily fact is wrong, include it in rejected_facts.")
+                appendLine("- If user mentions new daily facts, include them in new_facts.")
+            }
             appendLine("- If user says a fact was only an ad / not their intention / about another person, reject original fact and add corrected fact.")
             appendLine("- For USER FACTS:")
             appendLine("  - Candidate user facts must be approved by the user before adding to USER_FACTS.md.")
-            appendLine("  - If user approves a candidate user fact -> confirmed_user_facts.")
-            appendLine("  - If user rejects a candidate user fact -> rejected_user_facts.")
-            appendLine("  - If user mentions a new durable fact about themselves -> new_user_facts_candidates.")
+            if (outputMode == OutputMode.LINE_IDS) {
+                appendLine("  - If user approves candidate -> add ID to CONFIRM_USER.")
+                appendLine("  - If user rejects candidate -> add ID to REJECT_USER.")
+                appendLine("  - If user mentions new durable user fact -> ADD_USER.")
+            } else {
+                appendLine("  - If user approves candidate -> confirmed_user_facts.")
+                appendLine("  - If user rejects candidate -> rejected_user_facts.")
+                appendLine("  - If user mentions new durable user fact -> new_user_facts_candidates.")
+            }
             appendLine("  - If fact is actually about someone else (mother/friend/company), do NOT store it as a user fact.")
             appendLine("- assistant_message must be friendly and include the next 1–3 questions.")
             appendLine()
@@ -67,14 +107,14 @@ object DailyFactsReviewProtocol {
             if (dailyFactsBatch.isEmpty()) {
                 appendLine("(none)")
             } else {
-                dailyFactsBatch.forEachIndexed { idx, f -> appendLine("${idx + 1}. $f") }
+                dailyFactsBatch.forEach { item -> appendLine("${item.id}. ${item.text}") }
             }
             appendLine()
             appendLine("CURRENT REVIEW BATCH: USER FACT CANDIDATES")
             if (userFactsBatch.isEmpty()) {
                 appendLine("(none)")
             } else {
-                userFactsBatch.forEachIndexed { idx, f -> appendLine("${idx + 1}. $f") }
+                userFactsBatch.forEach { item -> appendLine("${item.id}. ${item.text}") }
             }
             appendLine()
             appendLine("CURRENT USER FACTS (reference only; do not rewrite blindly):")
@@ -83,6 +123,8 @@ object DailyFactsReviewProtocol {
     }
 
     fun parseUpdate(raw: String): AiUpdate {
+        parseLineProtocolUpdate(raw)?.let { return it }
+
         val jsonText = extractJsonObject(raw)
         val obj = parseJsonObjectWithRepair(jsonText)
 
@@ -105,6 +147,73 @@ object DailyFactsReviewProtocol {
             rejectedUserFacts = arr("rejected_user_facts"),
             newUserFactsCandidates = arr("new_user_facts_candidates"),
         )
+    }
+
+    private fun parseLineProtocolUpdate(raw: String): AiUpdate? {
+        val block = extractUpdateBlock(raw) ?: return null
+        val body = block.body
+
+        val confirmDaily = parseCsvIds(readKeyValue(body, "CONFIRM_DAILY"), defaultPrefix = "D")
+        val rejectDaily = parseCsvIds(readKeyValue(body, "REJECT_DAILY"), defaultPrefix = "D")
+        val addDaily = parsePipeOrCsvTexts(readKeyValue(body, "ADD_DAILY"))
+        val confirmUser = parseCsvIds(readKeyValue(body, "CONFIRM_USER"), defaultPrefix = "U")
+        val rejectUser = parseCsvIds(readKeyValue(body, "REJECT_USER"), defaultPrefix = "U")
+        val addUser = parsePipeOrCsvTexts(readKeyValue(body, "ADD_USER"))
+
+        val assistant = block.message.trim()
+            .ifBlank { "Got it. I updated your review queue." }
+
+        val hasUpdates = confirmDaily.isNotEmpty() || rejectDaily.isNotEmpty() || addDaily.isNotEmpty() ||
+            confirmUser.isNotEmpty() || rejectUser.isNotEmpty() || addUser.isNotEmpty()
+        if (!hasUpdates && block.message.isBlank()) return null
+
+        return AiUpdate(
+            assistantMessage = assistant,
+            confirmedFacts = confirmDaily,
+            rejectedFacts = rejectDaily,
+            newFacts = addDaily,
+            confirmedUserFacts = confirmUser,
+            rejectedUserFacts = rejectUser,
+            newUserFactsCandidates = addUser,
+        )
+    }
+
+    private data class UpdateBlock(
+        val body: String,
+        val message: String,
+    )
+
+    private fun extractUpdateBlock(raw: String): UpdateBlock? {
+        val pattern = Regex("(?is)<UPDATE>(.*?)</UPDATE>")
+        val match = pattern.find(raw) ?: return null
+        val body = match.groupValues.getOrNull(1)?.trim().orEmpty()
+        val message = raw.replaceRange(match.range, "").trim()
+        return UpdateBlock(body = body, message = message)
+    }
+
+    private fun readKeyValue(body: String, key: String): String {
+        val re = Regex("(?im)^\\s*${Regex.escape(key)}\\s*:\\s*(.*)$")
+        val m = re.find(body) ?: return ""
+        return m.groupValues.getOrNull(1)?.trim().orEmpty()
+    }
+
+    private fun parseCsvIds(raw: String, defaultPrefix: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(',', ';', '|')
+            .map { it.trim().uppercase() }
+            .map { it.removePrefix("#") }
+            .map { if (it.matches(Regex("^[0-9]{1,3}$"))) "$defaultPrefix$it" else it }
+            .filter { it.matches(Regex("^[DU][0-9]{1,3}$")) }
+            .distinct()
+    }
+
+    private fun parsePipeOrCsvTexts(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split('|', ';', ',')
+            .map { it.trim() }
+            .map { it.removePrefix("-").trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
     }
 
     private fun extractJsonObject(text: String): String {

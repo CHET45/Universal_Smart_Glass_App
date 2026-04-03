@@ -3,6 +3,7 @@ package com.fersaiyan.cyanbridge.ui
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -26,6 +27,7 @@ import com.fersaiyan.cyanbridge.databinding.ActivityChatThreadBinding
 import com.fersaiyan.cyanbridge.localagent.LocalAgentPrefs
 import com.fersaiyan.cyanbridge.localagent.context.LocalAgentContextBuilder
 import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsReviewProtocol
+import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsReviewProtocol.ReviewBatchItem
 import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsStorage
 import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsReviewThreadStore
 import com.fersaiyan.cyanbridge.localagent.dailyfacts.OcrDailyFactsSeeder
@@ -36,6 +38,8 @@ import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryPrefs
 import com.fersaiyan.cyanbridge.localagent.dailysummary.DailySummaryRegenerateWorker
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemorySearch
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
+import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelRequestPriority
+import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelsProvider
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import com.fersaiyan.cyanbridge.memoryvault.MemoryModeManager
@@ -676,6 +680,7 @@ class ChatThreadActivity : AppCompatActivity() {
         lifecycleScope.launch {
             onAssistantRequestStarted()
             val useLocalStreaming = isLocalModelsProviderSelected() && !isDailyFactsReview
+            var maxTokensReached = false
             if (useLocalStreaming) {
                 localGenerationRunning = true
                 streamingAssistantDraft = ""
@@ -695,6 +700,15 @@ class ChatThreadActivity : AppCompatActivity() {
                             object : RelayAiAssistantRouter.ChatStreamCallbacks {
                                 override fun onStatus(status: String) {
                                     runOnUiThread {
+                                        if (status == LocalModelsProvider.STATUS_MAX_TOKENS_REACHED) {
+                                            maxTokensReached = true
+                                            android.widget.Toast.makeText(
+                                                this@ChatThreadActivity,
+                                                "Reply capped at your max output tokens setting.",
+                                                android.widget.Toast.LENGTH_SHORT,
+                                            ).show()
+                                            return@runOnUiThread
+                                        }
                                         refreshModelBadge(status)
                                     }
                                 }
@@ -715,7 +729,7 @@ class ChatThreadActivity : AppCompatActivity() {
                 showRelayDownToastIfNeeded(assistantReply)
 
                 if (isDailyFactsReview) {
-                    handleDailyFactsAiReply(chatId, assistantReply)
+                    handleDailyFactsAiReply(chatId, userPrompt, assistantReply)
                 } else {
                     val streamed = streamingAssistantDraft.orEmpty().trim()
                     val finalReply = when {
@@ -725,8 +739,13 @@ class ChatThreadActivity : AppCompatActivity() {
                         useLocalStreaming -> "I couldn't generate a reply yet. Loading the model and retrying can take a moment; please try again."
                         else -> "I could not generate a reply."
                     }
+                    val finalReplyWithCapNotice = if (maxTokensReached && finalReply.isNotBlank()) {
+                        finalReply.trimEnd() + "\n\n[Stopped at max output tokens configured in Local Models.]"
+                    } else {
+                        finalReply
+                    }
                     streamingAssistantDraft = null
-                    ChatStore.addMessage(chatId, ChatRole.ASSISTANT, finalReply)
+                    ChatStore.addMessage(chatId, ChatRole.ASSISTANT, finalReplyWithCapNotice)
 
                     if (requestSmartTitleAfterReply) {
                         maybeGenerateSmartThreadTitle(chatId = chatId, firstUserPrompt = userPrompt)
@@ -734,23 +753,15 @@ class ChatThreadActivity : AppCompatActivity() {
 
                     // Proactive memory: extract candidate facts from normal chats.
                     lifecycleScope.launch {
-                        val applied = withContext(Dispatchers.IO) {
+                        withContext(Dispatchers.IO) {
                             ChatMemoryAutoUpdater.extractAndStore(
                                 context = this@ChatThreadActivity,
                                 userMessage = userPrompt,
-                                assistantReply = finalReply,
+                                assistantReply = finalReplyWithCapNotice,
                             )
                         }
 
-                        if (applied.addedCandidateUserFacts > 0 || applied.addedDailyFacts > 0) {
-                            val msg = buildString {
-                                if (applied.addedDailyFacts > 0) append("Saved ${applied.addedDailyFacts} daily fact(s). ")
-                                if (applied.addedCandidateUserFacts > 0) append("Saved ${applied.addedCandidateUserFacts} candidate user fact(s).")
-                            }.trim()
-                            if (msg.isNotBlank()) {
-                                android.widget.Toast.makeText(this@ChatThreadActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        }
+                        // Silent background memory updates for normal chats to avoid noisy toasts.
                     }
                 }
 
@@ -800,13 +811,14 @@ class ChatThreadActivity : AppCompatActivity() {
                     LocalAgentMemoryStore.ensureSeedFiles(this@ChatThreadActivity)
                     val userFactsMd = LocalAgentMemoryStore.readText(LocalAgentMemoryStore.userFactsFile(this@ChatThreadActivity))
                     val candidateUserFacts = CandidateUserFactsStorage.load(this@ChatThreadActivity, date)
-                    val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(state, candidateUserFacts)
+                    val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
                     val system = DailyFactsReviewProtocol.buildSystemMessage(
                         state = state,
                         userFactsMd = userFactsMd,
                         candidateUserFacts = candidateUserFacts,
-                        dailyFactsBatch = dailyBatch,
-                        userFactsBatch = userBatch,
+                        dailyFactsBatch = batch.daily,
+                        userFactsBatch = batch.user,
+                        outputMode = dailyReviewOutputMode(),
                     )
 
                     val msgs = listOf(
@@ -826,7 +838,11 @@ class ChatThreadActivity : AppCompatActivity() {
                 }
                 showRelayDownToastIfNeeded(assistantReply)
 
-                handleDailyFactsAiReply(cid, assistantReply)
+                handleDailyFactsAiReply(
+                    chatId = cid,
+                    userPrompt = "Start daily facts review",
+                    raw = assistantReply,
+                )
                 refreshMessages()
             } catch (t: Throwable) {
                 showRelayDownToastIfNeeded(t.message)
@@ -1054,13 +1070,14 @@ class ChatThreadActivity : AppCompatActivity() {
         LocalAgentMemoryStore.ensureSeedFiles(this)
         val userFactsMd = LocalAgentMemoryStore.readText(LocalAgentMemoryStore.userFactsFile(this))
         val candidateUserFacts = CandidateUserFactsStorage.load(this, date)
-        val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(state, candidateUserFacts)
+        val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
         val system = DailyFactsReviewProtocol.buildSystemMessage(
             state = state,
             userFactsMd = userFactsMd,
             candidateUserFacts = candidateUserFacts,
-            dailyFactsBatch = dailyBatch,
-            userFactsBatch = userBatch,
+            dailyFactsBatch = batch.daily,
+            userFactsBatch = batch.user,
+            outputMode = dailyReviewOutputMode(),
         )
 
         val historyRaw = ChatStore.listMessages(chatId).map { m ->
@@ -1103,20 +1120,33 @@ class ChatThreadActivity : AppCompatActivity() {
         }
     }
 
+    private data class ReviewBatch(
+        val daily: List<ReviewBatchItem>,
+        val user: List<ReviewBatchItem>,
+    )
+
     private fun buildDailyFactsReviewBatch(
         state: DailyFactsStorage.State,
         candidateUserFacts: List<String>,
-    ): Pair<List<String>, List<String>> {
+    ): ReviewBatch {
         val maxBatch = 5
         val dailyTarget = 3
         val userTarget = 2
 
-        var dailyTake = state.draft.take(dailyTarget)
+        val confirmedNorm = state.confirmed
+            .map { normalizeFactForMatching(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+        val filteredDraft = state.draft.filterNot {
+            confirmedNorm.contains(normalizeFactForMatching(it))
+        }
+
+        var dailyTake = filteredDraft.take(dailyTarget)
         var userTake = candidateUserFacts.take(userTarget)
 
         var remaining = maxBatch - dailyTake.size - userTake.size
         if (remaining > 0) {
-            val extraDaily = state.draft.drop(dailyTake.size).take(remaining)
+            val extraDaily = filteredDraft.drop(dailyTake.size).take(remaining)
             dailyTake = dailyTake + extraDaily
             remaining -= extraDaily.size
         }
@@ -1125,7 +1155,17 @@ class ChatThreadActivity : AppCompatActivity() {
             userTake = userTake + extraUser
         }
 
-        return dailyTake to userTake
+        val dailyItems = dailyTake.mapIndexed { idx, text ->
+            ReviewBatchItem(id = "D${idx + 1}", text = text)
+        }
+        val userItems = userTake.mapIndexed { idx, text ->
+            ReviewBatchItem(id = "U${idx + 1}", text = text)
+        }
+
+        return ReviewBatch(
+            daily = dailyItems,
+            user = userItems,
+        )
     }
 
     private data class ContextBudgets(
@@ -1168,6 +1208,14 @@ class ChatThreadActivity : AppCompatActivity() {
         return ContextBudgets(systemChars = systemChars, historyTokens = historyTokens)
     }
 
+    private fun dailyReviewOutputMode(): DailyFactsReviewProtocol.OutputMode {
+        return if (isLocalModelsProviderSelected()) {
+            DailyFactsReviewProtocol.OutputMode.LINE_IDS
+        } else {
+            DailyFactsReviewProtocol.OutputMode.JSON
+        }
+    }
+
     private fun buildLocalAgentContextBuilder(maxTotalChars: Int): LocalAgentContextBuilder {
         val ratio = (maxTotalChars.toDouble() / 14_000.0).coerceIn(0.12, 1.0)
         fun scaled(base: Int, min: Int): Int = (base * ratio).toInt().coerceAtLeast(min)
@@ -1202,39 +1250,120 @@ class ChatThreadActivity : AppCompatActivity() {
         return kept.asReversed()
     }
 
-    private suspend fun handleDailyFactsAiReply(chatId: String, raw: String) {
+    private suspend fun handleDailyFactsAiReply(
+        chatId: String,
+        userPrompt: String,
+        raw: String,
+    ) {
         val date = dailyFactsDate ?: java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .format(java.util.Date(System.currentTimeMillis()))
 
-        val parsed = runCatching { DailyFactsReviewProtocol.parseUpdate(raw) }.getOrNull()
+        val preState = DailyFactsStorage.load(this, date)
+        val preCandidates = CandidateUserFactsStorage.load(this, date)
+        val currentBatch = buildDailyFactsReviewBatch(preState, preCandidates)
+
+        val parsedFromUserHeuristic = if (isLocalModelsProviderSelected()) {
+            inferUpdateFromUserReplyHeuristic(
+                userReply = userPrompt,
+                batch = currentBatch,
+            )
+        } else {
+            null
+        }
+        if (parsedFromUserHeuristic != null) {
+            applyDailyFactsUpdate(
+                chatId = chatId,
+                date = date,
+                update = parsedFromUserHeuristic,
+                assistantTextOverride = extractUserFacingAssistantText(raw),
+                batch = currentBatch,
+            )
+            return
+        }
+
+        val parsedFromRaw = runCatching { DailyFactsReviewProtocol.parseUpdate(raw) }.getOrNull()
             ?: attemptRepairDailyFactsUpdate(date = date, raw = raw)
 
-        if (parsed == null) {
-            ChatStore.addMessage(
-                chatId,
-                ChatRole.ASSISTANT,
-                "I couldn't parse that review update safely, so I kept your queue unchanged. Please answer once more and I'll continue with the same pending facts.",
+        if (parsedFromRaw != null) {
+            applyDailyFactsUpdate(
+                chatId = chatId,
+                date = date,
+                update = parsedFromRaw,
+                assistantTextOverride = parsedFromRaw.assistantMessage,
+                batch = currentBatch,
             )
+            return
+        }
+
+        val parsedFromUserReply = if (isLocalModelsProviderSelected()) {
+            attemptInferDailyFactsUpdateFromUserReply(
+                date = date,
+                userReply = userPrompt,
+            )
+        } else {
+            null
+        }
+
+        if (parsedFromUserReply != null) {
+            applyDailyFactsUpdate(
+                chatId = chatId,
+                date = date,
+                update = parsedFromUserReply,
+                assistantTextOverride = extractUserFacingAssistantText(raw),
+                batch = currentBatch,
+            )
+            return
+        }
+
+        if (extractUserFacingAssistantText(raw).isNotBlank()) {
+            ChatStore.addMessage(chatId, ChatRole.ASSISTANT, extractUserFacingAssistantText(raw))
             refreshDailyReviewQueueStatusAsync()
             return
         }
 
-        applyDailyFactsUpdate(chatId = chatId, date = date, update = parsed)
+        runCatching {
+            val dailyBatch = currentBatch.daily
+            val userBatch = currentBatch.user
+            val brief = buildString {
+                append("I couldn't parse the structured update, so your queue is unchanged. ")
+                append("Please confirm/reject by ID (example: D1 yes, D2 no, U1 yes). ")
+                if (dailyBatch.isNotEmpty()) {
+                    append("Current daily batch: ")
+                    dailyBatch.forEachIndexed { idx, item ->
+                        if (idx > 0) append(" | ")
+                        append("${item.id}) ${item.text.take(90)}")
+                    }
+                }
+                if (userBatch.isNotEmpty()) {
+                    append(". User-fact candidates: ")
+                    userBatch.forEachIndexed { idx, item ->
+                        if (idx > 0) append(" | ")
+                        append("${item.id}) ${item.text.take(90)}")
+                    }
+                }
+            }
+            ChatStore.addMessage(chatId, ChatRole.ASSISTANT, brief)
+        }.onFailure {
+            ChatStore.addMessage(
+                chatId,
+                ChatRole.ASSISTANT,
+                "I couldn't parse that review update safely, so I kept your queue unchanged. Please answer once more.",
+            )
+        }
+        refreshDailyReviewQueueStatusAsync()
     }
 
     private fun applyDailyFactsUpdate(
         chatId: String,
         date: String,
         update: DailyFactsReviewProtocol.AiUpdate,
+        assistantTextOverride: String? = null,
+        batch: ReviewBatch,
     ) {
-        val preState = DailyFactsStorage.load(this, date)
-        val preCandidates = CandidateUserFactsStorage.load(this, date)
-        val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(preState, preCandidates)
-
-        val confirmedDaily = resolveFactsAgainstBatch(update.confirmedFacts, dailyBatch)
-        val rejectedDaily = resolveFactsAgainstBatch(update.rejectedFacts, dailyBatch)
-        val confirmedUser = resolveFactsAgainstBatch(update.confirmedUserFacts, userBatch)
-        val rejectedUser = resolveFactsAgainstBatch(update.rejectedUserFacts, userBatch)
+        val confirmedDaily = resolveFactsAgainstBatch(update.confirmedFacts, batch.daily)
+        val rejectedDaily = resolveFactsAgainstBatch(update.rejectedFacts, batch.daily)
+        val confirmedUser = resolveFactsAgainstBatch(update.confirmedUserFacts, batch.user)
+        val rejectedUser = resolveFactsAgainstBatch(update.rejectedUserFacts, batch.user)
 
         val filteredNewDailyFacts = update.newFacts
             .map { it.trim() }
@@ -1273,11 +1402,49 @@ class ChatThreadActivity : AppCompatActivity() {
             UserFactsStorage.appendUniqueFacts(this, confirmedUser)
         }
 
+        val postState = DailyFactsStorage.load(this, date)
+        val postCandidates = CandidateUserFactsStorage.load(this, date)
+        val followUp = buildQueueContinuationPrompt(postState, postCandidates)
+
         refreshDailyReviewQueueStatusAsync()
-        val assistantText = update.assistantMessage.trim().ifBlank {
+        val baseAssistantText = assistantTextOverride
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: update.assistantMessage.trim().ifBlank {
             "Got it. I updated the queue and prepared the next facts to review."
         }
+        val assistantText = if (followUp.isNotBlank()) {
+            val alreadyContinues = baseAssistantText.contains("Next batch", ignoreCase = true) ||
+                baseAssistantText.contains("1)")
+            if (alreadyContinues) baseAssistantText else "$baseAssistantText\n\n$followUp"
+        } else {
+            baseAssistantText
+        }
         ChatStore.addMessage(chatId, ChatRole.ASSISTANT, assistantText)
+    }
+
+    private fun buildQueueContinuationPrompt(
+        state: DailyFactsStorage.State,
+        candidateUserFacts: List<String>,
+    ): String {
+        val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
+        val nextDaily = batch.daily
+        val nextUser = batch.user
+        if (nextDaily.isEmpty() && nextUser.isEmpty()) return ""
+
+        val sb = StringBuilder()
+        sb.appendLine("Next batch to review:")
+        nextDaily.forEach { item ->
+            sb.appendLine("${item.id}) ${item.text.take(180)}")
+        }
+        if (nextUser.isNotEmpty()) {
+            sb.appendLine("User-fact candidates:")
+            nextUser.forEach { item ->
+                sb.appendLine("${item.id}) ${item.text.take(180)}")
+            }
+        }
+        sb.append("Please confirm or reject by ID (e.g., 'D1 yes, D2 no, U1 yes').")
+        return sb.toString().trim()
     }
 
     private suspend fun attemptRepairDailyFactsUpdate(
@@ -1287,19 +1454,34 @@ class ChatThreadActivity : AppCompatActivity() {
         return runCatching {
             val state = DailyFactsStorage.load(this, date)
             val candidateUserFacts = CandidateUserFactsStorage.load(this, date)
-            val (dailyBatch, userBatch) = buildDailyFactsReviewBatch(state, candidateUserFacts)
+            val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
+            val mode = dailyReviewOutputMode()
 
             val prompt = buildString {
-                appendLine("Convert the following daily-review assistant output into strict JSON only.")
-                appendLine("Do not add markdown. Return one JSON object with keys:")
-                appendLine("assistant_message, confirmed_facts, rejected_facts, new_facts, confirmed_user_facts, rejected_user_facts, new_user_facts_candidates")
-                appendLine("Use only facts from the provided batches when filling confirmed/rejected arrays.")
+                if (mode == DailyFactsReviewProtocol.OutputMode.LINE_IDS) {
+                    appendLine("Convert the following daily-review assistant output into the strict <UPDATE> line protocol.")
+                    appendLine("Format:")
+                    appendLine("<UPDATE>")
+                    appendLine("CONFIRM_DAILY: D1,D2")
+                    appendLine("REJECT_DAILY: D3")
+                    appendLine("ADD_DAILY: text A | text B")
+                    appendLine("CONFIRM_USER: U1")
+                    appendLine("REJECT_USER: U2")
+                    appendLine("ADD_USER: text C")
+                    appendLine("</UPDATE>")
+                    appendLine("Use only IDs from the provided batches for confirm/reject lines.")
+                } else {
+                    appendLine("Convert the following daily-review assistant output into strict JSON only.")
+                    appendLine("Return one JSON object with keys:")
+                    appendLine("assistant_message, confirmed_facts, rejected_facts, new_facts, confirmed_user_facts, rejected_user_facts, new_user_facts_candidates")
+                    appendLine("Use only facts from provided batches for confirmed/rejected arrays.")
+                }
                 appendLine()
                 appendLine("DATE: $date")
                 appendLine("DAILY_BATCH:")
-                dailyBatch.forEachIndexed { idx, item -> appendLine("${idx + 1}. $item") }
+                batch.daily.forEach { item -> appendLine("${item.id}. ${item.text}") }
                 appendLine("USER_BATCH:")
-                userBatch.forEachIndexed { idx, item -> appendLine("${idx + 1}. $item") }
+                batch.user.forEach { item -> appendLine("${item.id}. ${item.text}") }
                 appendLine()
                 appendLine("OUTPUT_TO_CONVERT:")
                 appendLine(raw.take(4000))
@@ -1312,24 +1494,113 @@ class ChatThreadActivity : AppCompatActivity() {
         }.getOrNull()
     }
 
+    private suspend fun attemptInferDailyFactsUpdateFromUserReply(
+        date: String,
+        userReply: String,
+    ): DailyFactsReviewProtocol.AiUpdate? {
+        if (userReply.isBlank()) return null
+
+        return runCatching {
+            val state = DailyFactsStorage.load(this, date)
+            val candidateUserFacts = CandidateUserFactsStorage.load(this, date)
+            val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
+            val mode = dailyReviewOutputMode()
+
+            val prompt = buildString {
+                appendLine("Infer structured queue updates from this USER reply.")
+                if (mode == DailyFactsReviewProtocol.OutputMode.LINE_IDS) {
+                    appendLine("Return a short assistant message, then strict <UPDATE> line protocol:")
+                    appendLine("<UPDATE>")
+                    appendLine("CONFIRM_DAILY: D1")
+                    appendLine("REJECT_DAILY: D2")
+                    appendLine("ADD_DAILY: text")
+                    appendLine("CONFIRM_USER: U1")
+                    appendLine("REJECT_USER: U2")
+                    appendLine("ADD_USER: text")
+                    appendLine("</UPDATE>")
+                    appendLine("Use only provided IDs for CONFIRM/REJECT lines.")
+                } else {
+                    appendLine("Return strict JSON only with keys:")
+                    appendLine("assistant_message, confirmed_facts, rejected_facts, new_facts, confirmed_user_facts, rejected_user_facts, new_user_facts_candidates")
+                    appendLine("Use only provided batch facts for confirmed/rejected arrays.")
+                }
+                appendLine()
+                appendLine("CURRENT_DAILY_BATCH:")
+                if (batch.daily.isEmpty()) appendLine("(none)") else batch.daily.forEach { item -> appendLine("${item.id}. ${item.text}") }
+                appendLine("CURRENT_USER_BATCH:")
+                if (batch.user.isEmpty()) appendLine("(none)") else batch.user.forEach { item -> appendLine("${item.id}. ${item.text}") }
+                appendLine()
+                appendLine("USER_REPLY:")
+                appendLine(userReply.take(2000))
+            }
+
+            val inferenceRaw = if (isLocalModelsProviderSelected()) {
+                LocalModelsProvider().streamChat(
+                    context = this,
+                    messages = listOf(mapOf("role" to "User", "content" to prompt)),
+                    requestPriority = LocalModelRequestPriority.HIGH,
+                )
+            } else {
+                withContext(Dispatchers.IO) {
+                    RelayAiAssistantRouter.textReply(this@ChatThreadActivity, prompt)
+                }
+            }
+
+            DailyFactsReviewProtocol.parseUpdate(inferenceRaw)
+        }.getOrNull()
+    }
+
+    private fun extractUserFacingAssistantText(raw: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return ""
+
+        val looksLikeRawJson = (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+            trimmed.startsWith("```json") ||
+            trimmed.contains("\"confirmed_facts\"") ||
+            trimmed.contains("\"rejected_facts\"")
+        if (looksLikeRawJson) return ""
+
+        return trimmed.take(1500)
+    }
+
     private fun resolveFactsAgainstBatch(
         returnedFacts: List<String>,
-        batchFacts: List<String>,
+        batchFacts: List<ReviewBatchItem>,
     ): List<String> {
         if (returnedFacts.isEmpty() || batchFacts.isEmpty()) return emptyList()
 
         val out = LinkedHashSet<String>()
         val canonicalByNorm = LinkedHashMap<String, String>()
+        val byIndex = LinkedHashMap<Int, String>()
+        val byId = LinkedHashMap<String, String>()
         batchFacts.forEach { fact ->
-            val norm = normalizeFactForMatching(fact)
+            val norm = normalizeFactForMatching(fact.text)
             if (norm.isNotBlank() && !canonicalByNorm.containsKey(norm)) {
-                canonicalByNorm[norm] = fact
+                canonicalByNorm[norm] = fact.text
             }
+            byId[fact.id.uppercase()] = fact.text
         }
+        batchFacts.forEachIndexed { idx, fact -> byIndex[idx + 1] = fact.text }
 
         for (raw in returnedFacts) {
             val candidate = raw.trim()
             if (candidate.isBlank()) continue
+
+            Regex("\\b([DU]\\s*\\d{1,3})\\b", RegexOption.IGNORE_CASE)
+                .findAll(candidate)
+                .map { it.groupValues[1].replace(" ", "").uppercase() }
+                .forEach { id -> byId[id]?.let { out += it } }
+            if (out.isNotEmpty() && candidate.length <= 14) continue
+
+            val explicitIndexes = Regex("\\b(\\d{1,3})\\b")
+                .findAll(candidate)
+                .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+                .toList()
+            if (explicitIndexes.isNotEmpty()) {
+                explicitIndexes.forEach { idx -> byIndex[idx]?.let { out += it } }
+                if (out.isNotEmpty()) continue
+            }
+
             val norm = normalizeFactForMatching(candidate)
             if (norm.isBlank()) continue
 
@@ -1340,12 +1611,118 @@ class ChatThreadActivity : AppCompatActivity() {
             }
 
             val fuzzy = canonicalByNorm.entries.firstOrNull { (batchNorm, _) ->
-                batchNorm.contains(norm) || norm.contains(batchNorm)
+                val a = batchNorm.split(' ').filter { it.length > 2 }.toSet()
+                val b = norm.split(' ').filter { it.length > 2 }.toSet()
+                val overlap = a.intersect(b).size
+                (batchNorm.contains(norm) || norm.contains(batchNorm)) ||
+                    (overlap >= 3 && overlap >= (a.size.coerceAtMost(b.size) / 2))
             }?.value
             if (fuzzy != null) out += fuzzy
         }
 
         return out.toList()
+    }
+
+    private fun inferUpdateFromUserReplyHeuristic(
+        userReply: String,
+        batch: ReviewBatch,
+    ): DailyFactsReviewProtocol.AiUpdate? {
+        if (userReply.isBlank()) return null
+        if (batch.daily.isEmpty() && batch.user.isEmpty()) return null
+
+        val lower = userReply.lowercase(java.util.Locale.US)
+        val confirmWords = listOf("yes", "yep", "yeah", "correct", "right", "true", "confirm", "approved", "ok")
+        val rejectWords = listOf("no", "nope", "wrong", "false", "reject", "not", "nah", "skip")
+
+        val confirmDaily = LinkedHashSet<String>()
+        val rejectDaily = LinkedHashSet<String>()
+        val confirmUser = LinkedHashSet<String>()
+        val rejectUser = LinkedHashSet<String>()
+
+        fun applyForIds(ids: List<String>, confirm: Boolean) {
+            ids.forEach { id ->
+                val normalized = id.uppercase()
+                when {
+                    normalized.startsWith("D") -> {
+                        val idx = normalized.removePrefix("D").toIntOrNull() ?: return@forEach
+                        if (idx in 1..batch.daily.size) {
+                            val ref = "D$idx"
+                            if (confirm) confirmDaily += ref else rejectDaily += ref
+                        }
+                    }
+                    normalized.startsWith("U") -> {
+                        val idx = normalized.removePrefix("U").toIntOrNull() ?: return@forEach
+                        if (idx in 1..batch.user.size) {
+                            val ref = "U$idx"
+                            if (confirm) confirmUser += ref else rejectUser += ref
+                        }
+                    }
+                }
+            }
+        }
+
+        val segments = userReply.split(Regex("[\\n,;]+|\\band\\b", RegexOption.IGNORE_CASE))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        segments.forEach { segment ->
+            val segLower = segment.lowercase(java.util.Locale.US)
+            val hasConfirm = confirmWords.any { segLower.contains(it) }
+            val hasReject = rejectWords.any { segLower.contains(it) }
+            if (!hasConfirm && !hasReject) return@forEach
+
+            val explicitIds = Regex("\\b([DU]\\s*\\d{1,3})\\b", RegexOption.IGNORE_CASE)
+                .findAll(segment)
+                .map { it.groupValues[1].replace(" ", "").uppercase() }
+                .toList()
+
+            val bareDaily = if (explicitIds.isEmpty()) {
+                Regex("\\b(\\d{1,3})\\b")
+                    .findAll(segment)
+                    .mapNotNull { it.groupValues.getOrNull(1)?.toIntOrNull() }
+                    .map { "D$it" }
+                    .toList()
+            } else {
+                emptyList()
+            }
+
+            val ids = (explicitIds + bareDaily)
+                .distinct()
+
+            if (ids.isNotEmpty()) {
+                applyForIds(ids, confirm = hasConfirm && !hasReject)
+                if (hasReject && !hasConfirm) applyForIds(ids, confirm = false)
+            }
+        }
+
+        if (confirmDaily.isEmpty() && rejectDaily.isEmpty() && confirmUser.isEmpty() && rejectUser.isEmpty()) {
+            if (batch.daily.size == 1 || batch.user.size == 1) {
+                val hasConfirm = confirmWords.any { lower.contains(it) }
+                val hasReject = rejectWords.any { lower.contains(it) }
+                if (hasConfirm xor hasReject) {
+                    if (batch.daily.size == 1) {
+                        if (hasConfirm) confirmDaily += "D1" else rejectDaily += "D1"
+                    }
+                    if (batch.user.size == 1) {
+                        if (hasConfirm) confirmUser += "U1" else rejectUser += "U1"
+                    }
+                }
+            }
+        }
+
+        val anyUpdates = confirmDaily.isNotEmpty() || rejectDaily.isNotEmpty() ||
+            confirmUser.isNotEmpty() || rejectUser.isNotEmpty()
+        if (!anyUpdates) return null
+
+        return DailyFactsReviewProtocol.AiUpdate(
+            assistantMessage = "Got it — updated. Continuing with the next batch.",
+            confirmedFacts = confirmDaily.toList(),
+            rejectedFacts = rejectDaily.toList(),
+            newFacts = emptyList(),
+            confirmedUserFacts = confirmUser.toList(),
+            rejectedUserFacts = rejectUser.toList(),
+            newUserFactsCandidates = emptyList(),
+        )
     }
 
     private fun normalizeFactForMatching(value: String): String {
@@ -1402,22 +1779,26 @@ class ChatThreadActivity : AppCompatActivity() {
     private fun refreshDailyReviewQueueStatusAsync() {
         if (!isDailyFactsReview) {
             binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
+            binding.layoutDailyReviewCandidates.visibility = View.GONE
             return
         }
 
         val date = dailyFactsDate?.trim().orEmpty()
         if (date.isBlank()) {
             binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
+            binding.layoutDailyReviewCandidates.visibility = View.GONE
             return
         }
 
         lifecycleScope.launch(Dispatchers.IO) {
-            val draftCount = runCatching { DailyFactsStorage.load(this@ChatThreadActivity, date).draft.size }
-                .getOrDefault(0)
-            val confirmedCount = runCatching { DailyFactsStorage.load(this@ChatThreadActivity, date).confirmed.size }
-                .getOrDefault(0)
-            val candidateCount = runCatching { CandidateUserFactsStorage.load(this@ChatThreadActivity, date).size }
-                .getOrDefault(0)
+            val state = runCatching { DailyFactsStorage.load(this@ChatThreadActivity, date) }
+                .getOrNull()
+            val candidateUserFacts = runCatching { CandidateUserFactsStorage.load(this@ChatThreadActivity, date) }
+                .getOrElse { emptyList() }
+
+            val draftCount = state?.draft?.size ?: 0
+            val confirmedCount = state?.confirmed?.size ?: 0
+            val candidateCount = candidateUserFacts.size
 
             val queueOk = draftCount >= 0 && confirmedCount >= 0 && candidateCount >= 0
             val text = if (queueOk) {
@@ -1429,8 +1810,121 @@ class ChatThreadActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 binding.tvDailyReviewQueueStatus.visibility = android.view.View.VISIBLE
                 binding.tvDailyReviewQueueStatus.text = text
+                renderDailyReviewQuickActions(
+                    state = state,
+                    candidateUserFacts = candidateUserFacts,
+                )
             }
         }
+    }
+
+    private fun renderDailyReviewQuickActions(
+        state: DailyFactsStorage.State?,
+        candidateUserFacts: List<String>,
+    ) {
+        if (!isDailyFactsReview || state == null || !isLocalModelsProviderSelected()) {
+            binding.layoutDailyReviewCandidates.visibility = View.GONE
+            binding.containerDailyReviewCandidates.removeAllViews()
+            return
+        }
+
+        val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
+        val daily = batch.daily
+        val user = batch.user
+        if (daily.isEmpty() && user.isEmpty()) {
+            binding.layoutDailyReviewCandidates.visibility = View.GONE
+            binding.containerDailyReviewCandidates.removeAllViews()
+            return
+        }
+
+        binding.containerDailyReviewCandidates.removeAllViews()
+        binding.layoutDailyReviewCandidates.visibility = View.VISIBLE
+
+        val all = daily + user
+        all.forEach { item ->
+            val card = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(10, 10, 10, 10)
+                background = getDrawable(R.drawable.bg_bubble_received)
+            }
+
+            val text = android.widget.TextView(this).apply {
+                this.text = "${item.id}) ${item.text.take(220)}"
+                setTextColor(getColor(R.color.text_primary))
+                textSize = 12f
+            }
+
+            val actions = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.HORIZONTAL
+                setPadding(0, 8, 0, 0)
+            }
+
+            val accept = android.widget.Button(this).apply {
+                this.text = "Accept"
+                setOnClickListener {
+                    if (localGenerationRunning) return@setOnClickListener
+                    applyLocalDailyReviewDecision(item = item, accepted = true)
+                }
+            }
+
+            val reject = android.widget.Button(this).apply {
+                this.text = "Reject"
+                setOnClickListener {
+                    if (localGenerationRunning) return@setOnClickListener
+                    applyLocalDailyReviewDecision(item = item, accepted = false)
+                }
+            }
+
+            actions.addView(accept)
+            actions.addView(reject)
+
+            card.addView(text)
+            card.addView(actions)
+
+            val lp = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                bottomMargin = 8
+            }
+            binding.containerDailyReviewCandidates.addView(card, lp)
+        }
+    }
+
+    private fun applyLocalDailyReviewDecision(
+        item: ReviewBatchItem,
+        accepted: Boolean,
+    ) {
+        val cid = chatId ?: return
+        val date = dailyFactsDate ?: return
+
+        if (item.id.startsWith("D", ignoreCase = true)) {
+            if (accepted) {
+                DailyFactsStorage.appendConfirmed(this, date, listOf(item.text))
+            }
+            DailyFactsStorage.removeFromDraft(this, date, listOf(item.text))
+        } else if (item.id.startsWith("U", ignoreCase = true)) {
+            CandidateUserFactsStorage.remove(this, date, listOf(item.text))
+            if (accepted) {
+                UserFactsStorage.appendUniqueFacts(this, listOf(item.text))
+            }
+        }
+
+        ChatStore.addMessage(cid, ChatRole.USER, "${item.id} ${if (accepted) "yes" else "no"}")
+
+        val postState = DailyFactsStorage.load(this, date)
+        val postCandidates = CandidateUserFactsStorage.load(this, date)
+        val followUp = buildQueueContinuationPrompt(postState, postCandidates)
+        val ack = if (accepted) {
+            "Accepted ${item.id}."
+        } else {
+            "Rejected ${item.id}."
+        }
+        val assistant = if (followUp.isBlank()) ack else "$ack\n\n$followUp"
+        ChatStore.addMessage(cid, ChatRole.ASSISTANT, assistant)
+
+        refreshMessages()
+        refreshDailyReviewQueueStatusAsync()
     }
 
     private fun setupBottomNavigation() {
