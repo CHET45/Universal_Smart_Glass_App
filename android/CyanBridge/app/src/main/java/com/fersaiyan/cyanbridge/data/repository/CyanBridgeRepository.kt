@@ -58,6 +58,9 @@ class CyanBridgeRepository(private val db: AppDatabase) {
 
     suspend fun insertCaptureSession(session: CaptureSession): Long = db.captureSessionDao().insert(session)
 
+    suspend fun getCaptureSessionByAudioPath(audioPath: String): CaptureSession? =
+        db.captureSessionDao().getByAudioPath(audioPath)
+
     // Chapter 6: Transcriptions
     suspend fun getTranscriptionByCaptureSessionId(captureSessionId: Long): TranscriptionRecord? = db.transcriptionDao().getByCaptureSessionId(captureSessionId)
 

@@ -15,6 +15,9 @@ interface CaptureSessionDao {
     @Query("SELECT * FROM capture_sessions ORDER BY startedAt DESC LIMIT 1")
     suspend fun getLatestSession(): CaptureSession?
 
+    @Query("SELECT * FROM capture_sessions WHERE audioPath = :audioPath LIMIT 1")
+    suspend fun getByAudioPath(audioPath: String): CaptureSession?
+
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(session: CaptureSession): Long

@@ -22,6 +22,7 @@ import com.fersaiyan.cyanbridge.audio.MeetingCaptureService
 import com.fersaiyan.cyanbridge.media.GlassesMediaPrefs
 import com.fersaiyan.cyanbridge.media.SyncedMediaFolder
 import com.fersaiyan.cyanbridge.media.autocapture.AutoAudioCapturePrefs
+import com.fersaiyan.cyanbridge.media.autocapture.GlassesSyncedAudioIngestor
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -3043,19 +3044,51 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             Log.i("DataDownload", "Downloading: $url")
 
             var saved: GallerySaveResult? = null
+            var payloadBytes: ByteArray? = null
+            var rawBytesSize = 0
+            var payloadNote = "raw"
+            val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
             httpGet(URL(url), 15000, 120000) { stream, _ ->
-                val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-                saved = saveOpusToLibrary(stream, fileName, takenMs)
+                val rawBytes = readAllBytes(stream)
+                rawBytesSize = rawBytes.size
+                val wrapped = wrapOpusIfNeeded(rawBytes)
+                payloadBytes = wrapped.first
+                payloadNote = wrapped.second
+                saved = saveOpusToLibrary(
+                    payloadBytes = wrapped.first,
+                    rawBytesSize = rawBytes.size,
+                    payloadNote = wrapped.second,
+                    displayName = fileName,
+                    takenTimeMs = takenMs,
+                )
             }
 
             if (saved != null && saved!!.bytes > 0) {
                 Log.i("DataDownload", "File downloaded: $fileName (${saved!!.bytes} bytes)")
             }
             if (saved != null && saved!!.success) {
+                payloadBytes?.let { bytes ->
+                    runCatching {
+                        val persisted = GlassesSyncedAudioIngestor.persistDownloadedAudio(
+                            context = applicationContext,
+                            displayName = fileName,
+                            payloadBytes = bytes,
+                            takenTimeMs = takenMs,
+                        )
+                        if (persisted.createdSessionId != null) {
+                            Log.i(
+                                "DataDownload",
+                                "Synced audio persisted for recordings/transcription: sessionId=${persisted.createdSessionId} path=${persisted.localPath}"
+                            )
+                        }
+                    }.onFailure {
+                        Log.e("DataDownload", "Failed to persist synced audio session for $fileName: ${it.message}", it)
+                    }
+                }
                 Log.i("DataDownload", "Saved to library: name=$fileName uri=${saved!!.uri}")
                 true
             } else {
-                Log.e("DataDownload", "Failed to download/save: $fileName")
+                Log.e("DataDownload", "Failed to download/save: $fileName (raw=$rawBytesSize mode=$payloadNote)")
                 false
             }
         } catch (e: Exception) {
@@ -3201,16 +3234,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun saveOpusToLibrary(input: InputStream, displayName: String, takenTimeMs: Long): GallerySaveResult {
+    private fun saveOpusToLibrary(
+        payloadBytes: ByteArray,
+        rawBytesSize: Int,
+        payloadNote: String,
+        displayName: String,
+        takenTimeMs: Long,
+    ): GallerySaveResult {
         return try {
             val resolver = contentResolver
 
-            val rawBytes = readAllBytes(input)
-            val (payloadBytes, payloadNote) = wrapOpusIfNeeded(rawBytes)
             val headHex = bytesToHex(payloadBytes, 24)
             Log.i(
                 "DataDownload",
-                "OPUS save: name=$displayName, raw=${rawBytes.size} bytes, out=${payloadBytes.size} bytes, mode=$payloadNote, head=$headHex"
+                "OPUS save: name=$displayName, raw=$rawBytesSize bytes, out=${payloadBytes.size} bytes, mode=$payloadNote, head=$headHex"
             )
 
             val title = displayName.substringBeforeLast('.', displayName)

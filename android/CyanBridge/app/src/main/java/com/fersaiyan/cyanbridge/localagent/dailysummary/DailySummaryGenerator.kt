@@ -18,9 +18,9 @@ import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
 
 object DailySummaryGenerator {
     private val localModelsProvider = LocalModelsProvider()
-    private const val MAX_LOCAL_EVENT_BULLETIZER_CALLS = 24
-    private const val MAX_LOCAL_EVENT_BULLETS_RENDERED = 72
-    private const val MAX_LOCAL_EVENT_BULLETS_CHARS = 14_000
+    private const val MAX_LOCAL_EVENT_BULLETIZER_CALLS = 80
+    private const val MAX_LOCAL_EVENT_BULLETS_RENDERED = 220
+    private const val MAX_LOCAL_EVENT_BULLETS_CHARS = 52_000
     private const val MAX_INCREMENTAL_APPEND_BULLETS = 20
     private const val DEDUPE_EVENT_WINDOW_MS = 8 * 60 * 1000L
 
@@ -90,9 +90,9 @@ object DailySummaryGenerator {
     private fun buildInputForDate(
         context: Context,
         date: String = todayString(),
-        maxCaptureLines: Int = 80,
-        maxCharsPerCapture: Int = 600,
-        maxTotalChars: Int = 12_000,
+        maxCaptureLines: Int = 220,
+        maxCharsPerCapture: Int = 1_200,
+        maxTotalChars: Int = 48_000,
         forceFullRebuild: Boolean = false,
     ): Input {
         LocalAgentMemoryStore.ensureSeedFiles(context)

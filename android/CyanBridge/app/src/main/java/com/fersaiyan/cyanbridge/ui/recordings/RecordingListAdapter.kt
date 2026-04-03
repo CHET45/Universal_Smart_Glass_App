@@ -63,7 +63,12 @@ class RecordingListAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(session: CaptureSession, isPlaying: Boolean, isTranscribing: Boolean) {
-            binding.tvTitle.text = "Meeting · ${df.format(Date(session.startedAt))}"
+            val titlePrefix = if (session.captureSource.equals("GLASSES_SYNC_P2P", ignoreCase = true)) {
+                "Glasses audio"
+            } else {
+                "Meeting"
+            }
+            binding.tvTitle.text = "$titlePrefix · ${df.format(Date(session.startedAt))}"
 
             val metaParts = mutableListOf<String>()
             metaParts.add("${session.durationSec}s")

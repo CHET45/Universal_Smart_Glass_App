@@ -567,6 +567,21 @@
                             android:text="Auto-record glasses audio (30 min chunks)"
                             android:textColor="@color/text_primary" />
 
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/til_auto_audio_loops_before_sync"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:hint="30-min loops before P2P sync + auto-transcription">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/edit_auto_audio_loops_before_sync"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="number"
+                                android:maxLines="1" />
+                        </com.google.android.material.textfield.TextInputLayout>
+
                         <TextView
                             android:id="@+id/tv_auto_audio_debug"
                             android:layout_width="match_parent"
