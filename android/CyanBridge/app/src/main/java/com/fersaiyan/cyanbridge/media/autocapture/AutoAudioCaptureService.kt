@@ -33,7 +33,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Foreground service that continuously records audio on the glasses in 30-minute chunks.
+ * Foreground service that continuously records audio on the glasses in 15-minute chunks.
  *
  * Protocol: same as MainActivity "Media controls → Audio":
  * - start: glassesControl(0x02, 0x01, 0x08)
@@ -149,7 +149,7 @@ class AutoAudioCaptureService : Service() {
                 }
 
                 val loops = AutoAudioCapturePrefs.getSuccessfulLoops(this@AutoAudioCaptureService)
-                updateNotification("Recording audio (0–30 min)… (completed=$loops)")
+                updateNotification("Recording audio (0-15 min)… (completed=$loops)")
 
                 // Best-effort start. Some firmware builds record successfully but don't ACK reliably,
                 // so we don't gate the loop on acknowledgements.
@@ -159,7 +159,7 @@ class AutoAudioCaptureService : Service() {
                     Log.w(TAG, "Start not acknowledged (err=${startAck.errorCode}, workTypeIng=${startAck.workTypeIng}); continuing")
                 }
 
-                // Wait 30 minutes, but allow responsive pause/stop.
+                // Wait 15 minutes, but allow responsive pause/stop.
                 val finished = delayWhileEnabledOrPaused(CHUNK_MS)
                 if (!finished) {
                     // Disabled or paused while recording; stop and return to loop.
@@ -177,7 +177,7 @@ class AutoAudioCaptureService : Service() {
                     Log.w(TAG, "Stop not acknowledged (err=${stopAck.errorCode}, workTypeIng=${stopAck.workTypeIng}); continuing")
                 }
 
-                // Consider the loop successful if we reached the end of the 30-min window.
+                // Consider the loop successful if we reached the end of the 15-min window.
                 val newLoops = AutoAudioCapturePrefs.incrementSuccessfulLoops(this@AutoAudioCaptureService)
                 val loopsPerSync = AutoAudioCapturePrefs.getLoopsPerSync(this@AutoAudioCaptureService)
                 val shouldSync = newLoops > 0 && newLoops % loopsPerSync == 0
@@ -368,8 +368,8 @@ class AutoAudioCaptureService : Service() {
         private const val CHANNEL_ID = "auto_audio_capture"
         private const val NOTIF_ID = 55231
 
-        // 30 minutes
-        private const val CHUNK_MS = 30L * 60L * 1000L
+        // 15 minutes
+        private const val CHUNK_MS = 15L * 60L * 1000L
 
         private val RUNNING = AtomicBoolean(false)
 

@@ -65,7 +65,7 @@
     <!-- Onboarding: Audio Capture -->
     <string name="onboarding_audio_capture_title">Continuous Audio Recording</string>
     <string name="onboarding_audio_capture_desc">Automatically record audio from your glasses for transcription and daily summaries.</string>
-    <string name="onboarding_audio_capture_details">When enabled, the app records audio from your glasses in 30-minute chunks, then transcribes it for automatic diary/summary generation. You can review and delete recordings at any time. All audio stays on your device.</string>
+    <string name="onboarding_audio_capture_details">When enabled, the app records audio from your glasses in 15-minute chunks, then transcribes it for automatic diary/summary generation. You can review and delete recordings at any time. All audio stays on your device.</string>
 
     <!-- Onboarding: Agent Personality -->
     <string name="onboarding_agent_personality_title">Personalize Your AI</string>

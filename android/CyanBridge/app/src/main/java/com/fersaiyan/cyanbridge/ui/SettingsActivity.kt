@@ -1161,7 +1161,7 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.tvAutoAudioDebug.text = listOf(
             stateText,
-            "syncEvery=${loopsPerSync}x30m",
+            "syncEvery=${loopsPerSync}x15m",
             permText,
             appText,
             channelText,

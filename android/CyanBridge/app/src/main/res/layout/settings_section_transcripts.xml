@@ -37,7 +37,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="Auto-record glasses audio (30 min chunks)"
+        android:text="Auto-record glasses audio (15 min chunks)"
         android:textColor="@color/text_primary" />
 
     <TextView
@@ -52,7 +52,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="When ON, the app will start audio recording on the glasses, stop after 30 minutes, then start a new recording repeatedly."
+        android:text="When ON, the app will start audio recording on the glasses, stop after 15 minutes, then start a new recording repeatedly."
         android:textColor="@color/text_secondary"
         android:textSize="12sp" />
 
