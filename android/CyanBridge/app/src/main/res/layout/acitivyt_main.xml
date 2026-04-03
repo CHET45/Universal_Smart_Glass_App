@@ -229,14 +229,33 @@
                 android:indeterminate="true"
                 android:max="100" />
 
-            <TextView
-                android:id="@+id/tv_transfer_detail"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Idle"
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tv_transfer_detail"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Idle"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_transfer_stop"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Stop sync"
+                    android:textAllCaps="false"
+                    android:backgroundTint="@color/card_bg"
+                    android:textColor="@color/danger"
+                    android:paddingLeft="12dp"
+                    android:paddingRight="12dp" />
+            </LinearLayout>
 
         </LinearLayout>
 
