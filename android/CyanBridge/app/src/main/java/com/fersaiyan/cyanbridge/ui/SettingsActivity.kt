@@ -1024,6 +1024,28 @@ class SettingsActivity : AppCompatActivity() {
         val enabled = AutoAudioCapturePrefs.isEnabled(this)
         setAutoAudioSwitchChecked(enabled)
 
+        binding.editAutoAudioLoopsBeforeSync.setText(AutoAudioCapturePrefs.getLoopsPerSync(this).toString())
+        binding.editAutoAudioLoopsBeforeSync.doAfterTextChanged {
+            val raw = it?.toString()?.trim().orEmpty()
+            binding.tilAutoAudioLoopsBeforeSync.error = when {
+                raw.isBlank() -> null
+                raw.toIntOrNull() == null -> "Enter a number"
+                raw.toInt() !in 1..96 -> "Use 1 to 96"
+                else -> null
+            }
+        }
+        binding.editAutoAudioLoopsBeforeSync.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                applyAutoAudioLoopsBeforeSyncSetting()
+                refreshAutoAudioDebugUi()
+            }
+        }
+        binding.editAutoAudioLoopsBeforeSync.setOnEditorActionListener { _, _, _ ->
+            applyAutoAudioLoopsBeforeSyncSetting()
+            refreshAutoAudioDebugUi()
+            false
+        }
+
         binding.switchAutoAudioCapture.setOnCheckedChangeListener { _, isChecked ->
             if (suppressAutoAudioToggle) return@setOnCheckedChangeListener
 
@@ -1075,9 +1097,24 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyAutoAudioLoopsBeforeSyncSetting() {
+        val raw = binding.editAutoAudioLoopsBeforeSync.text?.toString()?.trim().orEmpty()
+        val parsed = raw.toIntOrNull()
+        if (parsed == null || parsed !in 1..96) {
+            if (raw.isNotBlank()) {
+                binding.tilAutoAudioLoopsBeforeSync.error = "Use 1 to 96"
+            }
+            return
+        }
+        binding.tilAutoAudioLoopsBeforeSync.error = null
+        AutoAudioCapturePrefs.setLoopsPerSync(this, parsed)
+    }
+
     private fun enableAutoAudioCapture() {
         AutoAudioCapturePrefs.setEnabled(this, true)
-        Toast.makeText(this, "Auto audio capture enabled (30 min chunks)", Toast.LENGTH_SHORT).show()
+        applyAutoAudioLoopsBeforeSyncSetting()
+        val loopsPerSync = AutoAudioCapturePrefs.getLoopsPerSync(this)
+        Toast.makeText(this, "Auto audio capture enabled (sync every $loopsPerSync loops)", Toast.LENGTH_SHORT).show()
         AutoAudioCaptureService.start(this)
     }
 
@@ -1090,6 +1127,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun refreshAutoAudioDebugUi() {
         val enabled = AutoAudioCapturePrefs.isEnabled(this)
         val lastReason = AutoAudioCapturePrefs.getLastPauseReason(this).ifBlank { "(none)" }
+        val loopsPerSync = AutoAudioCapturePrefs.getLoopsPerSync(this)
 
         val permOk = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             XXPermissions.isGranted(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -1123,6 +1161,7 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.tvAutoAudioDebug.text = listOf(
             stateText,
+            "syncEvery=${loopsPerSync}x30m",
             permText,
             appText,
             channelText,

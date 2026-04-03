@@ -6,6 +6,7 @@ object AutoAudioCapturePrefs {
     private const val PREFS = "auto_audio_capture_prefs"
     private const val KEY_ENABLED = "enabled"
     private const val KEY_SUCCESSFUL_LOOPS = "successful_loops"
+    private const val KEY_LOOPS_PER_SYNC = "loops_per_sync"
 
     private const val KEY_PAUSED_MEETING = "paused_meeting"
     private const val KEY_PAUSED_VIDEO = "paused_video"
@@ -40,6 +41,19 @@ object AutoAudioCapturePrefs {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_SUCCESSFUL_LOOPS, 0)
+            .apply()
+    }
+
+    fun getLoopsPerSync(context: Context): Int {
+        val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_LOOPS_PER_SYNC, 12)
+        return raw.coerceIn(1, 96)
+    }
+
+    fun setLoopsPerSync(context: Context, loops: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_LOOPS_PER_SYNC, loops.coerceIn(1, 96))
             .apply()
     }
 

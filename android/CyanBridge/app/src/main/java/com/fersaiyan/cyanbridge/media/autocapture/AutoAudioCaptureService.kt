@@ -179,10 +179,11 @@ class AutoAudioCaptureService : Service() {
 
                 // Consider the loop successful if we reached the end of the 30-min window.
                 val newLoops = AutoAudioCapturePrefs.incrementSuccessfulLoops(this@AutoAudioCaptureService)
-                val shouldSync = newLoops > 0 && newLoops % LOOPS_PER_SYNC == 0
+                val loopsPerSync = AutoAudioCapturePrefs.getLoopsPerSync(this@AutoAudioCaptureService)
+                val shouldSync = newLoops > 0 && newLoops % loopsPerSync == 0
 
                 if (shouldSync) {
-                    updateNotification("Loop #$newLoops done. Starting P2P sync…")
+                    updateNotification("Loop #$newLoops done (sync every $loopsPerSync). Starting P2P sync…")
                     triggerP2pSyncViaMainActivity()
                     // Give the glasses a moment to finalize the file before starting the next recording.
                     delayWhileEnabledOrPaused(10_000)
@@ -369,8 +370,6 @@ class AutoAudioCaptureService : Service() {
 
         // 30 minutes
         private const val CHUNK_MS = 30L * 60L * 1000L
-
-        private const val LOOPS_PER_SYNC = 12
 
         private val RUNNING = AtomicBoolean(false)
 
