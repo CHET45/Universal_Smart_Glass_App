@@ -5,6 +5,13 @@ import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
 
 object UserFactsStorage {
 
+    fun normalizedFacts(context: Context): Set<String> {
+        LocalAgentMemoryStore.ensureSeedFiles(context)
+        val f = LocalAgentMemoryStore.userFactsFile(context)
+        val cur = LocalAgentMemoryStore.readText(f)
+        return parseExistingFacts(cur).toSet()
+    }
+
     /**
      * Appends new facts to USER_FACTS.md without rewriting the whole file.
      * Keeps it simple and preserves manual edits.
@@ -57,7 +64,9 @@ object UserFactsStorage {
 
     private fun normalize(s: String): String {
         return s.trim().lowercase()
+            .replace(Regex("[^a-z0-9\\s]"), " ")
             .replace(Regex("\\s+"), " ")
+            .trim()
     }
 
     private fun looksSensitive(s: String): Boolean {

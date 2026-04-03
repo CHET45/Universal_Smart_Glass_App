@@ -36,6 +36,12 @@ data class LocalGenerationSettings(
     val modelRuntime: LocalModelRuntime,
 ) {
     companion object {
+        const val MIN_MAX_TOKENS = 32
+        const val MAX_MAX_TOKENS = 8192
+        const val DEFAULT_MAX_OUTPUT_TOKENS = 4096
+        const val MIN_CONTEXT_SIZE = 1024
+        const val MAX_CONTEXT_SIZE = 32768
+
         fun defaultCpuThreads(): Int {
             return Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         }
@@ -55,7 +61,7 @@ data class LocalGenerationSettings(
                     temperature = 0.6,
                     topP = 0.9,
                     topK = 24,
-                    maxTokens = 220,
+                    maxTokens = DEFAULT_MAX_OUTPUT_TOKENS,
                     repetitionPenalty = 1.05,
                     contextSize = (baseCtx / 2).coerceAtLeast(2048),
                     seed = -1,
@@ -73,7 +79,7 @@ data class LocalGenerationSettings(
                     temperature = 0.7,
                     topP = 0.92,
                     topK = 40,
-                    maxTokens = 320,
+                    maxTokens = DEFAULT_MAX_OUTPUT_TOKENS,
                     repetitionPenalty = 1.1,
                     contextSize = baseCtx,
                     seed = -1,
@@ -91,9 +97,9 @@ data class LocalGenerationSettings(
                     temperature = 0.75,
                     topP = 0.95,
                     topK = 64,
-                    maxTokens = 480,
+                    maxTokens = DEFAULT_MAX_OUTPUT_TOKENS,
                     repetitionPenalty = 1.12,
-                    contextSize = (baseCtx + 1024).coerceAtMost(8192),
+                    contextSize = (baseCtx + 1024).coerceAtMost(MAX_CONTEXT_SIZE),
                     seed = -1,
                     systemPromptOverride = "",
                     templateOverrideId = null,

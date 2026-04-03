@@ -450,7 +450,7 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="8dp"
                                 android:layout_weight="1"
-                                android:hint="Max tokens">
+                                android:hint="Max tokens (32-8192)">
 
                                 <com.google.android.material.textfield.TextInputEditText
                                     android:id="@+id/edit_max_tokens"
@@ -484,7 +484,7 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="8dp"
                                 android:layout_weight="1"
-                                android:hint="Context size">
+                                android:hint="Context size (1024-32768)">
 
                                 <com.google.android.material.textfield.TextInputEditText
                                     android:id="@+id/edit_context_size"

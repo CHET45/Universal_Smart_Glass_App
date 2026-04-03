@@ -135,7 +135,10 @@ object LocalChatSessionManager {
             }
 
             val loadConfig = EngineLoadConfig(
-                contextSize = settings.contextSize.coerceIn(1024, 8192),
+                contextSize = settings.contextSize.coerceIn(
+                    LocalGenerationSettings.MIN_CONTEXT_SIZE,
+                    LocalGenerationSettings.MAX_CONTEXT_SIZE,
+                ),
                 cpuThreads = settings.cpuThreads.coerceIn(1, 16),
                 computeBackend = settings.computeBackend,
                 gpuLayers = settings.gpuLayers.coerceIn(-1, 999),
