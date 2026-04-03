@@ -567,6 +567,22 @@
                             android:text="Auto-record glasses audio (15 min chunks)"
                             android:textColor="@color/text_primary" />
 
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/switch_auto_audio_visual_notes"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="Auto visual notes (Gemma scene description)"
+                            android:textColor="@color/text_primary" />
+
+                        <com.google.android.material.switchmaterial.SwitchMaterial
+                            android:id="@+id/switch_auto_audio_speech_extend"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/auto_audio_speech_extend"
+                            android:textColor="@color/text_primary" />
+
                         <com.google.android.material.textfield.TextInputLayout
                             android:id="@+id/til_auto_audio_loops_before_sync"
                             android:layout_width="match_parent"

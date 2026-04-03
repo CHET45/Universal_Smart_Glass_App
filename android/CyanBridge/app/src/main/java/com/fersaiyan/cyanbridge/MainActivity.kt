@@ -215,6 +215,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         private const val QUERY_MAX_DAILY_SUMMARY_CHARS = 2200
         private const val QUERY_MAX_TOTAL_CONTEXT_CHARS = 6500
 
+        // Max age for a fallback image to be considered "recent enough" for AI analysis.
+        private const val IMAGE_FALLBACK_MAX_AGE_MS = 3L * 60L * 1000L
+
         fun actionTaskerCommand(appPackageName: String): String =
             "$appPackageName.ACTION_TASKER_COMMAND"
 
@@ -1573,6 +1576,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             LargeDataHandler.getInstance().getPictureThumbnails(thumbCallback)
 
+            // Wait for BLE transfer to complete. Total: 5s + 8s = 13s.
             delay(5000)
             if (!gotChunk.get() && !completed.get()) {
                 Log.w("AIHijack", "[$sourceTag] No thumbnail chunks yet; retrying getPictureThumbnails()…")
@@ -1580,28 +1584,138 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             delay(8000)
-            if (!completed.get()) {
-                // BLE thumbnail transfer timed out. Try to find a recent image already
-                // on the phone (e.g. from a previous capture or from the media download flow).
-                if (imageProcessed.compareAndSet(false, true)) {
-                    val fallbackImage = findLatestGlassesAiImage()
-                    if (fallbackImage != null) {
-                        Log.i("AIHijack", "[$sourceTag] BLE thumbnail timed out, using latest public image: $fallbackImage")
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "Using latest captured image.", Toast.LENGTH_SHORT).show()
-                        }
-                        onImageThumbnailReadyForQuestion(fallbackImage)
-                    } else {
-                        runOnUiThread {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "No thumbnail received from glasses.",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                            speak("I didn't receive an image thumbnail from the glasses.")
-                        }
-                    }
+            if (!completed.get() && imageProcessed.compareAndSet(false, true)) {
+                Log.w("AIHijack", "[$sourceTag] BLE thumbnail timed out, falling back to latest image")
+                useLatestImageFallback(sourceTag)
+            }
+        }
+    }
+
+    /**
+     * Use the most recent Glasses_AI_*.jpg already on the phone.
+     */
+    private suspend fun useLatestImageFallback(sourceTag: String) {
+        val fallbackImage = findLatestGlassesAiImage()
+        if (fallbackImage != null) {
+            val fallbackFile = File(fallbackImage)
+            val ageMs = System.currentTimeMillis() - fallbackFile.lastModified()
+            if (ageMs > IMAGE_FALLBACK_MAX_AGE_MS || ageMs < 0) {
+                Log.w("AIHijack", "[$sourceTag] Image too old: age=${ageMs / 1000}s")
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Last image is ${ageMs / 60000} min old — too old to use.",
+                        Toast.LENGTH_LONG,
+                    ).show()
                 }
+            } else {
+                Log.i("AIHijack", "[$sourceTag] Using latest captured image (age=${ageMs / 1000}s)")
+                onImageThumbnailReadyForQuestion(fallbackImage)
+            }
+        } else {
+            runOnUiThread {
+                Toast.makeText(
+                    this@MainActivity,
+                    "No image found. Take a photo with the glasses first.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
+            return
+        }
+
+        if (triggerCapture) {
+            Toast.makeText(this, "Triggering glasses camera…", Toast.LENGTH_SHORT).show()
+        }
+
+        val outDir = getExternalFilesDir("DCIM") ?: filesDir
+        val fileName = "AI_Thumb_${sourceTag}_${System.currentTimeMillis()}.jpg"
+        val file = File(outDir, fileName)
+        runCatching {
+            file.parentFile?.mkdirs()
+            if (file.exists()) file.delete()
+        }
+
+        val gotChunk = java.util.concurrent.atomic.AtomicBoolean(false)
+        val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val imageProcessed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val thumbCallback: (Int, Boolean, ByteArray?) -> Unit = { _, isComplete, data ->
+            if (data != null && data.isNotEmpty()) {
+                gotChunk.set(true)
+                runCatching {
+                    FileOutputStream(file, true).use { it.write(data) }
+                }.onFailure {
+                    Log.e("AIHijack", "Failed to write thumbnail chunk: ${it.message}")
+                }
+            }
+
+            if (isComplete && completed.compareAndSet(false, true)) {
+                Log.i("AIHijack", "[$sourceTag] Thumbnail transfer complete: ${file.absolutePath} (${file.length()} bytes)")
+                if (imageProcessed.compareAndSet(false, true)) {
+                    onImageThumbnailReadyForQuestion(file.absolutePath)
+                }
+            }
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            if (triggerCapture) {
+                runCatching {
+                    LargeDataHandler.getInstance().glassesControl(
+                        byteArrayOf(0x02, 0x01, 0x06, 0x02, 0x02)
+                    ) { _, _ -> }
+                }
+                delay(250)
+                LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x01)) { _, _ -> }
+                delay(3000)
+            }
+
+            LargeDataHandler.getInstance().getPictureThumbnails(thumbCallback)
+
+            // Wait for BLE transfer to complete. Total: 5s + 8s = 13s.
+            delay(5000)
+            if (!gotChunk.get() && !completed.get()) {
+                Log.w("AIHijack", "[$sourceTag] No thumbnail chunks yet; retrying getPictureThumbnails()…")
+                LargeDataHandler.getInstance().getPictureThumbnails(thumbCallback)
+            }
+
+            delay(8000)
+            if (!completed.get() && imageProcessed.compareAndSet(false, true)) {
+                Log.w("AIHijack", "[$sourceTag] BLE thumbnail timed out, falling back to latest image")
+                useLatestImageFallback(sourceTag)
+            }
+        }
+    }
+
+    /**
+     * Use the most recent Glasses_AI_*.jpg already on the phone.
+     */
+    private suspend fun useLatestImageFallback(sourceTag: String) {
+        val fallbackImage = findLatestGlassesAiImage()
+        if (fallbackImage != null) {
+            val fallbackFile = File(fallbackImage)
+            val ageMs = System.currentTimeMillis() - fallbackFile.lastModified()
+            if (ageMs > IMAGE_FALLBACK_MAX_AGE_MS || ageMs < 0) {
+                Log.w("AIHijack", "[$sourceTag] Image too old: age=${ageMs / 1000}s")
+                runOnUiThread {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Last image is ${ageMs / 60000} min old — too old to use.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            } else {
+                Log.i("AIHijack", "[$sourceTag] Using latest captured image (age=${ageMs / 1000}s)")
+                onImageThumbnailReadyForQuestion(fallbackImage)
+            }
+        } else {
+            runOnUiThread {
+                Toast.makeText(
+                    this@MainActivity,
+                    "No image found. Take a photo with the glasses first.",
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }
@@ -1616,16 +1730,64 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        val ageMs = System.currentTimeMillis() - imageFile.lastModified()
+        if (ageMs > IMAGE_FALLBACK_MAX_AGE_MS || ageMs < 0) {
+            Log.w("AIHijack", "Thumbnail too old: age=${ageMs / 1000}s, path=$imagePath")
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    "Thumbnail is ${ageMs / 60000} min old — too old to use.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            return
+        }
+
         CoroutineScope(Dispatchers.IO).launch {
             val publicPath = copyImageToPublicCamera(imagePath)
 
-            Log.i("AIHijack", "Image ready for AI query: $imagePath (size=${imageFile.length()} bytes)")
+            Log.i("AIHijack", "Image ready for AI query: $imagePath (size=${imageFile.length()} bytes, age=${ageMs / 1000}s)")
 
+            // Process the image query first (model inference + TTS reply).
+            // triggerAssistantImageQuery launches a background coroutine and returns immediately,
+            // so we must wait for TTS to finish before opening the follow-up voice window.
+            triggerAssistantImageQuery(imagePath, userQuestion = null)
+
+            // Wait for the model's TTS reply to finish (polls tts?.isSpeaking every 500ms).
+            waitForTtsToFinish(timeoutMs = 90_000L)
+
+            // Brief pause after TTS so the user knows it's their turn.
+            delay(500)
+
+            // Now open the voice window for a follow-up question.
             withContext(Dispatchers.Main) {
                 val spokenQuestion = captureOptionalImageQuestionFromBluetoothMic(timeoutMs = 3_000L)
-                triggerAssistantImageQuery(imagePath, spokenQuestion)
+                if (!spokenQuestion.isNullOrBlank()) {
+                    triggerAssistantImageQuery(imagePath, spokenQuestion)
+                }
             }
         }
+    }
+
+    private suspend fun waitForTtsToFinish(timeoutMs: Long) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var warned = false
+        while (isTtsSpeaking() && System.currentTimeMillis() < deadline) {
+            if (!warned) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Replying…", Toast.LENGTH_SHORT).show()
+                }
+                warned = true
+            }
+            delay(500)
+        }
+        if (isTtsSpeaking()) {
+            Log.w("AIHijack", "TTS still speaking after ${timeoutMs}ms, proceeding anyway")
+        }
+    }
+
+    private fun isTtsSpeaking(): Boolean {
+        return tts?.isSpeaking == true
     }
 
     /**

@@ -92,4 +92,5 @@
     <string name="synced_media_empty">No synced photos or videos found yet.</string>
     <string name="synced_media_open_failed">Unable to open this media item.</string>
     <string name="synced_media_video_badge">VIDEO</string>
+    <string name="auto_audio_speech_extend">Extend loop when speech detected (avoid cutting conversations)</string>
 </resources>

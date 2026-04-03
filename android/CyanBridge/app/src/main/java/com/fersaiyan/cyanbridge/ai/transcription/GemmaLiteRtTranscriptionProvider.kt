@@ -199,7 +199,12 @@ class GemmaLiteRtTranscriptionProvider(
 
         val outDir = File(context.cacheDir, "gemma_transcribe_audio").apply { mkdirs() }
         val wavFile = File(outDir, "${input.nameWithoutExtension}_${System.currentTimeMillis()}.wav")
-        val pcmBytes = pcm.toByteArray()
+        val rawPcmBytes = pcm.toByteArray()
+        val compactedSamples = SilenceCompactor.compactMonoPcm(
+            samples = bytesToShortsLE(rawPcmBytes),
+            sampleRateHz = outputSampleRate.coerceAtLeast(8_000),
+        )
+        val pcmBytes = shortsToBytesLE(compactedSamples)
         writeWavFile(
             wavFile = wavFile,
             pcmBytes = pcmBytes,
@@ -249,6 +254,10 @@ class GemmaLiteRtTranscriptionProvider(
     private fun bufferToShortsLE(buf: ByteBuffer): ShortArray {
         val bytes = ByteArray(buf.remaining())
         buf.get(bytes)
+        return bytesToShortsLE(bytes)
+    }
+
+    private fun bytesToShortsLE(bytes: ByteArray): ShortArray {
         val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         val out = ShortArray(bytes.size / 2)
         bb.asShortBuffer().get(out)

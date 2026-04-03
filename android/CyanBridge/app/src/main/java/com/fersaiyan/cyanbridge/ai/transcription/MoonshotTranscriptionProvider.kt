@@ -29,7 +29,7 @@ class MoonshotTranscriptionProvider(
 
         if (apiKey.isBlank()) {
             throw IllegalStateException(
-                "Missing Moonshot API key. Set it in Transcription Debug settings or BuildConfig.OPENAI_API_KEY.",
+                "Moonshot cloud transcription is not configured. Use Gemma LiteRT local transcription or configure cloud credentials.",
             )
         }
 

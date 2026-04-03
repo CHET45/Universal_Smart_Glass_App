@@ -16,14 +16,17 @@ import com.fersaiyan.cyanbridge.R
 import com.fersaiyan.cyanbridge.ai.transcription.DefaultTranscriptionService
 import com.fersaiyan.cyanbridge.ai.transcription.GemmaLiteRtTranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.Mp4AudioChunker
-import com.fersaiyan.cyanbridge.ai.transcription.MoonshotTranscriptionProvider
+import com.fersaiyan.cyanbridge.ai.transcription.NoOpAudioChunker
 import com.fersaiyan.cyanbridge.ai.transcription.RetryPolicy
 import com.fersaiyan.cyanbridge.ai.transcription.RetryingTranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProgress
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionResult
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionService
+import com.fersaiyan.cyanbridge.ai.transcription.moonshine.MoonshineModelManager
+import com.fersaiyan.cyanbridge.ai.transcription.moonshine.MoonshineTranscriptionProvider
 import com.fersaiyan.cyanbridge.data.local.entity.CaptureSession
 import com.fersaiyan.cyanbridge.databinding.ActivityRecordingsListBinding
+import com.fersaiyan.cyanbridge.localagent.userfacts.TranscriptCandidateFactsAppender
 import com.fersaiyan.cyanbridge.privacy.PrivacyPrefs
 import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
 import com.fersaiyan.cyanbridge.ui.CommunityPluginsActivity
@@ -31,6 +34,7 @@ import com.fersaiyan.cyanbridge.ui.MeetingRecordingBannerController
 import com.fersaiyan.cyanbridge.ui.MyApplication
 import com.fersaiyan.cyanbridge.ui.SettingsActivity
 import com.fersaiyan.cyanbridge.chat.ChatStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -66,12 +70,18 @@ class RecordingsListActivity : AppCompatActivity() {
     }
 
     private enum class EngineChoice(val wire: String, val title: String) {
-        MOONSHOT("moonshot", "Moonshot"),
+        MOONSHINE("moonshine", "Moonshine (local)"),
         GEMMA("gemma", "Gemma (LiteRT local)");
 
         companion object {
-            fun fromWire(value: String?): EngineChoice =
-                entries.firstOrNull { it.wire.equals(value, ignoreCase = true) } ?: GEMMA
+            fun fromWire(value: String?): EngineChoice {
+                val normalized = value?.trim()?.lowercase() ?: return GEMMA
+                return when (normalized) {
+                    "moonshot", "moonshine" -> MOONSHINE
+                    "gemma" -> GEMMA
+                    else -> GEMMA
+                }
+            }
         }
     }
 
@@ -297,19 +307,64 @@ class RecordingsListActivity : AppCompatActivity() {
         uiScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) {
-                    val provider: com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProvider =
-                        when (engine) {
-                            EngineChoice.MOONSHOT -> RetryingTranscriptionProvider(
-                                MoonshotTranscriptionProvider(applicationContext),
-                                policy = RetryPolicy(maxAttempts = 3),
-                            )
-                            EngineChoice.GEMMA -> RetryingTranscriptionProvider(
+                    val provider: com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProvider
+                    val chunker: com.fersaiyan.cyanbridge.ai.transcription.AudioChunker
+
+                    when (engine) {
+                        EngineChoice.GEMMA -> {
+                            provider = RetryingTranscriptionProvider(
                                 GemmaLiteRtTranscriptionProvider(applicationContext),
                                 policy = RetryPolicy(maxAttempts = 1),
                             )
+                            chunker = Mp4AudioChunker(applicationContext)
                         }
-                    val chunker: com.fersaiyan.cyanbridge.ai.transcription.AudioChunker =
-                        Mp4AudioChunker(applicationContext)
+
+                        EngineChoice.MOONSHINE -> {
+                            val kind = MoonshineModelManager.chooseDefault(languageHint = null)
+                            val modelDir = MoonshineModelManager.modelDir(applicationContext, kind)
+
+                            if (!MoonshineModelManager.isInstalled(applicationContext, kind)) {
+                                val approved = CompletableDeferred<Boolean>()
+                                withContext(Dispatchers.Main) {
+                                    AlertDialog.Builder(this@RecordingsListActivity)
+                                        .setTitle("Download local Moonshine model?")
+                                        .setMessage(
+                                            "To transcribe with Moonshine local model, the app needs to download the model files once. Proceed?"
+                                        )
+                                        .setNegativeButton("Not now") { _, _ -> approved.complete(false) }
+                                        .setPositiveButton("Download") { _, _ -> approved.complete(true) }
+                                        .setCancelable(false)
+                                        .show()
+                                }
+
+                                if (!approved.await()) {
+                                    return@withContext TranscriptionResult.Failure(
+                                        kind = TranscriptionResult.FailureKind.BAD_REQUEST,
+                                        message = "Moonshine local model not installed",
+                                        canRetry = true,
+                                    )
+                                }
+
+                                MoonshineModelManager.installIfNeeded(applicationContext, kind) { p ->
+                                    runOnUiThread {
+                                        progressUi.progress.isIndeterminate = false
+                                        progressUi.progress.progress = p.percent.coerceIn(0, 100)
+                                        progressUi.message.text = p.message
+                                    }
+                                }
+                            }
+
+                            provider = RetryingTranscriptionProvider(
+                                MoonshineTranscriptionProvider(
+                                    context = applicationContext,
+                                    modelDir = modelDir,
+                                    modelArch = kind.modelArch,
+                                ),
+                                policy = RetryPolicy(maxAttempts = 1),
+                            )
+                            chunker = NoOpAudioChunker()
+                        }
+                    }
 
                     val service: TranscriptionService = DefaultTranscriptionService(
                         context = applicationContext,
@@ -319,6 +374,7 @@ class RecordingsListActivity : AppCompatActivity() {
                     )
 
                     val isGemma = engine == EngineChoice.GEMMA
+                    val isMoonshine = engine == EngineChoice.MOONSHINE
 
                     service.transcribe(
                         session = session,
@@ -332,6 +388,12 @@ class RecordingsListActivity : AppCompatActivity() {
                                 if (isGemma && p.stage == TranscriptionProgress.Stage.TRANSCRIBING) {
                                     progressUi.progress.isIndeterminate = true
                                     progressUi.message.text = "Transcribing with Gemma…$detail"
+                                    return@runOnUiThread
+                                }
+
+                                if (isMoonshine && p.stage == TranscriptionProgress.Stage.TRANSCRIBING) {
+                                    progressUi.progress.isIndeterminate = true
+                                    progressUi.message.text = "Transcribing with Moonshine…$detail"
                                     return@runOnUiThread
                                 }
 
@@ -354,6 +416,15 @@ class RecordingsListActivity : AppCompatActivity() {
                 when (result) {
                     is TranscriptionResult.Success -> {
                         ephemeralTranscripts[session.id] = result.text
+                        withContext(Dispatchers.IO) {
+                            runCatching {
+                                TranscriptCandidateFactsAppender.appendFromTranscript(
+                                    context = applicationContext,
+                                    session = session,
+                                    transcript = result.text,
+                                )
+                            }
+                        }
                         Toast.makeText(this@RecordingsListActivity, "Transcription complete", Toast.LENGTH_SHORT).show()
                     }
 

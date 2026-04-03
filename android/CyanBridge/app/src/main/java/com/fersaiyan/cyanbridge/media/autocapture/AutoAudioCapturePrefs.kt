@@ -7,6 +7,8 @@ object AutoAudioCapturePrefs {
     private const val KEY_ENABLED = "enabled"
     private const val KEY_SUCCESSFUL_LOOPS = "successful_loops"
     private const val KEY_LOOPS_PER_SYNC = "loops_per_sync"
+    private const val KEY_VISUAL_NOTES_ENABLED = "visual_notes_enabled"
+    private const val KEY_SPEECH_EXTEND_ENABLED = "speech_extend_enabled"
 
     private const val KEY_PAUSED_MEETING = "paused_meeting"
     private const val KEY_PAUSED_VIDEO = "paused_video"
@@ -54,6 +56,30 @@ object AutoAudioCapturePrefs {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_LOOPS_PER_SYNC, loops.coerceIn(1, 96))
+            .apply()
+    }
+
+    fun isVisualNotesEnabled(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_VISUAL_NOTES_ENABLED, false)
+    }
+
+    fun setVisualNotesEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_VISUAL_NOTES_ENABLED, enabled)
+            .apply()
+    }
+
+    fun isSpeechExtendEnabled(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_SPEECH_EXTEND_ENABLED, true)
+    }
+
+    fun setSpeechExtendEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_SPEECH_EXTEND_ENABLED, enabled)
             .apply()
     }
 

@@ -1023,6 +1023,17 @@ class SettingsActivity : AppCompatActivity() {
     private fun bindAutoAudioCapture() {
         val enabled = AutoAudioCapturePrefs.isEnabled(this)
         setAutoAudioSwitchChecked(enabled)
+        binding.switchAutoAudioVisualNotes.isChecked = AutoAudioCapturePrefs.isVisualNotesEnabled(this)
+        binding.switchAutoAudioVisualNotes.setOnCheckedChangeListener { _, isChecked ->
+            AutoAudioCapturePrefs.setVisualNotesEnabled(this, isChecked)
+            refreshAutoAudioDebugUi()
+        }
+
+        binding.switchAutoAudioSpeechExtend.isChecked = AutoAudioCapturePrefs.isSpeechExtendEnabled(this)
+        binding.switchAutoAudioSpeechExtend.setOnCheckedChangeListener { _, isChecked ->
+            AutoAudioCapturePrefs.setSpeechExtendEnabled(this, isChecked)
+            refreshAutoAudioDebugUi()
+        }
 
         binding.editAutoAudioLoopsBeforeSync.setText(AutoAudioCapturePrefs.getLoopsPerSync(this).toString())
         binding.editAutoAudioLoopsBeforeSync.doAfterTextChanged {
@@ -1128,6 +1139,8 @@ class SettingsActivity : AppCompatActivity() {
         val enabled = AutoAudioCapturePrefs.isEnabled(this)
         val lastReason = AutoAudioCapturePrefs.getLastPauseReason(this).ifBlank { "(none)" }
         val loopsPerSync = AutoAudioCapturePrefs.getLoopsPerSync(this)
+        val visualNotes = AutoAudioCapturePrefs.isVisualNotesEnabled(this)
+        val speechExtend = AutoAudioCapturePrefs.isSpeechExtendEnabled(this)
 
         val permOk = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             XXPermissions.isGranted(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -1162,6 +1175,8 @@ class SettingsActivity : AppCompatActivity() {
         binding.tvAutoAudioDebug.text = listOf(
             stateText,
             "syncEvery=${loopsPerSync}x15m",
+            "visualNotes=${if (visualNotes) "on" else "off"}",
+            "speechExtend=${if (speechExtend) "on" else "off"}",
             permText,
             appText,
             channelText,

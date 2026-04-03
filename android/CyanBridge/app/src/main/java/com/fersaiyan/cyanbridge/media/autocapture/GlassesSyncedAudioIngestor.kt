@@ -5,17 +5,20 @@ import android.media.MediaMetadataRetriever
 import android.util.Log
 import com.fersaiyan.cyanbridge.agent.AgentProviderType
 import com.fersaiyan.cyanbridge.agent.LocalAgentPrefs as AutomationPrefs
+import com.fersaiyan.cyanbridge.ai.transcription.AudioChunker
 import com.fersaiyan.cyanbridge.ai.transcription.DefaultTranscriptionService
 import com.fersaiyan.cyanbridge.ai.transcription.GemmaLiteRtTranscriptionProvider
-import com.fersaiyan.cyanbridge.ai.transcription.MoonshotTranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.Mp4AudioChunker
+import com.fersaiyan.cyanbridge.ai.transcription.NoOpAudioChunker
 import com.fersaiyan.cyanbridge.ai.transcription.RetryPolicy
 import com.fersaiyan.cyanbridge.ai.transcription.RetryingTranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionResult
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionService
+import com.fersaiyan.cyanbridge.ai.transcription.moonshine.MoonshineModelManager
+import com.fersaiyan.cyanbridge.ai.transcription.moonshine.MoonshineTranscriptionProvider
 import com.fersaiyan.cyanbridge.data.local.entity.CaptureSession
-import com.fersaiyan.cyanbridge.localagent.userfacts.CandidateUserFactsStorage
+import com.fersaiyan.cyanbridge.localagent.userfacts.TranscriptCandidateFactsAppender
 import com.fersaiyan.cyanbridge.ui.MyApplication
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,8 +26,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -99,7 +100,7 @@ object GlassesSyncedAudioIngestor {
                     context = context,
                     repository = MyApplication.repository,
                     provider = engine.provider,
-                    chunker = Mp4AudioChunker(context),
+                    chunker = engine.chunker,
                 )
                 val result = service.transcribe(
                     session = session,
@@ -113,7 +114,11 @@ object GlassesSyncedAudioIngestor {
                     is TranscriptionResult.Success -> {
                         val transcript = result.text.trim()
                         if (transcript.isNotBlank()) {
-                            appendTranscriptCandidateFacts(context, session, transcript)
+                            TranscriptCandidateFactsAppender.appendFromTranscript(
+                                context = context,
+                                session = session,
+                                transcript = transcript,
+                            )
                         }
                         Log.i(TAG, "Auto transcription completed for session=${session.id} provider=${result.provider}")
                     }
@@ -132,6 +137,7 @@ object GlassesSyncedAudioIngestor {
 
     private data class EngineSelection(
         val provider: TranscriptionProvider,
+        val chunker: AudioChunker,
         val chunkDurationSec: Long,
     )
 
@@ -142,57 +148,42 @@ object GlassesSyncedAudioIngestor {
                     GemmaLiteRtTranscriptionProvider(context),
                     policy = RetryPolicy(maxAttempts = 1),
                 ),
+                chunker = Mp4AudioChunker(context),
                 chunkDurationSec = 45L,
             )
 
             AgentProviderType.PRO_SUBSCRIPTION,
-            AgentProviderType.TASKER -> EngineSelection(
+            AgentProviderType.TASKER -> moonshineEngineOrFallback(context)
+        }
+    }
+
+    private fun moonshineEngineOrFallback(context: Context): EngineSelection {
+        val kind = MoonshineModelManager.chooseDefault(languageHint = null)
+        val modelDir = MoonshineModelManager.modelDir(context, kind)
+        if (MoonshineModelManager.isInstalled(context, kind)) {
+            return EngineSelection(
                 provider = RetryingTranscriptionProvider(
-                    MoonshotTranscriptionProvider(context),
-                    policy = RetryPolicy(maxAttempts = 3),
+                    MoonshineTranscriptionProvider(
+                        context = context,
+                        modelDir = modelDir,
+                        modelArch = kind.modelArch,
+                    ),
+                    policy = RetryPolicy(maxAttempts = 1),
                 ),
+                chunker = NoOpAudioChunker(),
                 chunkDurationSec = 60L,
             )
         }
-    }
 
-    private fun appendTranscriptCandidateFacts(context: Context, session: CaptureSession, transcript: String) {
-        val date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(session.startedAt))
-        val facts = transcriptToCandidateFacts(session.startedAt, transcript)
-        if (facts.isEmpty()) return
-        CandidateUserFactsStorage.append(context, date, facts)
-    }
-
-    private fun transcriptToCandidateFacts(startedAtMs: Long, transcript: String): List<String> {
-        val cleaned = transcript
-            .replace('\r', '\n')
-            .replace(Regex("[\\t ]+"), " ")
-            .trim()
-        if (cleaned.isBlank()) return emptyList()
-
-        val timeLabel = SimpleDateFormat("HH:mm", Locale.US).format(Date(startedAtMs))
-        val out = ArrayList<String>()
-        val seen = LinkedHashSet<String>()
-
-        val segments = cleaned
-            .split(Regex("\\n+|(?<=[.!?])\\s+"))
-            .map { it.trim() }
-            .filter { it.length >= 14 }
-
-        for (segment in segments) {
-            val normalized = segment
-                .lowercase(Locale.US)
-                .replace(Regex("[^a-z0-9\\s]"), " ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
-            if (normalized.length < 10 || !seen.add(normalized)) continue
-
-            val clipped = if (segment.length > 190) segment.take(187).trimEnd() + "..." else segment
-            out += "Glasses audio $timeLabel: $clipped"
-            if (out.size >= 8) break
-        }
-
-        return out
+        Log.w(TAG, "Moonshine model not installed; falling back to Gemma LiteRT for auto-synced audio transcription")
+        return EngineSelection(
+            provider = RetryingTranscriptionProvider(
+                GemmaLiteRtTranscriptionProvider(context),
+                policy = RetryPolicy(maxAttempts = 1),
+            ),
+            chunker = Mp4AudioChunker(context),
+            chunkDurationSec = 45L,
+        )
     }
 
     private fun mimeTypeForPath(path: String): String {

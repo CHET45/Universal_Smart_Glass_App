@@ -9,6 +9,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.os.Build
 import android.util.Log
+import com.fersaiyan.cyanbridge.ai.transcription.SilenceCompactor
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProvider
 import java.io.File
 import java.nio.ByteBuffer
@@ -66,8 +67,14 @@ class MoonshineTranscriptionProvider(
             // Streaming decode + feed.
             decodeToPcm16(audioFile) { chunk ->
                 val mono = downmixToMono(chunk.samples, chunk.channels)
+                val compacted = SilenceCompactor.compactMonoPcm(
+                    samples = mono,
+                    sampleRateHz = chunk.sampleRate,
+                    preserveProbeOnNoSpeech = false,
+                )
+                if (compacted.isEmpty()) return@decodeToPcm16
                 val resampler = feeder.getOrCreateResampler(chunk.sampleRate)
-                resampler.process(mono) { outShorts ->
+                resampler.process(compacted) { outShorts ->
                     val floats = shortsToFloats(outShorts)
                     feeder.feedFloats(floats)
                 }

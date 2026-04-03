@@ -8,12 +8,14 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.fersaiyan.cyanbridge.MainActivity
 import com.fersaiyan.cyanbridge.R
 import com.oudmon.ble.base.bluetooth.BleOperateManager
@@ -29,6 +31,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -118,6 +121,8 @@ class AutoAudioCaptureService : Service() {
 
         loopJob = scope.launch {
             var pauseStopSent = false
+            var consecutiveExtensions = 0
+            val maxExtensions = 4 // Safety cap: at most 4 extensions (1h extra)
 
             while (isActive) {
                 if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) {
@@ -143,13 +148,14 @@ class AutoAudioCaptureService : Service() {
                 }
 
                 if (!BleOperateManager.getInstance().isConnected) {
-                    updateNotification("Waiting for glasses connection…")
+                    Log.w(TAG, "Waiting for glasses connection…")
                     delay(10_000)
                     continue
                 }
 
                 val loops = AutoAudioCapturePrefs.getSuccessfulLoops(this@AutoAudioCaptureService)
-                updateNotification("Recording audio (0-15 min)… (completed=$loops)")
+                val extensionLabel = if (consecutiveExtensions > 0) " (extended ${consecutiveExtensions}x)" else ""
+                Log.i(TAG, "Starting recording loop (completed=$loops)$extensionLabel")
 
                 // Best-effort start. Some firmware builds record successfully but don't ACK reliably,
                 // so we don't gate the loop on acknowledgements.
@@ -159,26 +165,89 @@ class AutoAudioCaptureService : Service() {
                     Log.w(TAG, "Start not acknowledged (err=${startAck.errorCode}, workTypeIng=${startAck.workTypeIng}); continuing")
                 }
 
-                // Wait 15 minutes, but allow responsive pause/stop.
-                val finished = delayWhileEnabledOrPaused(CHUNK_MS)
-                if (!finished) {
-                    // Disabled or paused while recording; stop and return to loop.
-                    val reason = computePauseReason() ?: if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) "disabled" else "paused"
-                    AutoAudioCapturePrefs.setLastPauseReason(this@AutoAudioCaptureService, reason)
-                    updateNotification("Stopping early: $reason")
-                    sendAudioCommandAwait(start = false)
-                    delay(2_000)
-                    continue
+                // Wait until the last minute of the loop, then check for speech.
+                val speechExtendEnabled = AutoAudioCapturePrefs.isSpeechExtendEnabled(this@AutoAudioCaptureService)
+                val shouldCheckSpeech = speechExtendEnabled && consecutiveExtensions < maxExtensions && hasRecordAudioPermission()
+
+                if (shouldCheckSpeech) {
+                    // Record for (CHUNK_MS - 60s), then check ambient speech for the last 60s.
+                    val preCheckMs = CHUNK_MS - SPEECH_CHECK_WINDOW_MS
+                    if (preCheckMs > 0) {
+                        val finished = delayWhileEnabledOrPaused(preCheckMs)
+                        if (!finished) {
+                            val reason = computePauseReason() ?: if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) "disabled" else "paused"
+                            AutoAudioCapturePrefs.setLastPauseReason(this@AutoAudioCaptureService, reason)
+                            Log.w(TAG, "Stopping early: $reason")
+                            sendAudioCommandAwait(start = false)
+                            delay(2_000)
+                            continue
+                        }
+                    }
+
+                    // Speech check runs silently — no notification update to avoid churn.
+                    val speechDetected = withContext(Dispatchers.IO) {
+                        AmbientSpeechDetector.detectSpeechFor(
+                            context = this@AutoAudioCaptureService,
+                            durationMs = SPEECH_CHECK_WINDOW_MS,
+                        )
+                    }
+
+                    if (speechDetected) {
+                        Log.i(TAG, "Speech detected in last minute; extending loop by ${CHUNK_MS / 60_000} min")
+                        consecutiveExtensions++
+                        // Continue the loop without stopping the glasses recording.
+                        val finished = delayWhileEnabledOrPaused(CHUNK_MS)
+                        if (!finished) {
+                            val reason = computePauseReason() ?: if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) "disabled" else "paused"
+                            AutoAudioCapturePrefs.setLastPauseReason(this@AutoAudioCaptureService, reason)
+                            Log.w(TAG, "Stopping early: $reason (during extension)")
+                            sendAudioCommandAwait(start = false)
+                            delay(2_000)
+                            continue
+                        }
+                        // After extension, proceed to stop and finalize.
+                        // Do NOT reset consecutiveExtensions — the next loop will start fresh.
+                    } else {
+                        Log.i(TAG, "No significant speech in last minute; proceeding to stop")
+                        consecutiveExtensions = 0
+                    }
+                } else {
+                    // Standard path: wait the full chunk duration.
+                    val finished = delayWhileEnabledOrPaused(CHUNK_MS)
+                    if (!finished) {
+                        val reason = computePauseReason() ?: if (!AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)) "disabled" else "paused"
+                        AutoAudioCapturePrefs.setLastPauseReason(this@AutoAudioCaptureService, reason)
+                        Log.w(TAG, "Stopping early: $reason")
+                        sendAudioCommandAwait(start = false)
+                        delay(2_000)
+                        continue
+                    }
+                    consecutiveExtensions = 0
                 }
 
-                updateNotification("Stopping audio recording…")
+                // Stop audio recording (notification stays at last state until next start/stop/sync).
                 val stopAck = sendAudioCommandAwait(start = false)
                 if (stopAck.responded && !stopAck.ok) {
                     Log.w(TAG, "Stop not acknowledged (err=${stopAck.errorCode}, workTypeIng=${stopAck.workTypeIng}); continuing")
                 }
 
-                // Consider the loop successful if we reached the end of the 15-min window.
+                // Consider the loop successful if we reached the end of the recording window.
                 val newLoops = AutoAudioCapturePrefs.incrementSuccessfulLoops(this@AutoAudioCaptureService)
+
+                // Suppress visual notes when the loop was extended (BLE commands could interrupt ongoing speech).
+                val wasExtended = consecutiveExtensions > 0
+                if (!wasExtended && AutoAudioCapturePrefs.isVisualNotesEnabled(this@AutoAudioCaptureService)) {
+                    AutoLoopVisualNoteGenerator.enqueue(
+                        context = this@AutoAudioCaptureService,
+                        loopIndex = newLoops,
+                    )
+                    // Give the BLE thumbnail transfer time to complete before starting P2P sync.
+                    // P2P sync triggers Wi-Fi Direct which interferes with BLE data transfer.
+                    delay(VISUAL_NOTE_SETTLE_MS)
+                } else if (wasExtended) {
+                    Log.i(TAG, "Suppressing visual note for extended loop #$newLoops")
+                }
+
                 val loopsPerSync = AutoAudioCapturePrefs.getLoopsPerSync(this@AutoAudioCaptureService)
                 val shouldSync = newLoops > 0 && newLoops % loopsPerSync == 0
 
@@ -265,6 +334,13 @@ class AutoAudioCaptureService : Service() {
         return AutoAudioCapturePrefs.isEnabled(this@AutoAudioCaptureService)
     }
 
+    private fun hasRecordAudioPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     /**
      * Returns a short string reason if auto audio should pause now; otherwise null.
      */
@@ -296,7 +372,6 @@ class AutoAudioCaptureService : Service() {
             !XXPermissions.isGranted(this, "android.permission.NEARBY_WIFI_DEVICES")
         ) {
             Log.w(TAG, "Skipping P2P sync: missing NEARBY_WIFI_DEVICES")
-            updateNotification("P2P sync skipped: grant NEARBY_WIFI_DEVICES")
             return
         }
 
@@ -370,6 +445,12 @@ class AutoAudioCaptureService : Service() {
 
         // 15 minutes
         private const val CHUNK_MS = 15L * 60L * 1000L
+
+        // Last 60 seconds of the loop used for ambient speech detection.
+        private const val SPEECH_CHECK_WINDOW_MS = 60L * 1000L
+
+        // Delay after visual note capture to let BLE thumbnail transfer finish before P2P sync starts.
+        private const val VISUAL_NOTE_SETTLE_MS = 20_000L
 
         private val RUNNING = AtomicBoolean(false)
 
