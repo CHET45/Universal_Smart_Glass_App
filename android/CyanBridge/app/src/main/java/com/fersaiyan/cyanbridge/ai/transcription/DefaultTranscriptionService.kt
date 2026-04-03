@@ -79,6 +79,7 @@ class DefaultTranscriptionService(
                 onProgress(TranscriptionProgress(5, TranscriptionProgress.Stage.CHUNKING, "Chunking audio"))
                 val chunks = chunker.chunk(audioFile, sessionId = sessionId, chunkDurationSec = options.chunkDurationSec)
                     .ifEmpty { listOf(audioFile) }
+                val originalPath = audioFile.absolutePath
 
                 val sb = StringBuilder()
 
@@ -88,10 +89,16 @@ class DefaultTranscriptionService(
                     onProgress(TranscriptionProgress(p, TranscriptionProgress.Stage.TRANSCRIBING, detail))
                     upsert(TranscriptionStatus.IN_PROGRESS, p)
 
-                    val chunkText = provider.transcribe(chunk, options.mimeType, options.language)
-                    if (chunkText.isNotBlank()) {
-                        if (sb.isNotEmpty()) sb.append("\n")
-                        sb.append(chunkText.trim())
+                    try {
+                        val chunkText = provider.transcribe(chunk, options.mimeType, options.language)
+                        if (chunkText.isNotBlank()) {
+                            if (sb.isNotEmpty()) sb.append("\n")
+                            sb.append(chunkText.trim())
+                        }
+                    } finally {
+                        if (chunk.absolutePath != originalPath) {
+                            runCatching { chunk.delete() }
+                        }
                     }
                 }
 
