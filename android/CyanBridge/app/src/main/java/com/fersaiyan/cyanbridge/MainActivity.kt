@@ -142,6 +142,9 @@ import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemorySearch
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
 import com.fersaiyan.cyanbridge.localagent.userfacts.CandidateUserFactsStorage
 import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelsProvider
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelRuntime
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
+import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import com.fersaiyan.cyanbridge.memoryvault.MemoryPolicyService
 import android.content.ClipboardManager
 import android.content.ClipData
@@ -558,10 +561,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnTestHijackImage -> {
-                    if (!isImageQuerySupportedForCurrentSelection()) {
+                    val unsupportedReason = imageQueryUnsupportedReasonForCurrentSelection()
+                    if (unsupportedReason != null) {
                         Toast.makeText(
                             this@MainActivity,
-                            "Image queries are not available for Local Models.",
+                            unsupportedReason,
                             Toast.LENGTH_SHORT,
                         ).show()
                         return@setOnClickListener
@@ -1113,9 +1117,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun isImageQuerySupportedForCurrentSelection(): Boolean {
-        if (!isChosenProviderMode()) return true
-        return AutomationPrefs.getProviderType(this) != AgentProviderType.LOCAL_AGENT
+    private fun imageQueryUnsupportedReasonForCurrentSelection(): String? {
+        if (!isChosenProviderMode()) return null
+        if (AutomationPrefs.getProviderType(this) != AgentProviderType.LOCAL_AGENT) return null
+
+        val selected = LocalModelStorageRepository.resolveSelectedModel(this)
+            ?: return "No local model selected. Install/select Gemma 4 LiteRT first."
+        val settings = LocalModelSettingsRepository.getForModel(this, selected.id)
+        if (settings.modelRuntime != LocalModelRuntime.LITERT) {
+            return "Image questions require Local Runtime = LiteRT for the selected model."
+        }
+
+        val modelHint = "${selected.displayName} ${selected.catalogId.orEmpty()} ${selected.fileName}".lowercase(Locale.US)
+        if (!modelHint.contains("gemma")) {
+            return "Select a Gemma LiteRT model for local image questions."
+        }
+        return null
     }
 
     private fun isGeminiOrChatGptModeSelected(): Boolean {
@@ -1163,7 +1180,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun refreshAiQueryButtonsState() {
-        val imageSupported = isImageQuerySupportedForCurrentSelection()
+        val unsupportedReason = imageQueryUnsupportedReasonForCurrentSelection()
+        val imageSupported = unsupportedReason == null
         binding.btnTestHijackImage.isEnabled = imageSupported
         binding.btnTestHijackImage.alpha = if (imageSupported) 1f else 0.45f
 
@@ -1317,6 +1335,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private suspend fun runMemoryAwareChosenProviderQuery(
         userPrompt: String,
         providerType: AgentProviderType,
+        imagePaths: List<String> = emptyList(),
+        audioPath: String? = null,
     ): String {
         val date = todayDateString()
         val systemPrompt = buildCompactMemoryAwareSystemPrompt(queryText = userPrompt, date = date)
@@ -1341,9 +1361,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             AgentProviderType.LOCAL_AGENT ->
                 runCatching {
+                    val modelIssue = validateSelectedGemmaForChosenProvider(imageRequested = imagePaths.isNotEmpty())
+                    if (modelIssue != null) {
+                        return@runCatching modelIssue
+                    }
                     LocalModelsProvider().streamChat(
                         context = this,
                         messages = messages,
+                        imagePaths = imagePaths,
+                        audioPath = audioPath,
                     )
                 }.getOrElse {
                     "Local Models error: ${it.message ?: "unknown error"}"
@@ -1358,6 +1384,25 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 ).getOrElse { "Endpoint unavailable: ${it.message ?: "unknown error"}" }
             }
         }.trim()
+    }
+
+    private fun validateSelectedGemmaForChosenProvider(imageRequested: Boolean): String? {
+        val selected = LocalModelStorageRepository.resolveSelectedModel(this)
+            ?: return "No local model selected. Install/select Gemma 4 LiteRT in Settings."
+        val settings = LocalModelSettingsRepository.getForModel(this, selected.id)
+        if (settings.modelRuntime != LocalModelRuntime.LITERT) {
+            return "Selected local model runtime is not LiteRT. Switch runtime to LiteRT for Gemma 4 flows."
+        }
+
+        val modelHint = "${selected.displayName} ${selected.catalogId.orEmpty()} ${selected.fileName}".lowercase(Locale.US)
+        if (!modelHint.contains("gemma")) {
+            return "Selected local model is not Gemma. Please select a Gemma 4 LiteRT model."
+        }
+
+        if (imageRequested && !modelHint.contains("gemma-4") && !modelHint.contains("gemma4")) {
+            return "Image questions on glasses are configured for Gemma 4 LiteRT. Please select Gemma 4 E2B/E4B."
+        }
+        return null
     }
 
     private fun triggerMemoryAwareImageQuery(
@@ -1414,15 +1459,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
 
                     AgentProviderType.LOCAL_AGENT -> {
-                        val modelName = try {
-                            val selected = com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository.resolveSelectedModel(this@MainActivity)
-                            selected?.catalogId ?: "unknown"
-                        } catch (_: Exception) { "current" }
-                        Log.w("AIHijack", "Image query attempted with local model '$modelName' which does not support vision")
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "Local models don't support vision. Switch to Pro in settings.", Toast.LENGTH_LONG).show()
-                        }
-                        "Image queries need a vision-capable model. Switch to Pro Subscription in AI settings."
+                        val multimodalPrompt = userQuestion?.trim().takeUnless { it.isNullOrBlank() }
+                            ?: "Describe this image clearly, and translate any visible non-English text to English. Keep it concise."
+                        runMemoryAwareChosenProviderQuery(
+                            userPrompt = multimodalPrompt,
+                            providerType = AgentProviderType.LOCAL_AGENT,
+                            imagePaths = listOf(imagePath),
+                        )
                     }
 
                     AgentProviderType.TASKER -> {
@@ -4125,6 +4168,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     Log.i("DeviceNotify", "AI Photo Button Pressed")
                     if (isAiHijackEnabled) {
                         runOnUiThread {
+                            val unsupportedReason = imageQueryUnsupportedReasonForCurrentSelection()
+                            if (unsupportedReason != null) {
+                                Toast.makeText(this@MainActivity, unsupportedReason, Toast.LENGTH_SHORT).show()
+                                speak(unsupportedReason)
+                                return@runOnUiThread
+                            }
                             if (maybeShowGeminiChatGptImageRequirementsWarning()) {
                                 return@runOnUiThread
                             }

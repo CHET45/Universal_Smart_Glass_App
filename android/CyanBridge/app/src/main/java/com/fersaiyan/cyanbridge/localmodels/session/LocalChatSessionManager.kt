@@ -135,7 +135,10 @@ object LocalChatSessionManager {
             }
 
             val loadConfig = EngineLoadConfig(
-                contextSize = settings.contextSize.coerceIn(1024, 8192),
+                contextSize = settings.contextSize.coerceIn(
+                    LocalGenerationSettings.MIN_CONTEXT_SIZE,
+                    LocalGenerationSettings.MAX_CONTEXT_SIZE,
+                ),
                 cpuThreads = settings.cpuThreads.coerceIn(1, 16),
                 computeBackend = settings.computeBackend,
                 gpuLayers = settings.gpuLayers.coerceIn(-1, 999),
@@ -202,12 +205,16 @@ object LocalChatSessionManager {
         settings: LocalGenerationSettings,
         prompt: String,
         onToken: (String) -> Unit,
+        imagePaths: List<String> = emptyList(),
+        audioPath: String? = null,
         requestPriority: LocalModelRequestPriority = LocalModelRequestPriority.HIGH,
     ): String {
         return generateInternal(
             settings = settings,
             prompt = prompt,
             onToken = onToken,
+            imagePaths = imagePaths,
+            audioPath = audioPath,
             requestPriority = requestPriority,
         ).text
     }
@@ -222,6 +229,8 @@ object LocalChatSessionManager {
         settings: LocalGenerationSettings,
         prompt: String,
         onToken: (String) -> Unit,
+        imagePaths: List<String>,
+        audioPath: String?,
         requestPriority: LocalModelRequestPriority,
     ): GenerationResult {
         val reqId = UUID.randomUUID().toString()
@@ -276,6 +285,8 @@ object LocalChatSessionManager {
                                     repetitionPenalty = settings.repetitionPenalty,
                                     seed = settings.seed,
                                     structuredJson = settings.experimentalStructuredJson,
+                                    imagePaths = imagePaths,
+                                    audioPath = audioPath,
                                 ),
                                 onToken = { chunk ->
                                     if (chunk.isBlank() || guardTriggered) return@generate
@@ -439,6 +450,8 @@ object LocalChatSessionManager {
             ),
             prompt = benchmarkPrompt,
             onToken = onToken,
+            imagePaths = emptyList(),
+            audioPath = null,
             requestPriority = LocalModelRequestPriority.HIGH,
         )
         val elapsed = (System.currentTimeMillis() - start).coerceAtLeast(1L)

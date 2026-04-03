@@ -727,6 +727,16 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
 
         val existing = LocalModelSettingsRepository.getForModel(this, model.id)
         val profile = LocalModelPerformanceProfile.entries[spinnerProfile.selectedItemPosition]
+        val parsedMaxTokens = parseBoundedIntInput(
+            raw = editMaxTokens.text?.toString(),
+            min = LocalGenerationSettings.MIN_MAX_TOKENS,
+            max = LocalGenerationSettings.MAX_MAX_TOKENS,
+        )
+        val parsedContextSize = parseBoundedIntInput(
+            raw = editContextSize.text?.toString(),
+            min = LocalGenerationSettings.MIN_CONTEXT_SIZE,
+            max = LocalGenerationSettings.MAX_CONTEXT_SIZE,
+        )
         val settings = LocalGenerationSettings(
             profile = profile,
             temperature = editTemperature.text.toString().toDoubleOrNull()?.coerceIn(0.0, 2.0)
@@ -735,12 +745,10 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
                 ?: existing.topP,
             topK = editTopK.text.toString().toIntOrNull()?.coerceIn(0, 200)
                 ?: existing.topK,
-            maxTokens = editMaxTokens.text.toString().toIntOrNull()?.coerceIn(32, 2048)
-                ?: existing.maxTokens,
+            maxTokens = parsedMaxTokens ?: existing.maxTokens,
             repetitionPenalty = editRepPenalty.text.toString().toDoubleOrNull()?.coerceIn(0.8, 2.0)
                 ?: existing.repetitionPenalty,
-            contextSize = editContextSize.text.toString().toIntOrNull()?.coerceIn(1024, 8192)
-                ?: existing.contextSize,
+            contextSize = parsedContextSize ?: existing.contextSize,
             seed = editSeed.text.toString().toIntOrNull() ?: existing.seed,
             systemPromptOverride = editSystemPrompt.text?.toString().orEmpty().trim(),
             templateOverrideId = selectedTemplateOverrideId(),
@@ -753,7 +761,12 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
 
         LocalModelSettingsRepository.saveForModel(this, model.id, settings)
         LocalModelsPrefs.setHuggingFaceToken(this, editHfToken.text?.toString().orEmpty())
-        Toast.makeText(this, "Local model settings saved", Toast.LENGTH_SHORT).show()
+        applySettingsToInputs(settings)
+        Toast.makeText(
+            this,
+            "Saved: max output ${settings.maxTokens}, context ${settings.contextSize}",
+            Toast.LENGTH_SHORT,
+        ).show()
         setResult(RESULT_OK)
     }
 
@@ -858,6 +871,17 @@ class LocalModelsConfigureActivity : AppCompatActivity() {
     private fun parseGpuLayersInput(fallback: Int): Int {
         return editGpuLayers.text?.toString()?.toIntOrNull()?.coerceIn(-1, 999)
             ?: fallback.coerceIn(-1, 999)
+    }
+
+    private fun parseBoundedIntInput(raw: String?, min: Int, max: Int): Int? {
+        val cleaned = raw
+            ?.trim()
+            ?.replace(",", "")
+            ?.replace("_", "")
+            ?.replace(" ", "")
+            .orEmpty()
+        if (cleaned.isBlank()) return null
+        return cleaned.toIntOrNull()?.coerceIn(min, max)
     }
 
     private fun updateComputeBackendUi() {

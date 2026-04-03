@@ -18,8 +18,12 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.Locale
 
 class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CONTEXT) : LocalInferenceEngine {
+    private val supportedAudioExtensions = setOf("wav", "mp3", "flac")
+
     private val mutex = Mutex()
     private var engine: Engine? = null
     private var activeConversation: Conversation? = null
@@ -46,19 +50,49 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
         val loadOutcome = withContext(Dispatchers.IO) {
             if (config.computeBackend == LocalComputeBackend.GPU_EXPERIMENTAL) {
                 runCatching {
-                    createInitializedEngine(modelPath, Backend.GPU()) to EngineLoadResult(
+                    createInitializedEngine(
+                        modelPath = modelPath,
+                        backend = Backend.GPU(),
+                        visionBackend = Backend.CPU(config.cpuThreads),
+                        audioBackend = Backend.CPU(config.cpuThreads),
+                        maxNumTokens = config.contextSize,
+                    ) to EngineLoadResult(
                         activeBackend = LocalComputeBackend.GPU_EXPERIMENTAL,
                         activeGpuLayers = config.gpuLayers.coerceAtLeast(0),
                     )
+                }.recoverCatching { gpuMediaErr ->
+                    createInitializedEngine(
+                        modelPath = modelPath,
+                        backend = Backend.GPU(),
+                        visionBackend = null,
+                        audioBackend = null,
+                        maxNumTokens = config.contextSize,
+                    ) to EngineLoadResult(
+                        activeBackend = LocalComputeBackend.GPU_EXPERIMENTAL,
+                        activeGpuLayers = config.gpuLayers.coerceAtLeast(0),
+                        fallbackReason = "LiteRT GPU audio/vision backend mismatch (${compactError(gpuMediaErr)}). Continuing on GPU text backend.",
+                    )
                 }.recoverCatching { gpuErr ->
-                    createInitializedEngine(modelPath, Backend.CPU(config.cpuThreads)) to EngineLoadResult(
+                    createInitializedEngine(
+                        modelPath = modelPath,
+                        backend = Backend.CPU(config.cpuThreads),
+                        visionBackend = Backend.CPU(config.cpuThreads),
+                        audioBackend = Backend.CPU(config.cpuThreads),
+                        maxNumTokens = config.contextSize,
+                    ) to EngineLoadResult(
                         activeBackend = LocalComputeBackend.CPU,
                         activeGpuLayers = 0,
                         fallbackReason = "LiteRT GPU backend unavailable (${compactError(gpuErr)}). Fell back to CPU.",
                     )
                 }.getOrThrow()
             } else {
-                createInitializedEngine(modelPath, Backend.CPU(config.cpuThreads)) to EngineLoadResult(
+                createInitializedEngine(
+                    modelPath = modelPath,
+                    backend = Backend.CPU(config.cpuThreads),
+                    visionBackend = Backend.CPU(config.cpuThreads),
+                    audioBackend = Backend.CPU(config.cpuThreads),
+                    maxNumTokens = config.contextSize,
+                ) to EngineLoadResult(
                     activeBackend = LocalComputeBackend.CPU,
                     activeGpuLayers = 0,
                 )
@@ -77,13 +111,19 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
         }
     }
 
-    private fun createInitializedEngine(modelPath: String, backend: Backend): Engine {
+    private fun createInitializedEngine(
+        modelPath: String,
+        backend: Backend,
+        visionBackend: Backend?,
+        audioBackend: Backend?,
+        maxNumTokens: Int,
+    ): Engine {
         val config = EngineConfig(
             modelPath = modelPath,
             backend = backend,
-            visionBackend = null,
-            audioBackend = null,
-            maxNumTokens = null,
+            visionBackend = visionBackend,
+            audioBackend = audioBackend,
+            maxNumTokens = maxNumTokens.coerceAtLeast(1024),
             cacheDir = context.cacheDir.path,
         )
         return Engine(config).also { it.initialize() }
@@ -115,30 +155,24 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
 
         return try {
             val text = withContext(Dispatchers.IO) {
-                var lastText = ""
-                var finalText = ""
+                val userContents = buildUserContents(config)
 
-                val stream = conversation.sendMessageAsync(config.prompt, emptyMap<String, Any>())
-                stream.collect { message ->
-                    val current = extractText(message)
-                    if (current.isBlank()) return@collect
-                    val delta = incrementalDelta(previous = lastText, current = current)
-                    if (delta.isNotEmpty()) {
-                        onToken(delta)
-                    }
-                    lastText = current
-                    finalText = current
-                }
-
-                if (finalText.isBlank()) {
-                    val fallback = extractText(conversation.sendMessage(config.prompt, emptyMap<String, Any>()))
-                    if (fallback.isNotBlank()) {
-                        onToken(fallback)
-                    }
-                    fallback
-                } else {
-                    finalText
-                }
+                runCatching {
+                    generateFromConversation(
+                        conversation = conversation,
+                        prompt = config.prompt,
+                        userContents = userContents,
+                        onToken = onToken,
+                    )
+                }.recoverCatching {
+                    if (userContents == null) throw it
+                    generateFromConversation(
+                        conversation = conversation,
+                        prompt = config.prompt,
+                        userContents = null,
+                        onToken = onToken,
+                    )
+                }.getOrThrow()
             }
 
             GenerationResult(
@@ -197,6 +231,80 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
                 }
             }
         return if (chunks.isNotEmpty()) chunks.joinToString(separator = "") else message.toString()
+    }
+
+    private suspend fun generateFromConversation(
+        conversation: Conversation,
+        prompt: String,
+        userContents: Contents?,
+        onToken: (String) -> Unit,
+    ): String {
+        var lastText = ""
+        var finalText = ""
+
+        val stream = if (userContents != null) {
+            conversation.sendMessageAsync(userContents, emptyMap<String, Any>())
+        } else {
+            conversation.sendMessageAsync(prompt, emptyMap<String, Any>())
+        }
+
+        stream.collect { message ->
+            val current = extractText(message)
+            if (current.isBlank()) return@collect
+            val delta = incrementalDelta(previous = lastText, current = current)
+            if (delta.isNotEmpty()) {
+                onToken(delta)
+            }
+            lastText = current
+            finalText = current
+        }
+
+        if (finalText.isNotBlank()) return finalText
+
+        val fallback = if (userContents != null) {
+            extractText(conversation.sendMessage(userContents, emptyMap<String, Any>()))
+        } else {
+            extractText(conversation.sendMessage(prompt, emptyMap<String, Any>()))
+        }
+        if (fallback.isNotBlank()) {
+            onToken(fallback)
+        }
+        return fallback
+    }
+
+    private fun buildUserContents(config: GenerationConfig): Contents? {
+        val hasImage = config.imagePaths.isNotEmpty()
+        val hasAudio = !config.audioPath.isNullOrBlank()
+        if (!hasImage && !hasAudio) return null
+
+        val parts = ArrayList<Content>()
+
+        config.imagePaths.forEach { rawPath ->
+            val path = rawPath.trim()
+            if (path.isBlank()) return@forEach
+            val file = File(path)
+            if (file.exists()) {
+                parts += Content.ImageFile(file.absolutePath)
+            }
+        }
+
+        config.audioPath?.trim()?.takeIf { it.isNotBlank() }?.let { path ->
+            val file = File(path)
+            if (file.exists()) {
+                val ext = file.extension.lowercase(Locale.US)
+                if (ext !in supportedAudioExtensions) {
+                    throw IllegalArgumentException(
+                        "Unsupported audio format '.$ext'. LiteRT-LM supports wav, mp3, and flac audio attachments.",
+                    )
+                }
+                parts += Content.AudioFile(file.absolutePath)
+            }
+        }
+
+        parts += Content.Text(config.prompt)
+
+        if (parts.isEmpty()) return null
+        return Contents.Companion.of(parts)
     }
 
     private fun closeConversationLocked() {

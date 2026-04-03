@@ -1,6 +1,7 @@
 package com.fersaiyan.cyanbridge.ui.recordings
 
 import android.content.Intent
+import android.content.SharedPreferences
 import android.media.MediaPlayer
 import android.os.Bundle
 import android.widget.LinearLayout
@@ -10,31 +11,26 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.progressindicator.LinearProgressIndicator
-import com.fersaiyan.cyanbridge.BuildConfig
 import com.fersaiyan.cyanbridge.MainActivity
 import com.fersaiyan.cyanbridge.R
 import com.fersaiyan.cyanbridge.ai.transcription.DefaultTranscriptionService
+import com.fersaiyan.cyanbridge.ai.transcription.GemmaLiteRtTranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.Mp4AudioChunker
-import com.fersaiyan.cyanbridge.ai.transcription.NoOpAudioChunker
-import com.fersaiyan.cyanbridge.ai.transcription.OpenAIWhisperTranscriptionProvider
+import com.fersaiyan.cyanbridge.ai.transcription.MoonshotTranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.RetryPolicy
 import com.fersaiyan.cyanbridge.ai.transcription.RetryingTranscriptionProvider
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProgress
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionResult
 import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionService
-import com.fersaiyan.cyanbridge.ai.transcription.moonshine.MoonshineModelManager
-import com.fersaiyan.cyanbridge.ai.transcription.moonshine.MoonshineTranscriptionProvider
 import com.fersaiyan.cyanbridge.data.local.entity.CaptureSession
 import com.fersaiyan.cyanbridge.databinding.ActivityRecordingsListBinding
 import com.fersaiyan.cyanbridge.privacy.PrivacyPrefs
-import com.fersaiyan.cyanbridge.ui.ChatListActivity
 import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
 import com.fersaiyan.cyanbridge.ui.CommunityPluginsActivity
 import com.fersaiyan.cyanbridge.ui.MeetingRecordingBannerController
 import com.fersaiyan.cyanbridge.ui.MyApplication
 import com.fersaiyan.cyanbridge.ui.SettingsActivity
 import com.fersaiyan.cyanbridge.chat.ChatStore
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -45,6 +41,11 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class RecordingsListActivity : AppCompatActivity() {
+
+    companion object {
+        private const val PREFS_TRANSCRIPTION_ENGINE = "recordings_transcription_engine"
+        private const val KEY_TRANSCRIPTION_ENGINE = "engine"
+    }
 
     private lateinit var binding: ActivityRecordingsListBinding
     private lateinit var adapter: RecordingListAdapter
@@ -60,9 +61,19 @@ class RecordingsListActivity : AppCompatActivity() {
     private var transcribingId: Long? = null
     private val ephemeralTranscripts = mutableMapOf<Long, String>()
 
-    // Offline transcription debug state (since user may not have logcat access).
-    private var lastMoonshineKind: MoonshineModelManager.ModelKind? = null
-    private var lastMoonshineModelDir: File? = null
+    private val transcriptionPrefs: SharedPreferences by lazy {
+        getSharedPreferences(PREFS_TRANSCRIPTION_ENGINE, MODE_PRIVATE)
+    }
+
+    private enum class EngineChoice(val wire: String, val title: String) {
+        MOONSHOT("moonshot", "Moonshot"),
+        GEMMA("gemma", "Gemma (LiteRT local)");
+
+        companion object {
+            fun fromWire(value: String?): EngineChoice =
+                entries.firstOrNull { it.wire.equals(value, ignoreCase = true) } ?: GEMMA
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -245,81 +256,60 @@ class RecordingsListActivity : AppCompatActivity() {
             return
         }
 
+        promptTranscriptionEngineChoice { engine ->
+            startTranscriptionWithEngine(session, engine)
+        }
+    }
+
+    private fun promptTranscriptionEngineChoice(onChosen: (EngineChoice) -> Unit) {
+        val current = EngineChoice.fromWire(
+            transcriptionPrefs.getString(KEY_TRANSCRIPTION_ENGINE, null),
+        )
+        val labels = EngineChoice.entries.map { it.title }.toTypedArray()
+        var selected = EngineChoice.entries.indexOf(current).coerceAtLeast(0)
+
+        AlertDialog.Builder(this)
+            .setTitle("Transcription engine")
+            .setSingleChoiceItems(labels, selected) { _, which -> selected = which }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Start") { _, _ ->
+                val choice = EngineChoice.entries.getOrElse(selected) { current }
+                transcriptionPrefs.edit().putString(KEY_TRANSCRIPTION_ENGINE, choice.wire).apply()
+                onChosen(choice)
+            }
+            .show()
+    }
+
+    private fun startTranscriptionWithEngine(session: CaptureSession, engine: EngineChoice) {
+        if (transcribingId != null) {
+            Toast.makeText(this, "Already transcribing…", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         transcribingId = session.id
         adapter.setTranscribing(session.id)
 
-        val progressUi = showProgressDialog(title = "Transcribing", initialMessage = "Preparing…")
+        val progressUi = showProgressDialog(
+            title = "Transcribing (${engine.title})",
+            initialMessage = "Preparing…",
+        )
 
         uiScope.launch {
             try {
-                // Reset per-run debug info.
-                lastMoonshineKind = null
-                lastMoonshineModelDir = null
-
                 val result = withContext(Dispatchers.IO) {
-                    val apiKey = BuildConfig.OPENAI_API_KEY
-
-                    val provider: com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProvider
-                    val chunker: com.fersaiyan.cyanbridge.ai.transcription.AudioChunker
-
-                    if (apiKey.isBlank()) {
-                        // Offline fallback: Moonshine (on-device)
-                        val kind = MoonshineModelManager.chooseDefault(languageHint = null)
-                        val modelDir = MoonshineModelManager.modelDir(applicationContext, kind)
-                        lastMoonshineKind = kind
-                        lastMoonshineModelDir = modelDir
-
-                        if (!MoonshineModelManager.isInstalled(applicationContext, kind)) {
-                            val approved = CompletableDeferred<Boolean>()
-                            withContext(Dispatchers.Main) {
-                                AlertDialog.Builder(this@RecordingsListActivity)
-                                    .setTitle("Download offline transcription model?")
-                                    .setMessage(
-                                        "To transcribe without OpenAI, the app can download a Moonshine offline model (large download). Proceed?"
-                                    )
-                                    .setNegativeButton("Not now") { _, _ -> approved.complete(false) }
-                                    .setPositiveButton("Download") { _, _ -> approved.complete(true) }
-                                    .setCancelable(false)
-                                    .show()
-                            }
-
-                            if (!approved.await()) {
-                                return@withContext TranscriptionResult.Failure(
-                                    kind = TranscriptionResult.FailureKind.BAD_REQUEST,
-                                    message = "Offline model not installed",
-                                    canRetry = true,
-                                )
-                            }
-
-                            MoonshineModelManager.installIfNeeded(applicationContext, kind) { p ->
-                                runOnUiThread {
-                                    progressUi.progress.progress = p.percent.coerceIn(0, 100)
-                                    progressUi.message.text = p.message
-                                }
-                            }
+                    val provider: com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProvider =
+                        when (engine) {
+                            EngineChoice.MOONSHOT -> RetryingTranscriptionProvider(
+                                MoonshotTranscriptionProvider(applicationContext),
+                                policy = RetryPolicy(maxAttempts = 3),
+                            )
+                            EngineChoice.GEMMA -> RetryingTranscriptionProvider(
+                                GemmaLiteRtTranscriptionProvider(applicationContext),
+                                policy = RetryPolicy(maxAttempts = 1),
+                            )
                         }
-
-                        // "Flash" debug info for users without logcat.
-                        runOnUiThread {
-                            Toast.makeText(
-                                this@RecordingsListActivity,
-                                "Offline transcription: moonshine (${kind.id})",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-
-                        provider = RetryingTranscriptionProvider(
-                            MoonshineTranscriptionProvider(applicationContext, modelDir, kind.modelArch),
-                            policy = RetryPolicy(maxAttempts = 1)
-                        )
-                        chunker = NoOpAudioChunker()
-                    } else {
-                        provider = RetryingTranscriptionProvider(
-                            OpenAIWhisperTranscriptionProvider(apiKey = apiKey),
-                            policy = RetryPolicy(maxAttempts = 3)
-                        )
-                        chunker = Mp4AudioChunker(applicationContext)
-                    }
+                    val chunker: com.fersaiyan.cyanbridge.ai.transcription.AudioChunker =
+                        Mp4AudioChunker(applicationContext)
 
                     val service: TranscriptionService = DefaultTranscriptionService(
                         context = applicationContext,
@@ -328,21 +318,20 @@ class RecordingsListActivity : AppCompatActivity() {
                         chunker = chunker,
                     )
 
-                    val isOfflineVosk = apiKey.isBlank()
+                    val isGemma = engine == EngineChoice.GEMMA
 
                     service.transcribe(
                         session = session,
-                        options = TranscriptionService.Options(chunkDurationSec = 60),
+                        options = TranscriptionService.Options(
+                            chunkDurationSec = if (isGemma) 45 else 60,
+                        ),
                         onProgress = { p: TranscriptionProgress ->
                             runOnUiThread {
                                 val detail = p.detail?.let { " · $it" } ?: ""
 
-                                // Offline Vosk typically runs as one big chunk (NoOpAudioChunker),
-                                // so progress would sit at ~5% for a long time. Use an indeterminate
-                                // bar during the heavy TRANSCRIBING stage to avoid the "stuck" look.
-                                if (isOfflineVosk && p.stage == TranscriptionProgress.Stage.TRANSCRIBING) {
+                                if (isGemma && p.stage == TranscriptionProgress.Stage.TRANSCRIBING) {
                                     progressUi.progress.isIndeterminate = true
-                                    progressUi.message.text = "Transcribing offline…$detail"
+                                    progressUi.message.text = "Transcribing with Gemma…$detail"
                                     return@runOnUiThread
                                 }
 
@@ -374,18 +363,10 @@ class RecordingsListActivity : AppCompatActivity() {
                             "Transcription failed: ${result.message}",
                             Toast.LENGTH_LONG
                         ).show()
-
-                        // If this looks like the offline Vosk path, show a persistent debug dialog.
-                        if (result.message.contains("Vosk", ignoreCase = true) ||
-                            result.message.contains("model", ignoreCase = true)
-                        ) {
-                            showOfflineTranscriptionDebugDialog(error = result.message)
-                        }
                     }
                 }
             } catch (t: Throwable) {
                 Toast.makeText(this@RecordingsListActivity, "Transcription failed: ${t.message}", Toast.LENGTH_LONG).show()
-                showOfflineTranscriptionDebugDialog(error = t.message ?: t.toString())
             } finally {
                 runCatching { progressUi.dialog.dismiss() }
                 transcribingId = null
@@ -430,43 +411,6 @@ class RecordingsListActivity : AppCompatActivity() {
         val progress: LinearProgressIndicator,
         val message: TextView,
     )
-
-    private fun showOfflineTranscriptionDebugDialog(error: String) {
-        val kind = lastMoonshineKind
-        val modelDir = lastMoonshineModelDir
-        if (kind == null || modelDir == null) {
-            // If this wasn't the offline Moonshine flow, don't spam dialogs.
-            return
-        }
-
-        val report = MoonshineModelManager.validationReport(modelDir, kind)
-        val msg = buildString {
-            appendLine("Error: $error")
-            appendLine()
-            appendLine("Offline model: ${kind.id}")
-            appendLine(report)
-            appendLine()
-            appendLine("Tip: if the model install is partial/corrupt, reset it and try again.")
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Offline transcription debug")
-            .setMessage(msg)
-            .setPositiveButton("Close", null)
-            .setNegativeButton("Reset offline model") { _, _ ->
-                uiScope.launch {
-                    val deleted = withContext(Dispatchers.IO) {
-                        runCatching { modelDir.deleteRecursively() }.isSuccess
-                    }
-                    Toast.makeText(
-                        this@RecordingsListActivity,
-                        if (deleted) "Offline model cleared. Try transcribe again." else "Failed to clear offline model",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-            .show()
-    }
 
     private fun showProgressDialog(title: String, initialMessage: String): ProgressUi {
         val container = LinearLayout(this).apply {

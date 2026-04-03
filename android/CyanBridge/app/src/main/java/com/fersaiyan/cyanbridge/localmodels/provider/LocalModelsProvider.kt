@@ -4,6 +4,7 @@ import android.content.Context
 import com.fersaiyan.cyanbridge.localmodels.catalog.LocalModelCatalogRepository
 import com.fersaiyan.cyanbridge.localmodels.session.LocalChatSessionManager
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelRuntime
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import com.fersaiyan.cyanbridge.localmodels.templates.PromptMessage
 import com.fersaiyan.cyanbridge.localmodels.templates.PromptTemplateRegistry
@@ -26,6 +27,8 @@ class LocalModelsProvider {
         messages: List<Map<String, String>>,
         onStatus: ((String) -> Unit)? = null,
         onToken: ((String) -> Unit)? = null,
+        imagePaths: List<String> = emptyList(),
+        audioPath: String? = null,
         requestPriority: LocalModelRequestPriority = LocalModelRequestPriority.HIGH,
     ): String {
         return withContext(Dispatchers.IO) {
@@ -37,6 +40,10 @@ class LocalModelsProvider {
 
             val catalogEntry = LocalModelCatalogRepository.findById(selected.catalogId)
             val settings = LocalModelSettingsRepository.getForModel(context, selected.id)
+            val hasMediaAttachments = imagePaths.isNotEmpty() || !audioPath.isNullOrBlank()
+            if (hasMediaAttachments && settings.modelRuntime != LocalModelRuntime.LITERT) {
+                throw IllegalStateException("Media attachments require Local Runtime = LiteRT for the selected model.")
+            }
             val templateId = settings.templateOverrideId
                 ?: selected.promptTemplateId
                 ?: catalogEntry?.promptTemplateId
@@ -65,7 +72,11 @@ class LocalModelsProvider {
             )
             onStatus?.invoke(generationStatus(loadDetails.activeBackend))
             if (!loadDetails.fallbackReason.isNullOrBlank()) {
-                onStatus?.invoke("GPU unavailable, using CPU")
+                if (loadDetails.activeBackend == LocalComputeBackend.CPU) {
+                    onStatus?.invoke("GPU unavailable, using CPU")
+                } else {
+                    onStatus?.invoke("GPU active (audio/vision backend disabled)")
+                }
             }
 
             val prompt = PromptTemplateRegistry.renderPrompt(
@@ -78,6 +89,8 @@ class LocalModelsProvider {
                 settings = settings,
                 prompt = prompt,
                 onToken = { token -> onToken?.invoke(token) },
+                imagePaths = imagePaths,
+                audioPath = audioPath,
                 requestPriority = requestPriority,
             )
 
@@ -102,13 +115,19 @@ class LocalModelsProvider {
             )
             onStatus?.invoke(generationStatus(reloadDetails.activeBackend))
             if (!reloadDetails.fallbackReason.isNullOrBlank()) {
-                onStatus?.invoke("GPU unavailable, using CPU")
+                if (reloadDetails.activeBackend == LocalComputeBackend.CPU) {
+                    onStatus?.invoke("GPU unavailable, using CPU")
+                } else {
+                    onStatus?.invoke("GPU active (audio/vision backend disabled)")
+                }
             }
 
             val retryReply = LocalChatSessionManager.streamGenerate(
                 settings = settings,
                 prompt = prompt,
                 onToken = { token -> onToken?.invoke(token) },
+                imagePaths = imagePaths,
+                audioPath = audioPath,
                 requestPriority = requestPriority,
             )
 

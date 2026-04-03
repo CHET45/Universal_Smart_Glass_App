@@ -1,9 +1,16 @@
 package com.fersaiyan.cyanbridge.ui
 
+import android.Manifest
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.webkit.MimeTypeMap
+import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -40,6 +47,8 @@ import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemorySearch
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
 import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelRequestPriority
 import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelsProvider
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalGenerationSettings
+import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelRuntime
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import com.fersaiyan.cyanbridge.memoryvault.MemoryModeManager
@@ -49,6 +58,13 @@ import com.fersaiyan.cyanbridge.ui.chat.ThinkingIndicatorController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 
@@ -68,11 +84,49 @@ class ChatThreadActivity : AppCompatActivity() {
     private var localTitleGenerationInProgress: Boolean = false
     private var streamingAssistantDraft: String? = null
     private val queuedLocalPrompts = java.util.ArrayDeque<QueuedLocalPrompt>()
+    private val pendingImagePaths = mutableListOf<String>()
+    private var pendingAudioPath: String? = null
+    private var audioRecorder: AudioRecord? = null
+    private var audioRecordingThread: Thread? = null
+    private var mediaRecordingFilePath: String? = null
+    private var isMediaRecording = false
+    private var recordStopRunnable: Runnable? = null
 
     private data class QueuedLocalPrompt(
         val chatId: String,
         val userPrompt: String,
+        val imagePaths: List<String> = emptyList(),
+        val audioPath: String? = null,
     )
+
+    private val pickChatImageLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        runCatching {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        runCatching {
+            val copied = copyUriToChatAttachment(uri, "image")
+            pendingImagePaths += copied.absolutePath
+            updatePendingAttachmentsUi()
+        }.onFailure {
+            android.widget.Toast.makeText(this, "Failed to attach image", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val requestAudioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startAudioRecording()
+        } else {
+            android.widget.Toast.makeText(this, "Microphone permission is required to record audio", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val pickWallpaperLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -172,7 +226,11 @@ class ChatThreadActivity : AppCompatActivity() {
             }
 
             val text = binding.inputMessage.text.toString().trim()
-            if (text.isNotEmpty()) {
+            if (isMediaRecording) {
+                stopAudioRecording(saveAsAttachment = true)
+            }
+            val hasMedia = pendingImagePaths.isNotEmpty() || !pendingAudioPath.isNullOrBlank()
+            if (text.isNotEmpty() || hasMedia) {
                 if (isLocalModelsProviderSelected() && localTitleGenerationInProgress && !isDailyFactsReview) {
                     enqueueLocalPrompt(text)
                 } else {
@@ -180,6 +238,38 @@ class ChatThreadActivity : AppCompatActivity() {
                 }
                 binding.inputMessage.text?.clear()
             }
+        }
+
+        binding.btnAttachMedia.setOnClickListener {
+            if (!supportsCurrentLocalRuntimeMedia()) {
+                android.widget.Toast.makeText(
+                    this,
+                    "Image attachments require Local Models + LiteRT runtime.",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+                return@setOnClickListener
+            }
+            pickChatImageLauncher.launch(arrayOf("image/*"))
+        }
+
+        binding.btnRecordAudio.setOnClickListener {
+            if (!supportsCurrentLocalRuntimeMedia()) {
+                android.widget.Toast.makeText(
+                    this,
+                    "Audio attachments require Local Models + LiteRT runtime.",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+                return@setOnClickListener
+            }
+            if (isMediaRecording) {
+                stopAudioRecording(saveAsAttachment = true)
+            } else {
+                ensureAudioPermissionAndStartRecording()
+            }
+        }
+
+        binding.btnClearAttachments.setOnClickListener {
+            clearPendingAttachments()
         }
 
         // Optional intent-driven prefill.
@@ -193,6 +283,7 @@ class ChatThreadActivity : AppCompatActivity() {
         observeDailySummaryQueueProgress()
         refreshMessages()
         refreshDailyReviewQueueStatusAsync()
+        updatePendingAttachmentsUi()
 
         // Auto-kickoff daily facts review.
         val cid = chatId
@@ -215,6 +306,9 @@ class ChatThreadActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         thinkingIndicator?.hide()
+        if (isMediaRecording) {
+            stopAudioRecording(saveAsAttachment = true)
+        }
         if (localGenerationRunning) {
             lifecycleScope.launch {
                 RelayAiAssistantRouter.cancelCurrentGeneration(this@ChatThreadActivity)
@@ -593,11 +687,20 @@ class ChatThreadActivity : AppCompatActivity() {
         return LocalModelStorageRepository.resolveSelectedModel(this) != null
     }
 
+    private fun supportsCurrentLocalRuntimeMedia(): Boolean {
+        if (!isLocalModelsProviderSelected()) return false
+        val selected = LocalModelStorageRepository.resolveSelectedModel(this) ?: return false
+        val settings = LocalModelSettingsRepository.getForModel(this, selected.id)
+        return settings.modelRuntime == LocalModelRuntime.LITERT
+    }
+
     private fun updateComposerForGenerationState() {
         if (localGenerationRunning) {
             binding.btnSend.setImageResource(android.R.drawable.ic_media_pause)
             binding.btnSend.contentDescription = "Stop generation"
             binding.inputMessage.isEnabled = false
+            binding.btnAttachMedia.isEnabled = false
+            binding.btnRecordAudio.isEnabled = false
             binding.btnSend.isEnabled = true
         } else {
             val localModelMissing = isLocalModelsProviderSelected() && !hasLocalModelAvailable()
@@ -605,12 +708,17 @@ class ChatThreadActivity : AppCompatActivity() {
                 binding.btnSend.setImageResource(android.R.drawable.ic_menu_manage)
                 binding.btnSend.contentDescription = "Configure local model"
                 binding.inputMessage.isEnabled = true
+                binding.btnAttachMedia.isEnabled = false
+                binding.btnRecordAudio.isEnabled = false
                 binding.inputLayout.hint = "Install/select a local model to start chatting"
                 binding.btnSend.isEnabled = true
             } else {
                 binding.btnSend.setImageResource(android.R.drawable.ic_menu_send)
                 binding.btnSend.contentDescription = "Send"
                 binding.inputMessage.isEnabled = true
+                val mediaEnabled = supportsCurrentLocalRuntimeMedia()
+                binding.btnAttachMedia.isEnabled = mediaEnabled
+                binding.btnRecordAudio.isEnabled = mediaEnabled
                 binding.inputLayout.hint = "Message"
                 binding.btnSend.isEnabled = true
             }
@@ -628,30 +736,345 @@ class ChatThreadActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun formatUserMessageWithMedia(
+        text: String,
+        imagePaths: List<String>,
+        audioPath: String?,
+    ): String {
+        val suffix = buildString {
+            if (imagePaths.isNotEmpty()) {
+                append("\n[Attached ${imagePaths.size} image(s)]")
+            }
+            if (!audioPath.isNullOrBlank()) {
+                append("\n[Attached voice note]")
+            }
+        }
+        return (text + suffix).trim()
+    }
+
+    private fun clearPendingAttachments() {
+        pendingImagePaths.clear()
+        pendingAudioPath = null
+        updatePendingAttachmentsUi()
+    }
+
+    private fun updatePendingAttachmentsUi() {
+        val imageCount = pendingImagePaths.size
+        val hasAudio = !pendingAudioPath.isNullOrBlank()
+        if (imageCount == 0 && !hasAudio) {
+            binding.layoutPendingAttachments.visibility = View.GONE
+            binding.btnRecordAudio.setImageResource(android.R.drawable.ic_btn_speak_now)
+            return
+        }
+
+        val text = buildString {
+            if (imageCount > 0) append("$imageCount image(s)")
+            if (hasAudio) {
+                if (isNotBlank()) append(" · ")
+                append("voice note")
+            }
+            append(" attached")
+        }
+        binding.layoutPendingAttachments.visibility = View.VISIBLE
+        binding.tvPendingAttachments.text = text
+        binding.btnRecordAudio.setImageResource(
+            if (isMediaRecording) android.R.drawable.ic_media_pause else android.R.drawable.ic_btn_speak_now,
+        )
+    }
+
+    private fun ensureAudioPermissionAndStartRecording() {
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            startAudioRecording()
+        } else {
+            requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startAudioRecording() {
+        if (isMediaRecording) return
+        stopAudioRecording(saveAsAttachment = false)
+
+        val outFile = File(chatAttachmentDir(), "voice_${System.currentTimeMillis()}.wav")
+        mediaRecordingFilePath = outFile.absolutePath
+
+        try {
+            val minBuffer = AudioRecord.getMinBufferSize(
+                AUDIO_SAMPLE_RATE_HZ,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+            if (minBuffer <= 0) {
+                throw IllegalStateException("AudioRecord buffer init failed: $minBuffer")
+            }
+
+            val recorder = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                AUDIO_SAMPLE_RATE_HZ,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                minBuffer.coerceAtLeast(AUDIO_SAMPLE_RATE_HZ),
+            )
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                runCatching { recorder.release() }
+                throw IllegalStateException("AudioRecord not initialized")
+            }
+
+            audioRecorder = recorder
+            isMediaRecording = true
+            updatePendingAttachmentsUi()
+            android.widget.Toast.makeText(this, "Recording... up to 30 seconds", android.widget.Toast.LENGTH_SHORT).show()
+
+            val worker = Thread {
+                var pcmBytesWritten = 0L
+                val ioBuffer = ByteArray(minBuffer.coerceAtLeast(2048))
+                runCatching {
+                    FileOutputStream(outFile).use { output ->
+                        output.write(ByteArray(WAV_HEADER_BYTES))
+                        recorder.startRecording()
+                        while (isMediaRecording) {
+                            val read = recorder.read(ioBuffer, 0, ioBuffer.size)
+                            if (read > 0) {
+                                output.write(ioBuffer, 0, read)
+                                pcmBytesWritten += read.toLong()
+                            } else if (read == AudioRecord.ERROR_BAD_VALUE || read == AudioRecord.ERROR_INVALID_OPERATION) {
+                                throw IllegalStateException("Audio read failed: $read")
+                            }
+                        }
+                    }
+                }.onFailure {
+                    runCatching { outFile.delete() }
+                }
+
+                runCatching { recorder.stop() }
+                runCatching { recorder.release() }
+
+                if (outFile.exists() && pcmBytesWritten > 0L) {
+                    runCatching {
+                        writeWavHeader(
+                            file = outFile,
+                            pcmDataBytes = pcmBytesWritten,
+                            sampleRateHz = AUDIO_SAMPLE_RATE_HZ,
+                            channelCount = 1,
+                            bitsPerSample = 16,
+                        )
+                    }.onFailure {
+                        runCatching { outFile.delete() }
+                    }
+                }
+            }.apply {
+                name = "liteRt-audio-recorder"
+                isDaemon = true
+            }
+            audioRecordingThread = worker
+            worker.start()
+
+            recordStopRunnable?.let { binding.root.removeCallbacks(it) }
+            recordStopRunnable = Runnable {
+                stopAudioRecording(saveAsAttachment = true)
+            }.also { binding.root.postDelayed(it, 30_000L) }
+        } catch (t: Throwable) {
+            runCatching { audioRecorder?.release() }
+            audioRecorder = null
+            audioRecordingThread = null
+            isMediaRecording = false
+            mediaRecordingFilePath = null
+            updatePendingAttachmentsUi()
+            android.widget.Toast.makeText(this, "Unable to start recording", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun stopAudioRecording(saveAsAttachment: Boolean) {
+        recordStopRunnable?.let { binding.root.removeCallbacks(it) }
+        recordStopRunnable = null
+
+        val recorder = audioRecorder
+        audioRecorder = null
+        val worker = audioRecordingThread
+        audioRecordingThread = null
+        val path = mediaRecordingFilePath
+        mediaRecordingFilePath = null
+
+        isMediaRecording = false
+
+        if (worker != null && worker.isAlive) {
+            runCatching { worker.join(1200L) }
+        }
+        if (recorder != null && recorder.state == AudioRecord.STATE_INITIALIZED) {
+            runCatching { recorder.release() }
+        }
+
+        val audioFile = path?.let { File(it) }
+        if (saveAsAttachment && !path.isNullOrBlank()) {
+            if (audioFile?.exists() == true && audioFile.length() > WAV_HEADER_BYTES) {
+                pendingAudioPath = path
+                android.widget.Toast.makeText(this, "Voice note attached", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                runCatching { audioFile?.delete() }
+                android.widget.Toast.makeText(this, "Unable to attach voice note", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        } else if (!path.isNullOrBlank()) {
+            runCatching { audioFile?.delete() }
+        }
+        updatePendingAttachmentsUi()
+    }
+
+    private fun writeWavHeader(
+        file: File,
+        pcmDataBytes: Long,
+        sampleRateHz: Int,
+        channelCount: Int,
+        bitsPerSample: Int,
+    ) {
+        val safeDataBytes = pcmDataBytes.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+        val riffChunkSize = (36L + safeDataBytes).coerceIn(36L, Int.MAX_VALUE.toLong()).toInt()
+        val byteRate = sampleRateHz * channelCount * bitsPerSample / 8
+        val blockAlign = channelCount * bitsPerSample / 8
+
+        val header = ByteBuffer.allocate(WAV_HEADER_BYTES)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .apply {
+                put("RIFF".toByteArray(Charsets.US_ASCII))
+                putInt(riffChunkSize)
+                put("WAVE".toByteArray(Charsets.US_ASCII))
+                put("fmt ".toByteArray(Charsets.US_ASCII))
+                putInt(16)
+                putShort(1)
+                putShort(channelCount.toShort())
+                putInt(sampleRateHz)
+                putInt(byteRate)
+                putShort(blockAlign.toShort())
+                putShort(bitsPerSample.toShort())
+                put("data".toByteArray(Charsets.US_ASCII))
+                putInt(safeDataBytes)
+            }
+
+        RandomAccessFile(file, "rw").use { raf ->
+            raf.seek(0)
+            raf.write(header.array())
+        }
+    }
+
+    private fun copyUriToChatAttachment(uri: Uri, kind: String): File {
+        if (kind == "image") {
+            val decodedBitmap = runCatching {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    BitmapFactory.decodeStream(input)
+                }
+            }.getOrNull()
+
+            if (decodedBitmap != null) {
+                val out = File(chatAttachmentDir(), "image_${System.currentTimeMillis()}.jpg")
+                FileOutputStream(out).use { output ->
+                    decodedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, output)
+                }
+                decodedBitmap.recycle()
+                return out
+            }
+        }
+
+        val ext = resolveAttachmentExtension(uri, fallback = if (kind == "image") "jpg" else "bin")
+        val out = File(chatAttachmentDir(), "${kind}_${System.currentTimeMillis()}.$ext")
+        contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(out).use { output ->
+                input.copyTo(output)
+            }
+        } ?: throw IllegalStateException("Cannot open attachment")
+        return out
+    }
+
+    private fun resolveAttachmentExtension(uri: Uri, fallback: String): String {
+        val mimeExt = contentResolver.getType(uri)
+            ?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
+            ?.lowercase(java.util.Locale.US)
+            .orEmpty()
+        val pathExt = uri.lastPathSegment
+            ?.substringAfterLast('.', "")
+            ?.lowercase(java.util.Locale.US)
+            .orEmpty()
+        val chosen = when {
+            mimeExt.isNotBlank() -> mimeExt
+            pathExt.isNotBlank() -> pathExt
+            else -> fallback
+        }
+        val cleaned = chosen.replace(Regex("[^a-z0-9]"), "")
+        return cleaned.ifBlank { fallback }.take(8)
+    }
+
+    private fun chatAttachmentDir(): File {
+        val dir = File(cacheDir, "chat_attachments")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
     private fun sendMessage(text: String) {
         val cid = ensureChatThread()
+        val images = pendingImagePaths.toList()
+        val audio = pendingAudioPath
+        if ((images.isNotEmpty() || !audio.isNullOrBlank()) && !supportsCurrentLocalRuntimeMedia()) {
+            android.widget.Toast.makeText(
+                this,
+                "Media attachments require Local Models + LiteRT runtime.",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        val promptText = text.ifBlank {
+            if (images.isNotEmpty() || !audio.isNullOrBlank()) {
+                "Please analyze the attached media."
+            } else {
+                ""
+            }
+        }
+        if (promptText.isBlank()) return
 
         val shouldGenerateSmartTitle = ChatStore.listMessages(cid).isEmpty()
-        ChatStore.addMessage(cid, ChatRole.USER, text)
+        ChatStore.addMessage(cid, ChatRole.USER, formatUserMessageWithMedia(promptText, images, audio))
         refreshMessages()
+        clearPendingAttachments()
 
         startAssistantGeneration(
             chatId = cid,
-            userPrompt = text,
+            userPrompt = promptText,
+            imagePaths = images,
+            audioPath = audio,
             requestSmartTitleAfterReply = shouldGenerateSmartTitle,
         )
     }
 
     private fun enqueueLocalPrompt(text: String) {
         val cid = ensureChatThread()
-        ChatStore.addMessage(cid, ChatRole.USER, text)
+        val images = pendingImagePaths.toList()
+        val audio = pendingAudioPath
+        if ((images.isNotEmpty() || !audio.isNullOrBlank()) && !supportsCurrentLocalRuntimeMedia()) {
+            android.widget.Toast.makeText(
+                this,
+                "Media attachments require Local Models + LiteRT runtime.",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        val promptText = text.ifBlank {
+            if (images.isNotEmpty() || !audio.isNullOrBlank()) {
+                "Please analyze the attached media."
+            } else {
+                ""
+            }
+        }
+        if (promptText.isBlank()) return
+
+        ChatStore.addMessage(cid, ChatRole.USER, formatUserMessageWithMedia(promptText, images, audio))
         refreshMessages()
         queuedLocalPrompts.addLast(
             QueuedLocalPrompt(
                 chatId = cid,
-                userPrompt = text,
+                userPrompt = promptText,
+                imagePaths = images,
+                audioPath = audio,
             ),
         )
+        clearPendingAttachments()
         refreshModelBadge("Queued")
         android.widget.Toast.makeText(
             this,
@@ -674,12 +1097,14 @@ class ChatThreadActivity : AppCompatActivity() {
     private fun startAssistantGeneration(
         chatId: String,
         userPrompt: String,
+        imagePaths: List<String> = emptyList(),
+        audioPath: String? = null,
         requestSmartTitleAfterReply: Boolean,
         onFinished: (() -> Unit)? = null,
     ) {
         lifecycleScope.launch {
             onAssistantRequestStarted()
-            val useLocalStreaming = isLocalModelsProviderSelected() && !isDailyFactsReview
+            val useLocalStreaming = isLocalModelsProviderSelected()
             var maxTokensReached = false
             if (useLocalStreaming) {
                 localGenerationRunning = true
@@ -696,6 +1121,8 @@ class ChatThreadActivity : AppCompatActivity() {
                         chatId = chatId,
                         userPrompt = userPrompt,
                         messages = messages,
+                        imagePaths = imagePaths,
+                        audioPath = audioPath,
                         callbacks = if (useLocalStreaming) {
                             object : RelayAiAssistantRouter.ChatStreamCallbacks {
                                 override fun onStatus(status: String) {
@@ -768,7 +1195,7 @@ class ChatThreadActivity : AppCompatActivity() {
                 refreshMessages()
             } catch (_: kotlinx.coroutines.CancellationException) {
                 val partial = streamingAssistantDraft.orEmpty().trim()
-                if (partial.isNotBlank() && !isDailyFactsReview) {
+                if (partial.isNotBlank()) {
                     streamingAssistantDraft = null
                     ChatStore.addMessage(chatId, ChatRole.ASSISTANT, partial)
                     refreshMessages()
@@ -804,13 +1231,25 @@ class ChatThreadActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             onAssistantRequestStarted()
+            val useLocalStreaming = isLocalModelsProviderSelected()
+            if (useLocalStreaming) {
+                localGenerationRunning = true
+                streamingAssistantDraft = ""
+                updateComposerForGenerationState()
+                refreshModelBadge("Loading")
+                refreshMessages()
+            }
             try {
                 val assistantReply = withContext(Dispatchers.IO) {
                     ensureDailyFactsDraftHydratedFromOcrIfNeeded(date)
                     val state = DailyFactsStorage.load(this@ChatThreadActivity, date)
                     LocalAgentMemoryStore.ensureSeedFiles(this@ChatThreadActivity)
                     val userFactsMd = LocalAgentMemoryStore.readText(LocalAgentMemoryStore.userFactsFile(this@ChatThreadActivity))
-                    val candidateUserFacts = CandidateUserFactsStorage.load(this@ChatThreadActivity, date)
+                    val candidateUserFacts = pruneKnownUserFactCandidates(
+                        date = date,
+                        candidateUserFacts = CandidateUserFactsStorage.load(this@ChatThreadActivity, date),
+                        persistPrune = true,
+                    )
                     val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
                     val system = DailyFactsReviewProtocol.buildSystemMessage(
                         state = state,
@@ -825,15 +1264,36 @@ class ChatThreadActivity : AppCompatActivity() {
                         mapOf("role" to "System", "content" to system),
                         mapOf(
                             "role" to "User",
-                            "content" to "Start the daily facts review from the current batch. Ask me about 3 to 5 items.",
+                            "content" to "Start the daily facts review from the current batch. Ask me about up to 3 items.",
                         ),
                     )
 
-                    RelayAiAssistantRouter.chatReply(
+                    RelayAiAssistantRouter.chatReplyStreaming(
                         context = this@ChatThreadActivity,
                         chatId = cid,
                         userPrompt = "Start daily facts review",
                         messages = msgs,
+                        imagePaths = emptyList(),
+                        audioPath = null,
+                        callbacks = if (useLocalStreaming) {
+                            object : RelayAiAssistantRouter.ChatStreamCallbacks {
+                                override fun onStatus(status: String) {
+                                    runOnUiThread {
+                                        refreshModelBadge(status)
+                                    }
+                                }
+
+                                override fun onToken(token: String) {
+                                    runOnUiThread {
+                                        val cur = streamingAssistantDraft.orEmpty()
+                                        streamingAssistantDraft = cur + token
+                                        refreshMessages()
+                                    }
+                                }
+                            }
+                        } else {
+                            null
+                        },
                     )
                 }
                 showRelayDownToastIfNeeded(assistantReply)
@@ -852,6 +1312,11 @@ class ChatThreadActivity : AppCompatActivity() {
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
             } finally {
+                localGenerationRunning = false
+                streamingAssistantDraft = null
+                updateComposerForGenerationState()
+                refreshModelBadge("Ready")
+                refreshMessages()
                 onAssistantRequestFinished()
             }
         }
@@ -930,6 +1395,8 @@ class ChatThreadActivity : AppCompatActivity() {
         startAssistantGeneration(
             chatId = next.chatId,
             userPrompt = next.userPrompt,
+            imagePaths = next.imagePaths,
+            audioPath = next.audioPath,
             requestSmartTitleAfterReply = false,
             onFinished = { drainQueuedLocalPrompts() },
         )
@@ -1080,12 +1547,17 @@ class ChatThreadActivity : AppCompatActivity() {
             outputMode = dailyReviewOutputMode(),
         )
 
-        val historyRaw = ChatStore.listMessages(chatId).map { m ->
-            mapOf(
-                "role" to if (m.role == ChatRole.USER) "User" else "Assistant",
-                "content" to m.content,
-            )
-        }
+        val historyRaw = ChatStore.listMessages(chatId)
+            .filterNot { message ->
+                message.role == ChatRole.ASSISTANT &&
+                    message.content.startsWith(DAILY_REVIEW_DEBUG_PREFIX)
+            }
+            .map { m ->
+                mapOf(
+                    "role" to if (m.role == ChatRole.USER) "User" else "Assistant",
+                    "content" to m.content,
+                )
+            }
 
         val history = trimHistoryForContext(
             history = historyRaw,
@@ -1129,9 +1601,7 @@ class ChatThreadActivity : AppCompatActivity() {
         state: DailyFactsStorage.State,
         candidateUserFacts: List<String>,
     ): ReviewBatch {
-        val maxBatch = 5
-        val dailyTarget = 3
-        val userTarget = 2
+        val maxBatch = 3
 
         val confirmedNorm = state.confirmed
             .map { normalizeFactForMatching(it) }
@@ -1141,18 +1611,17 @@ class ChatThreadActivity : AppCompatActivity() {
             confirmedNorm.contains(normalizeFactForMatching(it))
         }
 
-        var dailyTake = filteredDraft.take(dailyTarget)
-        var userTake = candidateUserFacts.take(userTarget)
+        val effectiveUserCandidates = pruneKnownUserFactCandidates(
+            date = state.date,
+            candidateUserFacts = candidateUserFacts,
+            persistPrune = true,
+        )
 
-        var remaining = maxBatch - dailyTake.size - userTake.size
-        if (remaining > 0) {
-            val extraDaily = filteredDraft.drop(dailyTake.size).take(remaining)
-            dailyTake = dailyTake + extraDaily
-            remaining -= extraDaily.size
-        }
-        if (remaining > 0) {
-            val extraUser = candidateUserFacts.drop(userTake.size).take(remaining)
-            userTake = userTake + extraUser
+        val dailyTake = filteredDraft.take(maxBatch)
+        val userTake = if (dailyTake.isEmpty()) {
+            effectiveUserCandidates.take(maxBatch)
+        } else {
+            emptyList()
         }
 
         val dailyItems = dailyTake.mapIndexed { idx, text ->
@@ -1168,6 +1637,34 @@ class ChatThreadActivity : AppCompatActivity() {
         )
     }
 
+    private fun pruneKnownUserFactCandidates(
+        date: String,
+        candidateUserFacts: List<String>,
+        persistPrune: Boolean,
+    ): List<String> {
+        if (candidateUserFacts.isEmpty()) return emptyList()
+
+        val known = UserFactsStorage.normalizedFacts(this)
+        if (known.isEmpty()) return candidateUserFacts
+
+        val kept = ArrayList<String>(candidateUserFacts.size)
+        val removed = ArrayList<String>()
+        candidateUserFacts.forEach { fact ->
+            val norm = normalizeFactForMatching(fact)
+            if (norm.isBlank() || !known.contains(norm)) {
+                kept += fact
+            } else {
+                removed += fact
+            }
+        }
+
+        if (persistPrune && removed.isNotEmpty()) {
+            CandidateUserFactsStorage.remove(this, date, removed)
+        }
+
+        return kept
+    }
+
     private data class ContextBudgets(
         val systemChars: Int,
         val historyTokens: Int,
@@ -1178,7 +1675,10 @@ class ChatThreadActivity : AppCompatActivity() {
         selectedModel: com.fersaiyan.cyanbridge.localmodels.storage.InstalledLocalModel?,
         contextSize: Int,
     ): ContextBudgets {
-        val normalizedCtx = contextSize.coerceIn(1024, 8192)
+        val normalizedCtx = contextSize.coerceIn(
+            LocalGenerationSettings.MIN_CONTEXT_SIZE,
+            LocalGenerationSettings.MAX_CONTEXT_SIZE,
+        )
         if (!isLocalModelsProviderSelected()) {
             return if (isDailyReview) {
                 ContextBudgets(systemChars = 3000, historyTokens = 2200)
@@ -1209,11 +1709,7 @@ class ChatThreadActivity : AppCompatActivity() {
     }
 
     private fun dailyReviewOutputMode(): DailyFactsReviewProtocol.OutputMode {
-        return if (isLocalModelsProviderSelected()) {
-            DailyFactsReviewProtocol.OutputMode.LINE_IDS
-        } else {
-            DailyFactsReviewProtocol.OutputMode.JSON
-        }
+        return DailyFactsReviewProtocol.OutputMode.JSON
     }
 
     private fun buildLocalAgentContextBuilder(maxTotalChars: Int): LocalAgentContextBuilder {
@@ -1255,12 +1751,54 @@ class ChatThreadActivity : AppCompatActivity() {
         userPrompt: String,
         raw: String,
     ) {
+        appendDailyReviewDebugPayload(chatId, stage = "raw_model_output", payload = raw)
+
         val date = dailyFactsDate ?: java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .format(java.util.Date(System.currentTimeMillis()))
 
         val preState = DailyFactsStorage.load(this, date)
-        val preCandidates = CandidateUserFactsStorage.load(this, date)
+        val preCandidates = pruneKnownUserFactCandidates(
+            date = date,
+            candidateUserFacts = CandidateUserFactsStorage.load(this, date),
+            persistPrune = true,
+        )
         val currentBatch = buildDailyFactsReviewBatch(preState, preCandidates)
+
+        if (!shouldApplyStructuredDailyReviewUpdate(userPrompt)) {
+            appendDailyReviewDebugPayload(
+                chatId,
+                stage = "update_suppressed",
+                payload = "User prompt interpreted as navigation/non-confirmation. Queue update skipped.",
+            )
+            val followUp = buildQueueContinuationPrompt(preState, preCandidates)
+            val assistantText = if (followUp.isNotBlank()) {
+                "Got it — here is the current next batch.\n\n$followUp"
+            } else {
+                "You're all caught up. There are no pending daily facts to review right now."
+            }
+            ChatStore.addMessage(chatId, ChatRole.ASSISTANT, assistantText)
+            refreshDailyReviewQueueStatusAsync()
+            return
+        }
+
+        val parsedFromRaw = runCatching { DailyFactsReviewProtocol.parseUpdate(raw) }.getOrNull()
+            ?: attemptRepairDailyFactsUpdate(date = date, raw = raw)
+
+        if (parsedFromRaw != null) {
+            appendDailyReviewDebugPayload(
+                chatId,
+                stage = "parsed_update",
+                payload = renderAiUpdateAsJson(parsedFromRaw),
+            )
+            applyDailyFactsUpdate(
+                chatId = chatId,
+                date = date,
+                update = parsedFromRaw,
+                assistantTextOverride = parsedFromRaw.assistantMessage,
+                batch = currentBatch,
+            )
+            return
+        }
 
         val parsedFromUserHeuristic = if (isLocalModelsProviderSelected()) {
             inferUpdateFromUserReplyHeuristic(
@@ -1271,25 +1809,16 @@ class ChatThreadActivity : AppCompatActivity() {
             null
         }
         if (parsedFromUserHeuristic != null) {
+            appendDailyReviewDebugPayload(
+                chatId,
+                stage = "heuristic_update",
+                payload = renderAiUpdateAsJson(parsedFromUserHeuristic),
+            )
             applyDailyFactsUpdate(
                 chatId = chatId,
                 date = date,
                 update = parsedFromUserHeuristic,
                 assistantTextOverride = extractUserFacingAssistantText(raw),
-                batch = currentBatch,
-            )
-            return
-        }
-
-        val parsedFromRaw = runCatching { DailyFactsReviewProtocol.parseUpdate(raw) }.getOrNull()
-            ?: attemptRepairDailyFactsUpdate(date = date, raw = raw)
-
-        if (parsedFromRaw != null) {
-            applyDailyFactsUpdate(
-                chatId = chatId,
-                date = date,
-                update = parsedFromRaw,
-                assistantTextOverride = parsedFromRaw.assistantMessage,
                 batch = currentBatch,
             )
             return
@@ -1305,6 +1834,11 @@ class ChatThreadActivity : AppCompatActivity() {
         }
 
         if (parsedFromUserReply != null) {
+            appendDailyReviewDebugPayload(
+                chatId,
+                stage = "inferred_update",
+                payload = renderAiUpdateAsJson(parsedFromUserReply),
+            )
             applyDailyFactsUpdate(
                 chatId = chatId,
                 date = date,
@@ -1403,7 +1937,11 @@ class ChatThreadActivity : AppCompatActivity() {
         }
 
         val postState = DailyFactsStorage.load(this, date)
-        val postCandidates = CandidateUserFactsStorage.load(this, date)
+        val postCandidates = pruneKnownUserFactCandidates(
+            date = date,
+            candidateUserFacts = CandidateUserFactsStorage.load(this, date),
+            persistPrune = true,
+        )
         val followUp = buildQueueContinuationPrompt(postState, postCandidates)
 
         refreshDailyReviewQueueStatusAsync()
@@ -1414,13 +1952,72 @@ class ChatThreadActivity : AppCompatActivity() {
             "Got it. I updated the queue and prepared the next facts to review."
         }
         val assistantText = if (followUp.isNotBlank()) {
-            val alreadyContinues = baseAssistantText.contains("Next batch", ignoreCase = true) ||
-                baseAssistantText.contains("1)")
-            if (alreadyContinues) baseAssistantText else "$baseAssistantText\n\n$followUp"
+            "$baseAssistantText\n\n$followUp"
         } else {
             baseAssistantText
         }
         ChatStore.addMessage(chatId, ChatRole.ASSISTANT, assistantText)
+    }
+
+    private fun shouldApplyStructuredDailyReviewUpdate(userPrompt: String): Boolean {
+        val text = userPrompt.trim().lowercase(java.util.Locale.US)
+        if (text.isBlank()) return false
+
+        val hasExplicitId = Regex("\\b[du]\\s*\\d{1,3}\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        val hasConfirmWord = listOf(
+            "yes", "yep", "yeah", "confirm", "confirmed", "correct", "right", "approve", "approved", "true",
+        ).any { text.contains(it) }
+        val hasRejectWord = listOf(
+            "no", "nope", "reject", "rejected", "wrong", "false", "deny", "denied", "not correct",
+        ).any { text.contains(it) }
+        val hasDecisionWord = hasConfirmWord || hasRejectWord
+
+        val hasCollectiveDecision = hasDecisionWord && listOf(
+            "all", "both", "these", "those", "them", "all three", "all 3",
+        ).any { text.contains(it) }
+
+        val isNavigationOnly = listOf(
+            "next batch", "show next", "next", "continue", "move on", "skip", "more", "start daily facts review", "start review",
+        ).any { text.contains(it) } && !hasDecisionWord
+
+        if (isNavigationOnly) return false
+        if (hasExplicitId && hasDecisionWord) return true
+        if (hasCollectiveDecision) return true
+        return false
+    }
+
+    private fun appendDailyReviewDebugPayload(
+        chatId: String,
+        stage: String,
+        payload: String,
+    ) {
+        if (!isDailyFactsReview || !DAILY_REVIEW_DEBUG_VISIBLE) return
+        val trimmed = payload.trim()
+        if (trimmed.isBlank()) return
+        val clipped = trimmed.take(7000)
+        val message = buildString {
+            append(DAILY_REVIEW_DEBUG_PREFIX)
+            append(" ")
+            append(stage)
+            appendLine()
+            appendLine(clipped)
+            if (trimmed.length > clipped.length) {
+                appendLine("[debug payload truncated]")
+            }
+        }.trim()
+        ChatStore.addMessage(chatId, ChatRole.ASSISTANT, message)
+    }
+
+    private fun renderAiUpdateAsJson(update: DailyFactsReviewProtocol.AiUpdate): String {
+        val obj = JSONObject()
+        obj.put("assistant_message", update.assistantMessage)
+        obj.put("confirmed_facts", JSONArray(update.confirmedFacts))
+        obj.put("rejected_facts", JSONArray(update.rejectedFacts))
+        obj.put("new_facts", JSONArray(update.newFacts))
+        obj.put("confirmed_user_facts", JSONArray(update.confirmedUserFacts))
+        obj.put("rejected_user_facts", JSONArray(update.rejectedUserFacts))
+        obj.put("new_user_facts_candidates", JSONArray(update.newUserFactsCandidates))
+        return obj.toString(2)
     }
 
     private fun buildQueueContinuationPrompt(
@@ -1453,7 +2050,11 @@ class ChatThreadActivity : AppCompatActivity() {
     ): DailyFactsReviewProtocol.AiUpdate? {
         return runCatching {
             val state = DailyFactsStorage.load(this, date)
-            val candidateUserFacts = CandidateUserFactsStorage.load(this, date)
+            val candidateUserFacts = pruneKnownUserFactCandidates(
+                date = date,
+                candidateUserFacts = CandidateUserFactsStorage.load(this, date),
+                persistPrune = true,
+            )
             val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
             val mode = dailyReviewOutputMode()
 
@@ -1474,7 +2075,8 @@ class ChatThreadActivity : AppCompatActivity() {
                     appendLine("Convert the following daily-review assistant output into strict JSON only.")
                     appendLine("Return one JSON object with keys:")
                     appendLine("assistant_message, confirmed_facts, rejected_facts, new_facts, confirmed_user_facts, rejected_user_facts, new_user_facts_candidates")
-                    appendLine("Use only facts from provided batches for confirmed/rejected arrays.")
+                    appendLine("Use only IDs for confirmed/rejected arrays (D# for daily, U# for user).")
+                    appendLine("Use text content only for new_facts and new_user_facts_candidates.")
                 }
                 appendLine()
                 appendLine("DATE: $date")
@@ -1502,7 +2104,11 @@ class ChatThreadActivity : AppCompatActivity() {
 
         return runCatching {
             val state = DailyFactsStorage.load(this, date)
-            val candidateUserFacts = CandidateUserFactsStorage.load(this, date)
+            val candidateUserFacts = pruneKnownUserFactCandidates(
+                date = date,
+                candidateUserFacts = CandidateUserFactsStorage.load(this, date),
+                persistPrune = true,
+            )
             val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
             val mode = dailyReviewOutputMode()
 
@@ -1522,7 +2128,8 @@ class ChatThreadActivity : AppCompatActivity() {
                 } else {
                     appendLine("Return strict JSON only with keys:")
                     appendLine("assistant_message, confirmed_facts, rejected_facts, new_facts, confirmed_user_facts, rejected_user_facts, new_user_facts_candidates")
-                    appendLine("Use only provided batch facts for confirmed/rejected arrays.")
+                    appendLine("Use only IDs for confirmed/rejected arrays (D# for daily, U# for user).")
+                    appendLine("Use text content only for new_facts and new_user_facts_candidates.")
                 }
                 appendLine()
                 appendLine("CURRENT_DAILY_BATCH:")
@@ -1638,24 +2245,20 @@ class ChatThreadActivity : AppCompatActivity() {
         val rejectDaily = LinkedHashSet<String>()
         val confirmUser = LinkedHashSet<String>()
         val rejectUser = LinkedHashSet<String>()
+        val dailyIds = batch.daily.map { it.id.uppercase() }.toSet()
+        val userIds = batch.user.map { it.id.uppercase() }.toSet()
 
         fun applyForIds(ids: List<String>, confirm: Boolean) {
             ids.forEach { id ->
                 val normalized = id.uppercase()
                 when {
                     normalized.startsWith("D") -> {
-                        val idx = normalized.removePrefix("D").toIntOrNull() ?: return@forEach
-                        if (idx in 1..batch.daily.size) {
-                            val ref = "D$idx"
-                            if (confirm) confirmDaily += ref else rejectDaily += ref
-                        }
+                        if (!dailyIds.contains(normalized)) return@forEach
+                        if (confirm) confirmDaily += normalized else rejectDaily += normalized
                     }
                     normalized.startsWith("U") -> {
-                        val idx = normalized.removePrefix("U").toIntOrNull() ?: return@forEach
-                        if (idx in 1..batch.user.size) {
-                            val ref = "U$idx"
-                            if (confirm) confirmUser += ref else rejectUser += ref
-                        }
+                        if (!userIds.contains(normalized)) return@forEach
+                        if (confirm) confirmUser += normalized else rejectUser += normalized
                     }
                 }
             }
@@ -1701,10 +2304,12 @@ class ChatThreadActivity : AppCompatActivity() {
                 val hasReject = rejectWords.any { lower.contains(it) }
                 if (hasConfirm xor hasReject) {
                     if (batch.daily.size == 1) {
-                        if (hasConfirm) confirmDaily += "D1" else rejectDaily += "D1"
+                        val onlyDailyId = batch.daily.first().id
+                        if (hasConfirm) confirmDaily += onlyDailyId else rejectDaily += onlyDailyId
                     }
                     if (batch.user.size == 1) {
-                        if (hasConfirm) confirmUser += "U1" else rejectUser += "U1"
+                        val onlyUserId = batch.user.first().id
+                        if (hasConfirm) confirmUser += onlyUserId else rejectUser += onlyUserId
                     }
                 }
             }
@@ -1741,7 +2346,15 @@ class ChatThreadActivity : AppCompatActivity() {
             binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
             return
         }
-        val stored = ChatStore.listMessages(cid)
+        val storedRaw = ChatStore.listMessages(cid)
+        val stored = if (DAILY_REVIEW_DEBUG_VISIBLE) {
+            storedRaw
+        } else {
+            storedRaw.filterNot { message ->
+                message.role == ChatRole.ASSISTANT &&
+                    message.content.startsWith(DAILY_REVIEW_DEBUG_PREFIX)
+            }
+        }
         val draft = streamingAssistantDraft
         val layoutManager = binding.recyclerMessages.layoutManager as? LinearLayoutManager
         val previousCount = adapter.itemCount
@@ -1779,22 +2392,25 @@ class ChatThreadActivity : AppCompatActivity() {
     private fun refreshDailyReviewQueueStatusAsync() {
         if (!isDailyFactsReview) {
             binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
             return
         }
 
         val date = dailyFactsDate?.trim().orEmpty()
         if (date.isBlank()) {
             binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
             return
         }
 
         lifecycleScope.launch(Dispatchers.IO) {
             val state = runCatching { DailyFactsStorage.load(this@ChatThreadActivity, date) }
                 .getOrNull()
-            val candidateUserFacts = runCatching { CandidateUserFactsStorage.load(this@ChatThreadActivity, date) }
+            val candidateUserFactsRaw = runCatching { CandidateUserFactsStorage.load(this@ChatThreadActivity, date) }
                 .getOrElse { emptyList() }
+            val candidateUserFacts = pruneKnownUserFactCandidates(
+                date = date,
+                candidateUserFacts = candidateUserFactsRaw,
+                persistPrune = true,
+            )
 
             val draftCount = state?.draft?.size ?: 0
             val confirmedCount = state?.confirmed?.size ?: 0
@@ -1810,121 +2426,8 @@ class ChatThreadActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 binding.tvDailyReviewQueueStatus.visibility = android.view.View.VISIBLE
                 binding.tvDailyReviewQueueStatus.text = text
-                renderDailyReviewQuickActions(
-                    state = state,
-                    candidateUserFacts = candidateUserFacts,
-                )
             }
         }
-    }
-
-    private fun renderDailyReviewQuickActions(
-        state: DailyFactsStorage.State?,
-        candidateUserFacts: List<String>,
-    ) {
-        if (!isDailyFactsReview || state == null || !isLocalModelsProviderSelected()) {
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
-            binding.containerDailyReviewCandidates.removeAllViews()
-            return
-        }
-
-        val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
-        val daily = batch.daily
-        val user = batch.user
-        if (daily.isEmpty() && user.isEmpty()) {
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
-            binding.containerDailyReviewCandidates.removeAllViews()
-            return
-        }
-
-        binding.containerDailyReviewCandidates.removeAllViews()
-        binding.layoutDailyReviewCandidates.visibility = View.VISIBLE
-
-        val all = daily + user
-        all.forEach { item ->
-            val card = android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                setPadding(10, 10, 10, 10)
-                background = getDrawable(R.drawable.bg_bubble_received)
-            }
-
-            val text = android.widget.TextView(this).apply {
-                this.text = "${item.id}) ${item.text.take(220)}"
-                setTextColor(getColor(R.color.text_primary))
-                textSize = 12f
-            }
-
-            val actions = android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.HORIZONTAL
-                setPadding(0, 8, 0, 0)
-            }
-
-            val accept = android.widget.Button(this).apply {
-                this.text = "Accept"
-                setOnClickListener {
-                    if (localGenerationRunning) return@setOnClickListener
-                    applyLocalDailyReviewDecision(item = item, accepted = true)
-                }
-            }
-
-            val reject = android.widget.Button(this).apply {
-                this.text = "Reject"
-                setOnClickListener {
-                    if (localGenerationRunning) return@setOnClickListener
-                    applyLocalDailyReviewDecision(item = item, accepted = false)
-                }
-            }
-
-            actions.addView(accept)
-            actions.addView(reject)
-
-            card.addView(text)
-            card.addView(actions)
-
-            val lp = android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                bottomMargin = 8
-            }
-            binding.containerDailyReviewCandidates.addView(card, lp)
-        }
-    }
-
-    private fun applyLocalDailyReviewDecision(
-        item: ReviewBatchItem,
-        accepted: Boolean,
-    ) {
-        val cid = chatId ?: return
-        val date = dailyFactsDate ?: return
-
-        if (item.id.startsWith("D", ignoreCase = true)) {
-            if (accepted) {
-                DailyFactsStorage.appendConfirmed(this, date, listOf(item.text))
-            }
-            DailyFactsStorage.removeFromDraft(this, date, listOf(item.text))
-        } else if (item.id.startsWith("U", ignoreCase = true)) {
-            CandidateUserFactsStorage.remove(this, date, listOf(item.text))
-            if (accepted) {
-                UserFactsStorage.appendUniqueFacts(this, listOf(item.text))
-            }
-        }
-
-        ChatStore.addMessage(cid, ChatRole.USER, "${item.id} ${if (accepted) "yes" else "no"}")
-
-        val postState = DailyFactsStorage.load(this, date)
-        val postCandidates = CandidateUserFactsStorage.load(this, date)
-        val followUp = buildQueueContinuationPrompt(postState, postCandidates)
-        val ack = if (accepted) {
-            "Accepted ${item.id}."
-        } else {
-            "Rejected ${item.id}."
-        }
-        val assistant = if (followUp.isBlank()) ack else "$ack\n\n$followUp"
-        ChatStore.addMessage(cid, ChatRole.ASSISTANT, assistant)
-
-        refreshMessages()
-        refreshDailyReviewQueueStatusAsync()
     }
 
     private fun setupBottomNavigation() {
@@ -1997,6 +2500,11 @@ class ChatThreadActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val DAILY_REVIEW_DEBUG_PREFIX = "[DEBUG_DAILY_REVIEW]"
+        private const val DAILY_REVIEW_DEBUG_VISIBLE = false
+        private const val AUDIO_SAMPLE_RATE_HZ = 16_000
+        private const val WAV_HEADER_BYTES = 44
+
         const val EXTRA_CHAT_ID = "chat_id"
 
         // If EXTRA_CHAT_ID is missing, ChatThreadActivity can create a new thread.

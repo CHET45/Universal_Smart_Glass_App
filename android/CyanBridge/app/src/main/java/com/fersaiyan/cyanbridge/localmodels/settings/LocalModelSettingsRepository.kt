@@ -43,11 +43,11 @@ object LocalModelSettingsRepository {
             topK = existing.optInt("top_k", defaults.topK)
                 .coerceIn(0, 200),
             maxTokens = existing.optInt("max_tokens", defaults.maxTokens)
-                .coerceIn(32, 2048),
+                .coerceIn(LocalGenerationSettings.MIN_MAX_TOKENS, LocalGenerationSettings.MAX_MAX_TOKENS),
             repetitionPenalty = existing.optDouble("repetition_penalty", defaults.repetitionPenalty)
                 .coerceIn(0.8, 2.0),
             contextSize = existing.optInt("context_size", defaults.contextSize)
-                .coerceIn(1024, 8192),
+                .coerceIn(LocalGenerationSettings.MIN_CONTEXT_SIZE, LocalGenerationSettings.MAX_CONTEXT_SIZE),
             seed = existing.optInt("seed", defaults.seed),
             systemPromptOverride = existing.optString("system_prompt_override", defaults.systemPromptOverride),
             templateOverrideId = existing.optString("template_override", "").ifBlank { null },

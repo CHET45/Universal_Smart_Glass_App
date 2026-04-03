@@ -40,7 +40,7 @@ object LocalModelsPrefs {
 
     fun getMaxTokens(context: Context): Int {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getInt(KEY_MAX_TOKENS, 2048)
+            .getInt(KEY_MAX_TOKENS, 4096)
     }
 
     fun setMaxTokens(context: Context, maxTokens: Int) {
