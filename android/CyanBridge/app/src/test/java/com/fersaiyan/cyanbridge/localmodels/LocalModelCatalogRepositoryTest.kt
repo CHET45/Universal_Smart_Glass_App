@@ -12,17 +12,22 @@ class LocalModelCatalogRepositoryTest {
         val ids = LocalModelCatalogRepository.curatedModels.map { it.id }.toSet()
         assertTrue(ids.contains("qwen2.5-0.5b-instruct-q4"))
         assertTrue(ids.contains("qwen2.5-1.5b-instruct-q4"))
-        assertTrue(ids.contains("qwen3.5-0.8b-q4"))
-        assertTrue(ids.contains("gemma-3-1b-it-q4"))
+        assertTrue(ids.contains("gemma4-e2b-it-litert"))
+        assertTrue(ids.contains("gemma4-e4b-it-litert"))
     }
 
     @Test
-    fun every_catalog_entry_has_local_gguf_contract() {
+    fun every_catalog_entry_has_consistent_runtime_contract() {
         LocalModelCatalogRepository.curatedModels.forEach { entry ->
             assertEquals("local", entry.providerType)
-            assertEquals("llama", entry.engine)
-            assertEquals("gguf", entry.format)
-            assertTrue(entry.expectedFilename.endsWith(".gguf"))
+            if (entry.engine == "litert") {
+                assertEquals("litertlm", entry.format)
+                assertTrue(entry.expectedFilename.endsWith(".litertlm"))
+            } else {
+                assertEquals("llama", entry.engine)
+                assertEquals("gguf", entry.format)
+                assertTrue(entry.expectedFilename.endsWith(".gguf"))
+            }
             assertTrue(entry.contextSizeDefault >= 2048)
         }
     }

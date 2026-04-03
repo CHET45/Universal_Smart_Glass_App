@@ -1,9 +1,13 @@
 package com.fersaiyan.cyanbridge.ui
 
+import android.Manifest
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -49,6 +53,8 @@ import com.fersaiyan.cyanbridge.ui.chat.ThinkingIndicatorController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 
@@ -68,11 +74,48 @@ class ChatThreadActivity : AppCompatActivity() {
     private var localTitleGenerationInProgress: Boolean = false
     private var streamingAssistantDraft: String? = null
     private val queuedLocalPrompts = java.util.ArrayDeque<QueuedLocalPrompt>()
+    private val pendingImagePaths = mutableListOf<String>()
+    private var pendingAudioPath: String? = null
+    private var mediaRecorder: MediaRecorder? = null
+    private var mediaRecordingFilePath: String? = null
+    private var isMediaRecording = false
+    private var recordStopRunnable: Runnable? = null
 
     private data class QueuedLocalPrompt(
         val chatId: String,
         val userPrompt: String,
+        val imagePaths: List<String> = emptyList(),
+        val audioPath: String? = null,
     )
+
+    private val pickChatImageLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        runCatching {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        runCatching {
+            val copied = copyUriToChatAttachment(uri, "image")
+            pendingImagePaths += copied.absolutePath
+            updatePendingAttachmentsUi()
+        }.onFailure {
+            android.widget.Toast.makeText(this, "Failed to attach image", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val requestAudioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            startAudioRecording()
+        } else {
+            android.widget.Toast.makeText(this, "Microphone permission is required to record audio", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val pickWallpaperLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -172,7 +215,11 @@ class ChatThreadActivity : AppCompatActivity() {
             }
 
             val text = binding.inputMessage.text.toString().trim()
-            if (text.isNotEmpty()) {
+            if (isMediaRecording) {
+                stopAudioRecording(saveAsAttachment = true)
+            }
+            val hasMedia = pendingImagePaths.isNotEmpty() || !pendingAudioPath.isNullOrBlank()
+            if (text.isNotEmpty() || hasMedia) {
                 if (isLocalModelsProviderSelected() && localTitleGenerationInProgress && !isDailyFactsReview) {
                     enqueueLocalPrompt(text)
                 } else {
@@ -180,6 +227,38 @@ class ChatThreadActivity : AppCompatActivity() {
                 }
                 binding.inputMessage.text?.clear()
             }
+        }
+
+        binding.btnAttachMedia.setOnClickListener {
+            if (!isLocalModelsProviderSelected()) {
+                android.widget.Toast.makeText(
+                    this,
+                    "Media attachments are available for local models with LiteRT runtime.",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+                return@setOnClickListener
+            }
+            pickChatImageLauncher.launch(arrayOf("image/*"))
+        }
+
+        binding.btnRecordAudio.setOnClickListener {
+            if (!isLocalModelsProviderSelected()) {
+                android.widget.Toast.makeText(
+                    this,
+                    "Audio attachments are available for local models with LiteRT runtime.",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+                return@setOnClickListener
+            }
+            if (isMediaRecording) {
+                stopAudioRecording(saveAsAttachment = true)
+            } else {
+                ensureAudioPermissionAndStartRecording()
+            }
+        }
+
+        binding.btnClearAttachments.setOnClickListener {
+            clearPendingAttachments()
         }
 
         // Optional intent-driven prefill.
@@ -193,6 +272,7 @@ class ChatThreadActivity : AppCompatActivity() {
         observeDailySummaryQueueProgress()
         refreshMessages()
         refreshDailyReviewQueueStatusAsync()
+        updatePendingAttachmentsUi()
 
         // Auto-kickoff daily facts review.
         val cid = chatId
@@ -215,6 +295,9 @@ class ChatThreadActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         thinkingIndicator?.hide()
+        if (isMediaRecording) {
+            stopAudioRecording(saveAsAttachment = true)
+        }
         if (localGenerationRunning) {
             lifecycleScope.launch {
                 RelayAiAssistantRouter.cancelCurrentGeneration(this@ChatThreadActivity)
@@ -598,6 +681,8 @@ class ChatThreadActivity : AppCompatActivity() {
             binding.btnSend.setImageResource(android.R.drawable.ic_media_pause)
             binding.btnSend.contentDescription = "Stop generation"
             binding.inputMessage.isEnabled = false
+            binding.btnAttachMedia.isEnabled = false
+            binding.btnRecordAudio.isEnabled = false
             binding.btnSend.isEnabled = true
         } else {
             val localModelMissing = isLocalModelsProviderSelected() && !hasLocalModelAvailable()
@@ -605,12 +690,16 @@ class ChatThreadActivity : AppCompatActivity() {
                 binding.btnSend.setImageResource(android.R.drawable.ic_menu_manage)
                 binding.btnSend.contentDescription = "Configure local model"
                 binding.inputMessage.isEnabled = true
+                binding.btnAttachMedia.isEnabled = false
+                binding.btnRecordAudio.isEnabled = false
                 binding.inputLayout.hint = "Install/select a local model to start chatting"
                 binding.btnSend.isEnabled = true
             } else {
                 binding.btnSend.setImageResource(android.R.drawable.ic_menu_send)
                 binding.btnSend.contentDescription = "Send"
                 binding.inputMessage.isEnabled = true
+                binding.btnAttachMedia.isEnabled = isLocalModelsProviderSelected()
+                binding.btnRecordAudio.isEnabled = isLocalModelsProviderSelected()
                 binding.inputLayout.hint = "Message"
                 binding.btnSend.isEnabled = true
             }
@@ -628,30 +717,198 @@ class ChatThreadActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun formatUserMessageWithMedia(
+        text: String,
+        imagePaths: List<String>,
+        audioPath: String?,
+    ): String {
+        val suffix = buildString {
+            if (imagePaths.isNotEmpty()) {
+                append("\n[Attached ${imagePaths.size} image(s)]")
+            }
+            if (!audioPath.isNullOrBlank()) {
+                append("\n[Attached voice note]")
+            }
+        }
+        return (text + suffix).trim()
+    }
+
+    private fun clearPendingAttachments() {
+        pendingImagePaths.clear()
+        pendingAudioPath = null
+        updatePendingAttachmentsUi()
+    }
+
+    private fun updatePendingAttachmentsUi() {
+        val imageCount = pendingImagePaths.size
+        val hasAudio = !pendingAudioPath.isNullOrBlank()
+        if (imageCount == 0 && !hasAudio) {
+            binding.layoutPendingAttachments.visibility = View.GONE
+            binding.btnRecordAudio.setImageResource(android.R.drawable.ic_btn_speak_now)
+            return
+        }
+
+        val text = buildString {
+            if (imageCount > 0) append("$imageCount image(s)")
+            if (hasAudio) {
+                if (isNotBlank()) append(" · ")
+                append("voice note")
+            }
+            append(" attached")
+        }
+        binding.layoutPendingAttachments.visibility = View.VISIBLE
+        binding.tvPendingAttachments.text = text
+        binding.btnRecordAudio.setImageResource(
+            if (isMediaRecording) android.R.drawable.ic_media_pause else android.R.drawable.ic_btn_speak_now,
+        )
+    }
+
+    private fun ensureAudioPermissionAndStartRecording() {
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            startAudioRecording()
+        } else {
+            requestAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun startAudioRecording() {
+        if (isMediaRecording) return
+        stopAudioRecording(saveAsAttachment = false)
+
+        val outFile = File(chatAttachmentDir(), "voice_${System.currentTimeMillis()}.m4a")
+        mediaRecordingFilePath = outFile.absolutePath
+        val recorder = if (android.os.Build.VERSION.SDK_INT >= 31) {
+            MediaRecorder(this)
+        } else {
+            MediaRecorder()
+        }
+
+        try {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioSamplingRate(16000)
+            recorder.setAudioEncodingBitRate(96_000)
+            recorder.setOutputFile(outFile.absolutePath)
+            recorder.prepare()
+            recorder.start()
+
+            mediaRecorder = recorder
+            isMediaRecording = true
+            updatePendingAttachmentsUi()
+            android.widget.Toast.makeText(this, "Recording... up to 30 seconds", android.widget.Toast.LENGTH_SHORT).show()
+
+            recordStopRunnable?.let { binding.root.removeCallbacks(it) }
+            recordStopRunnable = Runnable {
+                stopAudioRecording(saveAsAttachment = true)
+            }.also { binding.root.postDelayed(it, 30_000L) }
+        } catch (t: Throwable) {
+            runCatching { recorder.release() }
+            mediaRecorder = null
+            isMediaRecording = false
+            mediaRecordingFilePath = null
+            updatePendingAttachmentsUi()
+            android.widget.Toast.makeText(this, "Unable to start recording", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun stopAudioRecording(saveAsAttachment: Boolean) {
+        recordStopRunnable?.let { binding.root.removeCallbacks(it) }
+        recordStopRunnable = null
+
+        val recorder = mediaRecorder
+        mediaRecorder = null
+        val path = mediaRecordingFilePath
+        mediaRecordingFilePath = null
+
+        if (recorder != null) {
+            runCatching { recorder.stop() }
+            runCatching { recorder.release() }
+        }
+
+        isMediaRecording = false
+        if (saveAsAttachment && !path.isNullOrBlank()) {
+            pendingAudioPath = path
+            android.widget.Toast.makeText(this, "Voice note attached", android.widget.Toast.LENGTH_SHORT).show()
+        } else if (!path.isNullOrBlank()) {
+            runCatching { File(path).delete() }
+        }
+        updatePendingAttachmentsUi()
+    }
+
+    private fun copyUriToChatAttachment(uri: Uri, kind: String): File {
+        val ext = when {
+            kind == "image" -> "jpg"
+            else -> "bin"
+        }
+        val out = File(chatAttachmentDir(), "${kind}_${System.currentTimeMillis()}.$ext")
+        contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(out).use { output ->
+                input.copyTo(output)
+            }
+        } ?: throw IllegalStateException("Cannot open attachment")
+        return out
+    }
+
+    private fun chatAttachmentDir(): File {
+        val dir = File(cacheDir, "chat_attachments")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
     private fun sendMessage(text: String) {
         val cid = ensureChatThread()
+        val images = pendingImagePaths.toList()
+        val audio = pendingAudioPath
+        val promptText = text.ifBlank {
+            if (images.isNotEmpty() || !audio.isNullOrBlank()) {
+                "Please analyze the attached media."
+            } else {
+                ""
+            }
+        }
+        if (promptText.isBlank()) return
 
         val shouldGenerateSmartTitle = ChatStore.listMessages(cid).isEmpty()
-        ChatStore.addMessage(cid, ChatRole.USER, text)
+        ChatStore.addMessage(cid, ChatRole.USER, formatUserMessageWithMedia(promptText, images, audio))
         refreshMessages()
+        clearPendingAttachments()
 
         startAssistantGeneration(
             chatId = cid,
-            userPrompt = text,
+            userPrompt = promptText,
+            imagePaths = images,
+            audioPath = audio,
             requestSmartTitleAfterReply = shouldGenerateSmartTitle,
         )
     }
 
     private fun enqueueLocalPrompt(text: String) {
         val cid = ensureChatThread()
-        ChatStore.addMessage(cid, ChatRole.USER, text)
+        val images = pendingImagePaths.toList()
+        val audio = pendingAudioPath
+        val promptText = text.ifBlank {
+            if (images.isNotEmpty() || !audio.isNullOrBlank()) {
+                "Please analyze the attached media."
+            } else {
+                ""
+            }
+        }
+        if (promptText.isBlank()) return
+
+        ChatStore.addMessage(cid, ChatRole.USER, formatUserMessageWithMedia(promptText, images, audio))
         refreshMessages()
         queuedLocalPrompts.addLast(
             QueuedLocalPrompt(
                 chatId = cid,
-                userPrompt = text,
+                userPrompt = promptText,
+                imagePaths = images,
+                audioPath = audio,
             ),
         )
+        clearPendingAttachments()
         refreshModelBadge("Queued")
         android.widget.Toast.makeText(
             this,
@@ -674,6 +931,8 @@ class ChatThreadActivity : AppCompatActivity() {
     private fun startAssistantGeneration(
         chatId: String,
         userPrompt: String,
+        imagePaths: List<String> = emptyList(),
+        audioPath: String? = null,
         requestSmartTitleAfterReply: Boolean,
         onFinished: (() -> Unit)? = null,
     ) {
@@ -696,6 +955,8 @@ class ChatThreadActivity : AppCompatActivity() {
                         chatId = chatId,
                         userPrompt = userPrompt,
                         messages = messages,
+                        imagePaths = imagePaths,
+                        audioPath = audioPath,
                         callbacks = if (useLocalStreaming) {
                             object : RelayAiAssistantRouter.ChatStreamCallbacks {
                                 override fun onStatus(status: String) {
@@ -930,6 +1191,8 @@ class ChatThreadActivity : AppCompatActivity() {
         startAssistantGeneration(
             chatId = next.chatId,
             userPrompt = next.userPrompt,
+            imagePaths = next.imagePaths,
+            audioPath = next.audioPath,
             requestSmartTitleAfterReply = false,
             onFinished = { drainQueuedLocalPrompts() },
         )
@@ -1209,11 +1472,7 @@ class ChatThreadActivity : AppCompatActivity() {
     }
 
     private fun dailyReviewOutputMode(): DailyFactsReviewProtocol.OutputMode {
-        return if (isLocalModelsProviderSelected()) {
-            DailyFactsReviewProtocol.OutputMode.LINE_IDS
-        } else {
-            DailyFactsReviewProtocol.OutputMode.JSON
-        }
+        return DailyFactsReviewProtocol.OutputMode.JSON
     }
 
     private fun buildLocalAgentContextBuilder(maxTotalChars: Int): LocalAgentContextBuilder {
@@ -1779,14 +2038,12 @@ class ChatThreadActivity : AppCompatActivity() {
     private fun refreshDailyReviewQueueStatusAsync() {
         if (!isDailyFactsReview) {
             binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
             return
         }
 
         val date = dailyFactsDate?.trim().orEmpty()
         if (date.isBlank()) {
             binding.tvDailyReviewQueueStatus.visibility = android.view.View.GONE
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
             return
         }
 
@@ -1810,121 +2067,8 @@ class ChatThreadActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 binding.tvDailyReviewQueueStatus.visibility = android.view.View.VISIBLE
                 binding.tvDailyReviewQueueStatus.text = text
-                renderDailyReviewQuickActions(
-                    state = state,
-                    candidateUserFacts = candidateUserFacts,
-                )
             }
         }
-    }
-
-    private fun renderDailyReviewQuickActions(
-        state: DailyFactsStorage.State?,
-        candidateUserFacts: List<String>,
-    ) {
-        if (!isDailyFactsReview || state == null || !isLocalModelsProviderSelected()) {
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
-            binding.containerDailyReviewCandidates.removeAllViews()
-            return
-        }
-
-        val batch = buildDailyFactsReviewBatch(state, candidateUserFacts)
-        val daily = batch.daily
-        val user = batch.user
-        if (daily.isEmpty() && user.isEmpty()) {
-            binding.layoutDailyReviewCandidates.visibility = View.GONE
-            binding.containerDailyReviewCandidates.removeAllViews()
-            return
-        }
-
-        binding.containerDailyReviewCandidates.removeAllViews()
-        binding.layoutDailyReviewCandidates.visibility = View.VISIBLE
-
-        val all = daily + user
-        all.forEach { item ->
-            val card = android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                setPadding(10, 10, 10, 10)
-                background = getDrawable(R.drawable.bg_bubble_received)
-            }
-
-            val text = android.widget.TextView(this).apply {
-                this.text = "${item.id}) ${item.text.take(220)}"
-                setTextColor(getColor(R.color.text_primary))
-                textSize = 12f
-            }
-
-            val actions = android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.HORIZONTAL
-                setPadding(0, 8, 0, 0)
-            }
-
-            val accept = android.widget.Button(this).apply {
-                this.text = "Accept"
-                setOnClickListener {
-                    if (localGenerationRunning) return@setOnClickListener
-                    applyLocalDailyReviewDecision(item = item, accepted = true)
-                }
-            }
-
-            val reject = android.widget.Button(this).apply {
-                this.text = "Reject"
-                setOnClickListener {
-                    if (localGenerationRunning) return@setOnClickListener
-                    applyLocalDailyReviewDecision(item = item, accepted = false)
-                }
-            }
-
-            actions.addView(accept)
-            actions.addView(reject)
-
-            card.addView(text)
-            card.addView(actions)
-
-            val lp = android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                bottomMargin = 8
-            }
-            binding.containerDailyReviewCandidates.addView(card, lp)
-        }
-    }
-
-    private fun applyLocalDailyReviewDecision(
-        item: ReviewBatchItem,
-        accepted: Boolean,
-    ) {
-        val cid = chatId ?: return
-        val date = dailyFactsDate ?: return
-
-        if (item.id.startsWith("D", ignoreCase = true)) {
-            if (accepted) {
-                DailyFactsStorage.appendConfirmed(this, date, listOf(item.text))
-            }
-            DailyFactsStorage.removeFromDraft(this, date, listOf(item.text))
-        } else if (item.id.startsWith("U", ignoreCase = true)) {
-            CandidateUserFactsStorage.remove(this, date, listOf(item.text))
-            if (accepted) {
-                UserFactsStorage.appendUniqueFacts(this, listOf(item.text))
-            }
-        }
-
-        ChatStore.addMessage(cid, ChatRole.USER, "${item.id} ${if (accepted) "yes" else "no"}")
-
-        val postState = DailyFactsStorage.load(this, date)
-        val postCandidates = CandidateUserFactsStorage.load(this, date)
-        val followUp = buildQueueContinuationPrompt(postState, postCandidates)
-        val ack = if (accepted) {
-            "Accepted ${item.id}."
-        } else {
-            "Rejected ${item.id}."
-        }
-        val assistant = if (followUp.isBlank()) ack else "$ack\n\n$followUp"
-        ChatStore.addMessage(cid, ChatRole.ASSISTANT, assistant)
-
-        refreshMessages()
-        refreshDailyReviewQueueStatusAsync()
     }
 
     private fun setupBottomNavigation() {

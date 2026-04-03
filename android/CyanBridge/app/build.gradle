@@ -132,7 +132,7 @@ dependencies {
     }
 
     // LiteRT runtime for local models (Google's inference engine)
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.9.0")
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.10.0")
 
     // Offline transcription fallback (Moonshine; vendored module)
     implementation project(":moonshine-voice")

@@ -26,6 +26,8 @@ class LocalModelsProvider {
         messages: List<Map<String, String>>,
         onStatus: ((String) -> Unit)? = null,
         onToken: ((String) -> Unit)? = null,
+        imagePaths: List<String> = emptyList(),
+        audioPath: String? = null,
         requestPriority: LocalModelRequestPriority = LocalModelRequestPriority.HIGH,
     ): String {
         return withContext(Dispatchers.IO) {
@@ -78,6 +80,8 @@ class LocalModelsProvider {
                 settings = settings,
                 prompt = prompt,
                 onToken = { token -> onToken?.invoke(token) },
+                imagePaths = imagePaths,
+                audioPath = audioPath,
                 requestPriority = requestPriority,
             )
 
@@ -109,6 +113,8 @@ class LocalModelsProvider {
                 settings = settings,
                 prompt = prompt,
                 onToken = { token -> onToken?.invoke(token) },
+                imagePaths = imagePaths,
+                audioPath = audioPath,
                 requestPriority = requestPriority,
             )
 

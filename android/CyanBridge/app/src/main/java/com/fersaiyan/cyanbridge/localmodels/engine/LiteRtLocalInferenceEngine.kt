@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CONTEXT) : LocalInferenceEngine {
     private val mutex = Mutex()
@@ -46,19 +47,19 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
         val loadOutcome = withContext(Dispatchers.IO) {
             if (config.computeBackend == LocalComputeBackend.GPU_EXPERIMENTAL) {
                 runCatching {
-                    createInitializedEngine(modelPath, Backend.GPU()) to EngineLoadResult(
+                    createInitializedEngine(modelPath, Backend.GPU(), config.contextSize) to EngineLoadResult(
                         activeBackend = LocalComputeBackend.GPU_EXPERIMENTAL,
                         activeGpuLayers = config.gpuLayers.coerceAtLeast(0),
                     )
                 }.recoverCatching { gpuErr ->
-                    createInitializedEngine(modelPath, Backend.CPU(config.cpuThreads)) to EngineLoadResult(
+                    createInitializedEngine(modelPath, Backend.CPU(config.cpuThreads), config.contextSize) to EngineLoadResult(
                         activeBackend = LocalComputeBackend.CPU,
                         activeGpuLayers = 0,
                         fallbackReason = "LiteRT GPU backend unavailable (${compactError(gpuErr)}). Fell back to CPU.",
                     )
                 }.getOrThrow()
             } else {
-                createInitializedEngine(modelPath, Backend.CPU(config.cpuThreads)) to EngineLoadResult(
+                createInitializedEngine(modelPath, Backend.CPU(config.cpuThreads), config.contextSize) to EngineLoadResult(
                     activeBackend = LocalComputeBackend.CPU,
                     activeGpuLayers = 0,
                 )
@@ -77,13 +78,13 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
         }
     }
 
-    private fun createInitializedEngine(modelPath: String, backend: Backend): Engine {
+    private fun createInitializedEngine(modelPath: String, backend: Backend, maxNumTokens: Int): Engine {
         val config = EngineConfig(
             modelPath = modelPath,
             backend = backend,
             visionBackend = null,
             audioBackend = null,
-            maxNumTokens = null,
+            maxNumTokens = maxNumTokens.coerceAtLeast(1024),
             cacheDir = context.cacheDir.path,
         )
         return Engine(config).also { it.initialize() }
@@ -117,8 +118,13 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
             val text = withContext(Dispatchers.IO) {
                 var lastText = ""
                 var finalText = ""
+                val userContents = buildUserContents(config)
 
-                val stream = conversation.sendMessageAsync(config.prompt, emptyMap<String, Any>())
+                val stream = if (userContents != null) {
+                    conversation.sendMessageAsync(userContents, emptyMap<String, Any>())
+                } else {
+                    conversation.sendMessageAsync(config.prompt, emptyMap<String, Any>())
+                }
                 stream.collect { message ->
                     val current = extractText(message)
                     if (current.isBlank()) return@collect
@@ -131,7 +137,11 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
                 }
 
                 if (finalText.isBlank()) {
-                    val fallback = extractText(conversation.sendMessage(config.prompt, emptyMap<String, Any>()))
+                    val fallback = if (userContents != null) {
+                        extractText(conversation.sendMessage(userContents, emptyMap<String, Any>()))
+                    } else {
+                        extractText(conversation.sendMessage(config.prompt, emptyMap<String, Any>()))
+                    }
                     if (fallback.isNotBlank()) {
                         onToken(fallback)
                     }
@@ -197,6 +207,34 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
                 }
             }
         return if (chunks.isNotEmpty()) chunks.joinToString(separator = "") else message.toString()
+    }
+
+    private fun buildUserContents(config: GenerationConfig): Contents? {
+        val hasImage = config.imagePaths.isNotEmpty()
+        val hasAudio = !config.audioPath.isNullOrBlank()
+        if (!hasImage && !hasAudio) return null
+
+        val parts = ArrayList<Content>()
+        parts += Content.Text(config.prompt)
+
+        config.imagePaths.forEach { rawPath ->
+            val path = rawPath.trim()
+            if (path.isBlank()) return@forEach
+            val file = File(path)
+            if (file.exists()) {
+                parts += Content.ImageFile(file.absolutePath)
+            }
+        }
+
+        config.audioPath?.trim()?.takeIf { it.isNotBlank() }?.let { path ->
+            val file = File(path)
+            if (file.exists()) {
+                parts += Content.AudioFile(file.absolutePath)
+            }
+        }
+
+        if (parts.size <= 1) return null
+        return Contents.Companion.of(parts)
     }
 
     private fun closeConversationLocked() {

@@ -1,10 +1,11 @@
 # Local Models in HeyCyan
 
-This app supports fully offline on-device chat inference with GGUF models using llama.cpp.
+This app supports fully offline on-device chat inference with both GGUF (llama.cpp) and LiteRT-LM model packages.
 
 ## Supported format
 
-- `GGUF` model files (`.gguf`) only.
+- `GGUF` model files (`.gguf`) for llama.cpp runtime.
+- LiteRT-LM model bundles (`.litertlm`) and LiteRT task bundles (`.task`) for LiteRT runtime.
 
 ## Where models are stored
 
@@ -14,25 +15,26 @@ This app supports fully offline on-device chat inference with GGUF models using 
 ## Current local backend
 
 - llama.cpp via Android binding (`llamacpp-kotlin`)
+- LiteRT-LM via Android SDK (`com.google.ai.edge.litertlm:litertlm-android`)
 - One active local model per session (loaded on demand, unloaded when requested)
 
 ## Curated starter catalog
 
 - Qwen2.5 0.5B Instruct (Q4)
-- Qwen3.5 0.8B (Q4, manual import fallback)
-- Gemma 3 1B Instruct (gated/manual import)
+- Gemma 4 E2B IT (LiteRT-LM)
+- Gemma 4 E4B IT (LiteRT-LM)
 - Qwen2.5 1.5B Instruct (Q4)
 
 ## Gemma gating behavior
 
-- Gemma entries are marked as gated.
-- UI shows terms note and manual import path.
+- Current curated Gemma 4 LiteRT entries are direct downloads.
+- Gated-model UI and token support remains available for future gated entries.
 - Optional Hugging Face token field is available in Local Models settings for future gated integrations.
 
 ## How to use
 
 1. Open Settings -> AI / Automation -> Configure Local Models.
-2. Download a curated model or import a local `.gguf` file.
+2. Download a curated model or import a local `.gguf` / `.litertlm` file.
 3. Select "Local Models" as provider.
 4. Open Chat and send a message.
 
@@ -100,5 +102,5 @@ Each entry should include:
 ## Known limitations
 
 - Structured JSON mode is experimental and grammar-constrained; output can still fail to parse in some prompts.
-- No vision support in local provider yet.
+- Multimodal image/audio input is currently supported on LiteRT models; llama.cpp remains text-only.
 - Download pause/resume is not implemented; cancel is supported.

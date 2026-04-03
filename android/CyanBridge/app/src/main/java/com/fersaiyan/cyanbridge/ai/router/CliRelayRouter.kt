@@ -609,6 +609,8 @@ object AiAssistantRouter {
             chatId = chatId,
             userPrompt = userPrompt,
             messages = messages,
+            imagePaths = emptyList(),
+            audioPath = null,
             callbacks = null,
         )
     }
@@ -618,6 +620,8 @@ object AiAssistantRouter {
         chatId: String,
         userPrompt: String,
         messages: List<Map<String, String>>,
+        imagePaths: List<String>,
+        audioPath: String?,
         callbacks: ChatStreamCallbacks?,
     ): String {
         val providerType = AiProviderPrefs.getProvider(context)
@@ -651,6 +655,8 @@ object AiAssistantRouter {
                     messages = messages,
                     onStatus = { callbacks?.onStatus(it) },
                     onToken = { callbacks?.onToken(it) },
+                    imagePaths = imagePaths,
+                    audioPath = audioPath,
                 )
             }
         }

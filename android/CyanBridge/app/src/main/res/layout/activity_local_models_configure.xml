@@ -251,7 +251,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
-                            android:text="Some Gemma entries are gated on Hugging Face. Add your token below after accepting model terms."
+                            android:text="Some model families may require accepted terms or a Hugging Face token."
                             android:textColor="@color/text_secondary"
                             android:textSize="12sp" />
                     </LinearLayout>

@@ -24,6 +24,8 @@ data class GenerationConfig(
     val repetitionPenalty: Double,
     val seed: Int,
     val structuredJson: Boolean,
+    val imagePaths: List<String> = emptyList(),
+    val audioPath: String? = null,
 )
 
 data class GenerationResult(
