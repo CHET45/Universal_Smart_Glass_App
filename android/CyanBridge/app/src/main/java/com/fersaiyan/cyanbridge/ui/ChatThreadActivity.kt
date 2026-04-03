@@ -3,6 +3,8 @@ package com.fersaiyan.cyanbridge.ui
 import android.Manifest
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Bundle
@@ -60,6 +62,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
 
@@ -81,7 +86,8 @@ class ChatThreadActivity : AppCompatActivity() {
     private val queuedLocalPrompts = java.util.ArrayDeque<QueuedLocalPrompt>()
     private val pendingImagePaths = mutableListOf<String>()
     private var pendingAudioPath: String? = null
-    private var mediaRecorder: MediaRecorder? = null
+    private var audioRecorder: AudioRecord? = null
+    private var audioRecordingThread: Thread? = null
     private var mediaRecordingFilePath: String? = null
     private var isMediaRecording = false
     private var recordStopRunnable: Runnable? = null
@@ -790,36 +796,88 @@ class ChatThreadActivity : AppCompatActivity() {
         if (isMediaRecording) return
         stopAudioRecording(saveAsAttachment = false)
 
-        val outFile = File(chatAttachmentDir(), "voice_${System.currentTimeMillis()}.m4a")
+        val outFile = File(chatAttachmentDir(), "voice_${System.currentTimeMillis()}.wav")
         mediaRecordingFilePath = outFile.absolutePath
-        val recorder = if (android.os.Build.VERSION.SDK_INT >= 31) {
-            MediaRecorder(this)
-        } else {
-            MediaRecorder()
-        }
 
         try {
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            recorder.setAudioSamplingRate(16000)
-            recorder.setAudioEncodingBitRate(96_000)
-            recorder.setOutputFile(outFile.absolutePath)
-            recorder.prepare()
-            recorder.start()
+            val minBuffer = AudioRecord.getMinBufferSize(
+                AUDIO_SAMPLE_RATE_HZ,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+            )
+            if (minBuffer <= 0) {
+                throw IllegalStateException("AudioRecord buffer init failed: $minBuffer")
+            }
 
-            mediaRecorder = recorder
+            val recorder = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                AUDIO_SAMPLE_RATE_HZ,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                minBuffer.coerceAtLeast(AUDIO_SAMPLE_RATE_HZ),
+            )
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                runCatching { recorder.release() }
+                throw IllegalStateException("AudioRecord not initialized")
+            }
+
+            audioRecorder = recorder
             isMediaRecording = true
             updatePendingAttachmentsUi()
             android.widget.Toast.makeText(this, "Recording... up to 30 seconds", android.widget.Toast.LENGTH_SHORT).show()
+
+            val worker = Thread {
+                var pcmBytesWritten = 0L
+                val ioBuffer = ByteArray(minBuffer.coerceAtLeast(2048))
+                runCatching {
+                    FileOutputStream(outFile).use { output ->
+                        output.write(ByteArray(WAV_HEADER_BYTES))
+                        recorder.startRecording()
+                        while (isMediaRecording) {
+                            val read = recorder.read(ioBuffer, 0, ioBuffer.size)
+                            if (read > 0) {
+                                output.write(ioBuffer, 0, read)
+                                pcmBytesWritten += read.toLong()
+                            } else if (read == AudioRecord.ERROR_BAD_VALUE || read == AudioRecord.ERROR_INVALID_OPERATION) {
+                                throw IllegalStateException("Audio read failed: $read")
+                            }
+                        }
+                    }
+                }.onFailure {
+                    runCatching { outFile.delete() }
+                }
+
+                runCatching { recorder.stop() }
+                runCatching { recorder.release() }
+
+                if (outFile.exists() && pcmBytesWritten > 0L) {
+                    runCatching {
+                        writeWavHeader(
+                            file = outFile,
+                            pcmDataBytes = pcmBytesWritten,
+                            sampleRateHz = AUDIO_SAMPLE_RATE_HZ,
+                            channelCount = 1,
+                            bitsPerSample = 16,
+                        )
+                    }.onFailure {
+                        runCatching { outFile.delete() }
+                    }
+                }
+            }.apply {
+                name = "liteRt-audio-recorder"
+                isDaemon = true
+            }
+            audioRecordingThread = worker
+            worker.start()
 
             recordStopRunnable?.let { binding.root.removeCallbacks(it) }
             recordStopRunnable = Runnable {
                 stopAudioRecording(saveAsAttachment = true)
             }.also { binding.root.postDelayed(it, 30_000L) }
         } catch (t: Throwable) {
-            runCatching { recorder.release() }
-            mediaRecorder = null
+            runCatching { audioRecorder?.release() }
+            audioRecorder = null
+            audioRecordingThread = null
             isMediaRecording = false
             mediaRecordingFilePath = null
             updatePendingAttachmentsUi()
@@ -831,24 +889,71 @@ class ChatThreadActivity : AppCompatActivity() {
         recordStopRunnable?.let { binding.root.removeCallbacks(it) }
         recordStopRunnable = null
 
-        val recorder = mediaRecorder
-        mediaRecorder = null
+        val recorder = audioRecorder
+        audioRecorder = null
+        val worker = audioRecordingThread
+        audioRecordingThread = null
         val path = mediaRecordingFilePath
         mediaRecordingFilePath = null
 
-        if (recorder != null) {
-            runCatching { recorder.stop() }
+        isMediaRecording = false
+
+        if (worker != null && worker.isAlive) {
+            runCatching { worker.join(1200L) }
+        }
+        if (recorder != null && recorder.state == AudioRecord.STATE_INITIALIZED) {
             runCatching { recorder.release() }
         }
 
-        isMediaRecording = false
+        val audioFile = path?.let { File(it) }
         if (saveAsAttachment && !path.isNullOrBlank()) {
-            pendingAudioPath = path
-            android.widget.Toast.makeText(this, "Voice note attached", android.widget.Toast.LENGTH_SHORT).show()
+            if (audioFile?.exists() == true && audioFile.length() > WAV_HEADER_BYTES) {
+                pendingAudioPath = path
+                android.widget.Toast.makeText(this, "Voice note attached", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                runCatching { audioFile?.delete() }
+                android.widget.Toast.makeText(this, "Unable to attach voice note", android.widget.Toast.LENGTH_SHORT).show()
+            }
         } else if (!path.isNullOrBlank()) {
-            runCatching { File(path).delete() }
+            runCatching { audioFile?.delete() }
         }
         updatePendingAttachmentsUi()
+    }
+
+    private fun writeWavHeader(
+        file: File,
+        pcmDataBytes: Long,
+        sampleRateHz: Int,
+        channelCount: Int,
+        bitsPerSample: Int,
+    ) {
+        val safeDataBytes = pcmDataBytes.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+        val riffChunkSize = (36L + safeDataBytes).coerceIn(36L, Int.MAX_VALUE.toLong()).toInt()
+        val byteRate = sampleRateHz * channelCount * bitsPerSample / 8
+        val blockAlign = channelCount * bitsPerSample / 8
+
+        val header = ByteBuffer.allocate(WAV_HEADER_BYTES)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .apply {
+                put("RIFF".toByteArray(Charsets.US_ASCII))
+                putInt(riffChunkSize)
+                put("WAVE".toByteArray(Charsets.US_ASCII))
+                put("fmt ".toByteArray(Charsets.US_ASCII))
+                putInt(16)
+                putShort(1)
+                putShort(channelCount.toShort())
+                putInt(sampleRateHz)
+                putInt(byteRate)
+                putShort(blockAlign.toShort())
+                putShort(bitsPerSample.toShort())
+                put("data".toByteArray(Charsets.US_ASCII))
+                putInt(safeDataBytes)
+            }
+
+        RandomAccessFile(file, "rw").use { raf ->
+            raf.seek(0)
+            raf.write(header.array())
+        }
     }
 
     private fun copyUriToChatAttachment(uri: Uri, kind: String): File {
@@ -2397,6 +2502,8 @@ class ChatThreadActivity : AppCompatActivity() {
     companion object {
         private const val DAILY_REVIEW_DEBUG_PREFIX = "[DEBUG_DAILY_REVIEW]"
         private const val DAILY_REVIEW_DEBUG_VISIBLE = false
+        private const val AUDIO_SAMPLE_RATE_HZ = 16_000
+        private const val WAV_HEADER_BYTES = 44
 
         const val EXTRA_CHAT_ID = "chat_id"
 

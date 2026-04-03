@@ -19,8 +19,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CONTEXT) : LocalInferenceEngine {
+    private val supportedAudioExtensions = setOf("wav", "mp3", "flac")
+
     private val mutex = Mutex()
     private var engine: Engine? = null
     private var activeConversation: Conversation? = null
@@ -50,8 +53,9 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
                     createInitializedEngine(
                         modelPath = modelPath,
                         backend = Backend.GPU(),
+                        visionBackend = Backend.CPU(config.cpuThreads),
+                        audioBackend = Backend.CPU(config.cpuThreads),
                         maxNumTokens = config.contextSize,
-                        enableMediaBackends = true,
                     ) to EngineLoadResult(
                         activeBackend = LocalComputeBackend.GPU_EXPERIMENTAL,
                         activeGpuLayers = config.gpuLayers.coerceAtLeast(0),
@@ -60,8 +64,9 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
                     createInitializedEngine(
                         modelPath = modelPath,
                         backend = Backend.GPU(),
+                        visionBackend = null,
+                        audioBackend = null,
                         maxNumTokens = config.contextSize,
-                        enableMediaBackends = false,
                     ) to EngineLoadResult(
                         activeBackend = LocalComputeBackend.GPU_EXPERIMENTAL,
                         activeGpuLayers = config.gpuLayers.coerceAtLeast(0),
@@ -71,8 +76,9 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
                     createInitializedEngine(
                         modelPath = modelPath,
                         backend = Backend.CPU(config.cpuThreads),
+                        visionBackend = Backend.CPU(config.cpuThreads),
+                        audioBackend = Backend.CPU(config.cpuThreads),
                         maxNumTokens = config.contextSize,
-                        enableMediaBackends = true,
                     ) to EngineLoadResult(
                         activeBackend = LocalComputeBackend.CPU,
                         activeGpuLayers = 0,
@@ -83,8 +89,9 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
                 createInitializedEngine(
                     modelPath = modelPath,
                     backend = Backend.CPU(config.cpuThreads),
+                    visionBackend = Backend.CPU(config.cpuThreads),
+                    audioBackend = Backend.CPU(config.cpuThreads),
                     maxNumTokens = config.contextSize,
-                    enableMediaBackends = true,
                 ) to EngineLoadResult(
                     activeBackend = LocalComputeBackend.CPU,
                     activeGpuLayers = 0,
@@ -107,14 +114,15 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
     private fun createInitializedEngine(
         modelPath: String,
         backend: Backend,
+        visionBackend: Backend?,
+        audioBackend: Backend?,
         maxNumTokens: Int,
-        enableMediaBackends: Boolean,
     ): Engine {
         val config = EngineConfig(
             modelPath = modelPath,
             backend = backend,
-            visionBackend = if (enableMediaBackends) backend else null,
-            audioBackend = if (enableMediaBackends) backend else null,
+            visionBackend = visionBackend,
+            audioBackend = audioBackend,
             maxNumTokens = maxNumTokens.coerceAtLeast(1024),
             cacheDir = context.cacheDir.path,
         )
@@ -270,7 +278,6 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
         if (!hasImage && !hasAudio) return null
 
         val parts = ArrayList<Content>()
-        parts += Content.Text(config.prompt)
 
         config.imagePaths.forEach { rawPath ->
             val path = rawPath.trim()
@@ -284,11 +291,19 @@ class LiteRtLocalInferenceEngine(private val context: Context = MyApplication.CO
         config.audioPath?.trim()?.takeIf { it.isNotBlank() }?.let { path ->
             val file = File(path)
             if (file.exists()) {
+                val ext = file.extension.lowercase(Locale.US)
+                if (ext !in supportedAudioExtensions) {
+                    throw IllegalArgumentException(
+                        "Unsupported audio format '.$ext'. LiteRT-LM supports wav, mp3, and flac audio attachments.",
+                    )
+                }
                 parts += Content.AudioFile(file.absolutePath)
             }
         }
 
-        if (parts.size <= 1) return null
+        parts += Content.Text(config.prompt)
+
+        if (parts.isEmpty()) return null
         return Contents.Companion.of(parts)
     }
 
