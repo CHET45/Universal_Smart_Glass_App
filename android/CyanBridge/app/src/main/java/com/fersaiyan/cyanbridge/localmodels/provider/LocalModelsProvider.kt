@@ -30,6 +30,7 @@ class LocalModelsProvider {
         imagePaths: List<String> = emptyList(),
         audioPath: String? = null,
         requestPriority: LocalModelRequestPriority = LocalModelRequestPriority.HIGH,
+        maxTokens: Int? = null,
     ): String {
         return withContext(Dispatchers.IO) {
             LocalModelStorageRepository.cleanupMissingModels(context)
@@ -56,43 +57,52 @@ class LocalModelsProvider {
                 }
             }
 
-            val chatMessages = messages
-                .mapNotNull { m ->
-                    val role = m["role"]?.trim().orEmpty()
-                    val content = m["content"]?.trim().orEmpty()
-                    if (role.isBlank() || content.isBlank()) null else PromptMessage(role = role, content = content)
-                }
+val chatMessages = messages
+            .mapNotNull { m ->
+                val role = m["role"]?.trim().orEmpty()
+                val content = m["content"]?.trim().orEmpty()
+                if (role.isBlank() || content.isBlank()) null else PromptMessage(role = role, content = content)
+            }
 
-            onStatus?.invoke("Loading ${selected.displayName}...")
+        // For multimodal (image/audio) prompts, LiteRT's Conversation API handles turn formatting.
+        // We should send the raw user message content, not the template-wrapped prompt.
+        val effectivePrompt = if (hasMediaAttachments) {
+            // Extract just the user's message content (last user message)
+            chatMessages.lastOrNull { it.role.equals("user", ignoreCase = true) }?.content ?: chatMessages.lastOrNull()?.content ?: ""
+        } else {
+            // For text-only, use the full template-rendered prompt
+            PromptTemplateRegistry.renderPrompt(
+                templateId = templateId,
+                systemPrompt = systemPrompt,
+                messages = chatMessages,
+            )
+        }
+
+        onStatus?.invoke("Loading ${selected.displayName}...")
             val loadDetails = LocalChatSessionManager.ensureModelLoaded(
                 context = context,
                 model = selected,
                 catalogEntry = catalogEntry,
                 settings = settings,
             )
-            onStatus?.invoke(generationStatus(loadDetails.activeBackend))
-            if (!loadDetails.fallbackReason.isNullOrBlank()) {
-                if (loadDetails.activeBackend == LocalComputeBackend.CPU) {
-                    onStatus?.invoke("GPU unavailable, using CPU")
-                } else {
-                    onStatus?.invoke("GPU active (audio/vision backend disabled)")
-                }
+onStatus?.invoke(generationStatus(loadDetails.activeBackend))
+        if (!loadDetails.fallbackReason.isNullOrBlank()) {
+            if (loadDetails.activeBackend == LocalComputeBackend.CPU) {
+                onStatus?.invoke("GPU unavailable, using CPU")
+            } else {
+                onStatus?.invoke("GPU active (audio/vision backend disabled)")
             }
+        }
 
-            val prompt = PromptTemplateRegistry.renderPrompt(
-                templateId = templateId,
-                systemPrompt = systemPrompt,
-                messages = chatMessages,
-            )
-
-            val firstReply = LocalChatSessionManager.streamGenerate(
-                settings = settings,
-                prompt = prompt,
-                onToken = { token -> onToken?.invoke(token) },
-                imagePaths = imagePaths,
-                audioPath = audioPath,
-                requestPriority = requestPriority,
-            )
+val firstReply = LocalChatSessionManager.streamGenerate(
+            settings = settings,
+            prompt = effectivePrompt,
+            onToken = { token -> onToken?.invoke(token) },
+            imagePaths = imagePaths,
+            audioPath = audioPath,
+            requestPriority = requestPriority,
+            maxTokensOverride = maxTokens,
+        )
 
             val firstCapped = LocalChatSessionManager.consumeLastGenerationCappedFlag()
             if (firstCapped) {
@@ -122,14 +132,15 @@ class LocalModelsProvider {
                 }
             }
 
-            val retryReply = LocalChatSessionManager.streamGenerate(
-                settings = settings,
-                prompt = prompt,
-                onToken = { token -> onToken?.invoke(token) },
-                imagePaths = imagePaths,
-                audioPath = audioPath,
-                requestPriority = requestPriority,
-            )
+val retryReply = LocalChatSessionManager.streamGenerate(
+            settings = settings,
+            prompt = effectivePrompt,
+            onToken = { token -> onToken?.invoke(token) },
+            imagePaths = imagePaths,
+            audioPath = audioPath,
+            requestPriority = requestPriority,
+            maxTokensOverride = maxTokens,
+        )
 
             val retryCapped = LocalChatSessionManager.consumeLastGenerationCappedFlag()
             if (retryCapped) {
