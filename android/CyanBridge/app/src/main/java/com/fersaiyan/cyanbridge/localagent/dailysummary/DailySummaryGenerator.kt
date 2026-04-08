@@ -15,6 +15,7 @@ import com.fersaiyan.cyanbridge.ai.router.CliRelayClient
 import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelRequestPriority
 import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelsProvider
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemoryStore
+import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyBulletsSettings
 
 object DailySummaryGenerator {
     private val localModelsProvider = LocalModelsProvider()
@@ -271,7 +272,7 @@ object DailySummaryGenerator {
                         messages = listOf(
                             mapOf(
                                 "role" to "User",
-                                "content" to buildSingleEventBulletPrompt(event),
+                                "content" to buildSingleEventBulletPrompt(context, event),
                             ),
                         ),
                         requestPriority = LocalModelRequestPriority.LOW,
@@ -301,12 +302,21 @@ object DailySummaryGenerator {
         return mergeEventBullets(bullets)
     }
 
-    private fun buildSingleEventBulletPrompt(event: ScreenCaptureEvent): String {
+    private fun buildSingleEventBulletPrompt(context: Context, event: ScreenCaptureEvent): String {
         val time = if (event.tsMs > 0L) {
             SimpleDateFormat("HH:mm", Locale.US).format(Date(event.tsMs))
         } else {
             "unknown"
         }
+
+        val customPrompt = DailyBulletsSettings.getCustomBulletPrompt(context)
+        if (!customPrompt.isNullOrBlank()) {
+            return customPrompt
+                .replace("\${event.packageName}", event.packageName)
+                .replace("\${event.time}", time)
+                .replace("\${event.text}", event.text)
+        }
+
         return """
 You summarize one mobile screen OCR event into exactly one bullet.
 
