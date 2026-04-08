@@ -208,6 +208,7 @@ object LocalChatSessionManager {
         imagePaths: List<String> = emptyList(),
         audioPath: String? = null,
         requestPriority: LocalModelRequestPriority = LocalModelRequestPriority.HIGH,
+        maxTokensOverride: Int? = null,
     ): String {
         return generateInternal(
             settings = settings,
@@ -216,6 +217,7 @@ object LocalChatSessionManager {
             imagePaths = imagePaths,
             audioPath = audioPath,
             requestPriority = requestPriority,
+            maxTokensOverride = maxTokensOverride,
         ).text
     }
 
@@ -232,6 +234,7 @@ object LocalChatSessionManager {
         imagePaths: List<String>,
         audioPath: String?,
         requestPriority: LocalModelRequestPriority,
+        maxTokensOverride: Int? = null,
     ): GenerationResult {
         val reqId = UUID.randomUUID().toString()
         val llm: LocalInferenceEngine
@@ -268,7 +271,7 @@ object LocalChatSessionManager {
 
                 val result = runCatching {
                     withContext(Dispatchers.IO) {
-                        val maxTokens = settings.maxTokens.coerceAtLeast(1)
+                        val maxTokens = (maxTokensOverride ?: settings.maxTokens).coerceAtLeast(1)
                         val streamedText = StringBuilder()
                         var approxGeneratedTokens = 0
                         var guardTriggered = false
@@ -281,7 +284,7 @@ object LocalChatSessionManager {
                                     temperature = settings.temperature,
                                     topP = settings.topP,
                                     topK = settings.topK,
-                                    maxTokens = settings.maxTokens,
+                                    maxTokens = maxTokens,
                                     repetitionPenalty = settings.repetitionPenalty,
                                     seed = settings.seed,
                                     structuredJson = settings.experimentalStructuredJson,
