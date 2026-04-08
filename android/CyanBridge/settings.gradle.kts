@@ -10,16 +10,6 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        val coreRepoUrl = System.getenv("HEYCYAN_CORE_MAVEN_URL")
-        if (!coreRepoUrl.isNullOrBlank()) {
-            maven {
-                url = uri(coreRepoUrl)
-                credentials {
-                    username = System.getenv("HEYCYAN_CORE_MAVEN_USER")
-                    password = System.getenv("HEYCYAN_CORE_MAVEN_PASSWORD")
-                }
-            }
-        }
         mavenLocal()
         google()
         mavenCentral()
@@ -27,7 +17,6 @@ dependencyResolutionManagement {
         maven { url = uri("https://jitpack.io") }
     }
 }
-
 rootProject.name = "CyanBridgeManagerApp"
 include(":app")
 include(":LIB_GLASSES_SDK")
@@ -35,9 +24,8 @@ include(":LIB_GLASSES_SDK")
 // Moonshine Voice (local wrapper module that builds vendored native sources)
 include(":moonshine-voice")
 
-// Shared core (optional local composite build)
-val sharedCoreDir = file("../../../heycyan-android-core")
-val useLocalSharedCore = (gradle.startParameter.projectProperties["useLocalSharedCore"] ?: "true").toBoolean()
-if (useLocalSharedCore && sharedCoreDir.exists()) {
-    includeBuild(sharedCoreDir)
+// HeyCyan Core - bundled as composite build for easy compilation
+val heycyanCoreDir = file("../../heycyan-core")
+if (heycyanCoreDir.exists()) {
+    includeBuild(heycyanCoreDir)
 }
