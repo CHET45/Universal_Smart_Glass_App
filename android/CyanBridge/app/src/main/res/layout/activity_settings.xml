@@ -476,6 +476,89 @@
                             android:text="If enough time has passed, regeneration is queued in background and won't block chat replies."
                             android:textColor="@color/text_secondary"
                             android:textSize="11sp" />
+        <!-- Mini Section: Custom Bullet Prompts -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="CUSTOM BULLET PROMPTS"
+            android:textColor="@color/cyan_accent"
+            android:textStyle="bold"
+            android:textSize="11sp"
+            android:letterSpacing="0.1" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Customize prompts used by local models to generate daily fact bullets from screen captures."
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_local_agent_edit_bullet_prompt"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Edit bullet generation prompt"
+            android:textColor="@color/cyan_accent"
+            android:textSize="12sp"
+            android:minHeight="0dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="4dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_local_agent_reset_bullet_prompt"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Reset to default"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
+            android:minHeight="0dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp" />
+ <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Max tokens per bullet:"
+                        android:textColor="@color/text_primary"
+                        android:textSize="12sp" />
+
+                    <EditText
+                        android:id="@+id/et_max_tokens_per_bullet"
+                        android:layout_width="80dp"
+                        android:layout_height="36dp"
+                        android:inputType="number"
+                        android:hint="0"
+                        android:gravity="center"
+                        android:textSize="12sp"
+                        android:background="@drawable/edit_text_background" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:text="(0 = auto)"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="11sp" />
+
+                </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="12dp"
+            android:background="#2A2A2A" />
+
 
                         <com.google.android.material.switchmaterial.SwitchMaterial
                             android:id="@+id/switch_local_agent_auto_save_daily_facts"

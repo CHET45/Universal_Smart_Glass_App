@@ -77,6 +77,25 @@ class SettingsActivity : AppCompatActivity() {
         getSharedPreferences("settings_sections", MODE_PRIVATE)
     }
 
+    companion object {
+        private val DEFAULT_BULLET_PROMPT = """You summarize one mobile screen OCR event into exactly one bullet.
+
+The app package is provided below, and the app name may also appear inside the OCR text.
+
+APP_PACKAGE: ${'$'}{event.packageName}
+EVENT_TIME: ${'$'}{event.time}
+OCR_TEXT: ${'$'}{event.text}
+
+Return JSON only: {"skip": false, "bullet": "...", "confidence": 0.0}
+
+Rules:
+- Keep bullet factual and concise (max 26 words)
+- Preserve concrete details like person names, contact names, topics, or action context when visible
+- If OCR is too noisy or meaningless, set skip=true
+- Do not invent details outside OCR
+""".trimIndent()
+    }
+
     private val exportDataLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
@@ -649,6 +668,36 @@ class SettingsActivity : AppCompatActivity() {
                 if (isChecked) "Candidate user facts extraction enabled" else "Candidate user facts extraction disabled",
                 Toast.LENGTH_SHORT
             ).show()
+        }
+
+        // Custom bullet prompt settings
+        binding.btnLocalAgentEditBulletPrompt.setOnClickListener {
+            val currentPrompt = com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyBulletsSettings.getCustomBulletPrompt(this)
+                .ifBlank { DEFAULT_BULLET_PROMPT }
+            showTextEditorDialog(
+                title = "Bullet Generation Prompt",
+                initial = currentPrompt,
+                hint = "Leave empty to use default prompt"
+            ) { updated ->
+                com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyBulletsSettings.setCustomBulletPrompt(this, updated)
+                Toast.makeText(this, "Custom bullet prompt saved", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.btnLocalAgentResetBulletPrompt.setOnClickListener {
+            com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyBulletsSettings.setCustomBulletPrompt(this, "")
+            Toast.makeText(this, "Bullet prompt reset to default", Toast.LENGTH_SHORT).show()
+        }
+
+        // Max tokens per bullet setting
+        binding.etMaxTokensPerBullet.setText(
+            com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyBulletsSettings.getMaxTokensPerBullet(this).toString()
+        )
+        binding.etMaxTokensPerBullet.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                val tokens = binding.etMaxTokensPerBullet.text.toString().toIntOrNull() ?: 0
+                com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyBulletsSettings.setMaxTokensPerBullet(this, tokens)
+            }
         }
 
         binding.btnLocalAgentEditPersona.setOnClickListener {
