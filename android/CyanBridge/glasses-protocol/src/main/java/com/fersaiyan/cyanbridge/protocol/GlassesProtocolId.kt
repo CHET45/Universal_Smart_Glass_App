@@ -6,5 +6,5 @@ package com.fersaiyan.cyanbridge.protocol
  */
 enum class GlassesProtocolId {
     HEY_CYAN,
-    S100_EYEVUE,
+    S100,
 }
