@@ -10,7 +10,7 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        mavenLocal()
+//        mavenLocal()
         google()
         mavenCentral()
         jcenter()
@@ -20,7 +20,6 @@ dependencyResolutionManagement {
 rootProject.name = "CyanBridgeManagerApp"
 include(":app")
 include(":LIB_GLASSES_SDK")
-include(":glasses-protocol")
 
 // Moonshine Voice (local wrapper module that builds vendored native sources)
 include(":moonshine-voice")
@@ -30,3 +29,4 @@ val heycyanCoreDir = file("../../heycyan-core")
 if (heycyanCoreDir.exists()) {
     includeBuild(heycyanCoreDir)
 }
+include(":glasses-protocol")
