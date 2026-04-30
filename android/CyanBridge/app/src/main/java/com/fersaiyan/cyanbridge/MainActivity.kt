@@ -1,142 +1,57 @@
 package com.fersaiyan.cyanbridge
 
+// import com.fersaiyan.cyanbridge.ui.notes.NotesListActivity
+// import kotlinx.coroutines.CompletableDeferred
+
 import android.Manifest
-import android.app.Activity
+import android.app.KeyguardManager
 import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.widget.ArrayAdapter
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import com.fersaiyan.cyanbridge.agent.AgentProviderType
-import com.fersaiyan.cyanbridge.agent.LocalAgentPrefs as AutomationPrefs
-import com.fersaiyan.cyanbridge.ui.VersionUpdateChecker
-import com.fersaiyan.cyanbridge.localagent.LocalAgentController
-import com.fersaiyan.cyanbridge.localagent.LocalAgentIntents
-import com.fersaiyan.cyanbridge.localagent.LocalAgentPrefs
-import com.fersaiyan.cyanbridge.audio.CaptureSource
-import com.fersaiyan.cyanbridge.audio.MeetingCapturePrefs
-import com.fersaiyan.cyanbridge.audio.MeetingCaptureService
-import com.fersaiyan.cyanbridge.media.GlassesMediaPrefs
-import com.fersaiyan.cyanbridge.media.SyncedMediaFolder
-import com.fersaiyan.cyanbridge.media.autocapture.AutoAudioCapturePrefs
-import com.fersaiyan.cyanbridge.media.autocapture.GlassesSyncedAudioIngestor
-import android.os.Build
-import android.os.Bundle
-import android.util.Log
-import android.widget.Toast
-import android.view.View
-import androidx.annotation.RequiresApi
-import androidx.appcompat.app.AppCompatActivity
-import androidx.appcompat.app.AlertDialog
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import com.hjq.permissions.OnPermissionCallback
-import com.hjq.permissions.XXPermissions
-import com.oudmon.ble.base.communication.utils.ByteUtil
-import com.oudmon.ble.base.bluetooth.BleOperateManager
-import com.oudmon.ble.base.bluetooth.DeviceManager
-import com.oudmon.ble.base.communication.LargeDataHandler
-import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
-import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
-import com.fersaiyan.cyanbridge.databinding.AcitivytMainBinding
-import com.fersaiyan.cyanbridge.ui.DeviceBindActivity
-import com.fersaiyan.cyanbridge.ui.ChatListActivity
-import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
-import com.fersaiyan.cyanbridge.ui.CommunityPluginPrefs
-import com.fersaiyan.cyanbridge.ui.CommunityPluginsActivity
-import com.fersaiyan.cyanbridge.ui.SettingsActivity
-// import com.fersaiyan.cyanbridge.ui.notes.NotesListActivity
-import com.fersaiyan.cyanbridge.ui.recordings.RecordingsListActivity
-import com.fersaiyan.cyanbridge.ui.BluetoothUtils
-import com.fersaiyan.cyanbridge.ui.BluetoothEvent
-import com.fersaiyan.cyanbridge.ui.AutoPairManager
-import com.fersaiyan.cyanbridge.chat.ChatStore
-import com.fersaiyan.cyanbridge.devices.DeviceProfileStore
-import com.fersaiyan.cyanbridge.devices.GlassesManagerGating
-import com.fersaiyan.cyanbridge.ai.transcription.DefaultTranscriptionService
-import com.fersaiyan.cyanbridge.ai.transcription.Mp4AudioChunker
-import com.fersaiyan.cyanbridge.ai.transcription.NoOpAudioChunker
-import com.fersaiyan.cyanbridge.ai.transcription.OpenAIWhisperTranscriptionProvider
-import com.fersaiyan.cyanbridge.ai.transcription.RetryPolicy
-import com.fersaiyan.cyanbridge.ai.transcription.RetryingTranscriptionProvider
-import com.fersaiyan.cyanbridge.ai.transcription.vosk.VoskModelManager
-import com.fersaiyan.cyanbridge.ai.transcription.vosk.VoskTranscriptionProvider
-import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionProgress
-import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionResult
-import com.fersaiyan.cyanbridge.ai.transcription.TranscriptionService
-import com.fersaiyan.cyanbridge.privacy.PrivacyPrefs
-import com.fersaiyan.cyanbridge.ui.MyApplication
-import com.fersaiyan.cyanbridge.ui.bleIpBridge
-import com.fersaiyan.cyanbridge.ui.hasBluetooth
-import com.fersaiyan.cyanbridge.ui.requestAllPermission
-import com.fersaiyan.cyanbridge.ui.requestBluetoothPermission
-import com.fersaiyan.cyanbridge.ui.requestLocationPermission
-import com.fersaiyan.cyanbridge.ui.requestNearbyWifiDevicesPermission
-import com.fersaiyan.cyanbridge.ui.setOnClickListener
-import com.fersaiyan.cyanbridge.ui.startKtxActivity
-import com.fersaiyan.cyanbridge.ui.wifi.p2p.WifiP2pManagerSingleton
-import android.net.wifi.p2p.WifiP2pDevice
-import android.net.wifi.p2p.WifiP2pInfo
+import android.media.MediaScannerConnection
 import android.net.ConnectivityManager
 import android.net.Network
-import android.provider.MediaStore
-import android.content.ContentValues
-import android.media.MediaScannerConnection
-import android.os.Environment
-import org.greenrobot.eventbus.EventBus
-import org.greenrobot.eventbus.Subscribe
-import org.greenrobot.eventbus.ThreadMode
-import com.fersaiyan.cyanbridge.ui.BatteryOptimizationGuideActivity
-// import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.isActive
-import java.io.File
-import java.io.FileOutputStream
-import java.io.InputStream
-import java.io.ByteArrayOutputStream
-import java.net.HttpURLConnection
-import java.net.InetAddress
-import java.net.URL
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.util.concurrent.atomic.AtomicReference
-import javax.net.SocketFactory
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.security.SecureRandom
-import java.util.concurrent.ConcurrentHashMap
-import androidx.core.content.FileProvider
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.supervisorScope
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.cancelChildren
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.coroutineContext
-import kotlin.coroutines.resume
-
-import android.provider.Settings
 import android.net.Uri
-import android.app.KeyguardManager
-
+import android.net.wifi.p2p.WifiP2pDevice
+import android.net.wifi.p2p.WifiP2pInfo
+import android.os.Build
+import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
+import android.view.View
+import android.widget.ArrayAdapter
+import android.widget.Toast
+import androidx.annotation.RequiresApi
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.fersaiyan.cyanbridge.agent.AgentProviderType
 import com.fersaiyan.cyanbridge.agent.ProSubscriptionAiPrefs
 import com.fersaiyan.cyanbridge.ai.router.AiProviderPrefs
-import com.fersaiyan.cyanbridge.ai.router.AiProviderType as RelayProviderType
 import com.fersaiyan.cyanbridge.ai.router.CliRelayClient
+import com.fersaiyan.cyanbridge.audio.CaptureSource
+import com.fersaiyan.cyanbridge.audio.MeetingCapturePrefs
+import com.fersaiyan.cyanbridge.audio.MeetingCaptureService
+import com.fersaiyan.cyanbridge.chat.ChatStore
+import com.fersaiyan.cyanbridge.databinding.AcitivytMainBinding
+import com.fersaiyan.cyanbridge.devices.DeviceProfileStore
+import com.fersaiyan.cyanbridge.devices.GlassesManagerGating
+import com.fersaiyan.cyanbridge.localagent.LocalAgentController
+import com.fersaiyan.cyanbridge.localagent.LocalAgentIntents
+import com.fersaiyan.cyanbridge.localagent.LocalAgentPrefs
 import com.fersaiyan.cyanbridge.localagent.context.LocalAgentContextBuilder
 import com.fersaiyan.cyanbridge.localagent.dailyfacts.DailyFactsStorage
 import com.fersaiyan.cyanbridge.localagent.memory.LocalAgentMemorySearch
@@ -146,9 +61,77 @@ import com.fersaiyan.cyanbridge.localmodels.provider.LocalModelsProvider
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelRuntime
 import com.fersaiyan.cyanbridge.localmodels.settings.LocalModelSettingsRepository
 import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
+import com.fersaiyan.cyanbridge.media.GlassesMediaPrefs
+import com.fersaiyan.cyanbridge.media.SyncedMediaFolder
+import com.fersaiyan.cyanbridge.media.autocapture.AutoAudioCapturePrefs
+import com.fersaiyan.cyanbridge.media.autocapture.GlassesSyncedAudioIngestor
 import com.fersaiyan.cyanbridge.memoryvault.MemoryPolicyService
-import android.content.ClipboardManager
-import android.content.ClipData
+import com.fersaiyan.cyanbridge.protocol.AppGlassesProtocolManager
+import com.fersaiyan.cyanbridge.protocol.GlassesCommandResult
+import com.fersaiyan.cyanbridge.protocol.GlassesDevice
+import com.fersaiyan.cyanbridge.ui.AutoPairManager
+import com.fersaiyan.cyanbridge.ui.BatteryOptimizationGuideActivity
+import com.fersaiyan.cyanbridge.ui.BluetoothEvent
+import com.fersaiyan.cyanbridge.ui.BluetoothUtils
+import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
+import com.fersaiyan.cyanbridge.ui.CommunityPluginPrefs
+import com.fersaiyan.cyanbridge.ui.CommunityPluginsActivity
+import com.fersaiyan.cyanbridge.ui.DeviceBindActivity
+import com.fersaiyan.cyanbridge.ui.SettingsActivity
+import com.fersaiyan.cyanbridge.ui.VersionUpdateChecker
+import com.fersaiyan.cyanbridge.ui.bleIpBridge
+import com.fersaiyan.cyanbridge.ui.hasBluetooth
+import com.fersaiyan.cyanbridge.ui.recordings.RecordingsListActivity
+import com.fersaiyan.cyanbridge.ui.requestAllPermission
+import com.fersaiyan.cyanbridge.ui.requestBluetoothPermission
+import com.fersaiyan.cyanbridge.ui.requestLocationPermission
+import com.fersaiyan.cyanbridge.ui.requestNearbyWifiDevicesPermission
+import com.fersaiyan.cyanbridge.ui.setOnClickListener
+import com.fersaiyan.cyanbridge.ui.startKtxActivity
+import com.fersaiyan.cyanbridge.ui.wifi.p2p.WifiP2pManagerSingleton
+import com.hjq.permissions.OnPermissionCallback
+import com.hjq.permissions.XXPermissions
+import com.oudmon.ble.base.bluetooth.BleOperateManager
+import com.oudmon.ble.base.bluetooth.DeviceManager
+import com.oudmon.ble.base.communication.LargeDataHandler
+import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyListener
+import com.oudmon.ble.base.communication.bigData.resp.GlassesDeviceNotifyRsp
+import com.oudmon.ble.base.communication.utils.ByteUtil
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import org.greenrobot.eventbus.EventBus
+import org.greenrobot.eventbus.Subscribe
+import org.greenrobot.eventbus.ThreadMode
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URL
+import java.security.SecureRandom
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
+import javax.net.SocketFactory
+import kotlin.coroutines.resume
+import com.fersaiyan.cyanbridge.agent.LocalAgentPrefs as AutomationPrefs
+import com.fersaiyan.cyanbridge.ai.router.AiProviderType as RelayProviderType
 
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
@@ -158,17 +141,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     // Optional Local Agent UI status
     private var agentReceiverRegistered = false
     private val agentStatusReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
+        override fun onReceive(
+            context: Context?,
+            intent: Intent?
+        ) {
             if (intent == null) return
 
             val status = intent.getStringExtra(LocalAgentIntents.EXTRA_STATUS)
             val lastError = intent.getStringExtra(LocalAgentIntents.EXTRA_LAST_ERROR)
 
             if (!status.isNullOrBlank()) {
-                LocalAgentPrefs.setStatus(this@MainActivity, status)
+                LocalAgentPrefs.setStatus(
+                    this@MainActivity,
+                    status
+                )
             }
             if (!lastError.isNullOrBlank()) {
-                LocalAgentPrefs.setLastError(this@MainActivity, lastError)
+                LocalAgentPrefs.setLastError(
+                    this@MainActivity,
+                    lastError
+                )
             }
 
             refreshAgentStatusUi()
@@ -182,7 +174,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun speak(text: String) {
-        speak(text, utteranceId = null, onDone = null)
+        speak(
+            text,
+            utteranceId = null,
+            onDone = null
+        )
     }
 
     private fun speak(
@@ -196,11 +192,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         val bundle = Bundle().apply {
-            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id)
+            putString(
+                TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID,
+                id
+            )
         }
 
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, bundle, id)
+        tts?.speak(
+            text,
+            TextToSpeech.QUEUE_FLUSH,
+            bundle,
+            id
+        )
     }
+
     companion object {
         const val EXTRA_TASKER_COMMAND = "tasker_command"
         private var loggedLargeDataHandlerMethods = false
@@ -221,19 +226,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         fun actionTaskerCommand(appPackageName: String): String =
             "$appPackageName.ACTION_TASKER_COMMAND"
 
-        fun aiEventAction(appPackageName: String): String =
-            "$appPackageName.AI_EVENT"
+        fun aiEventAction(appPackageName: String): String = "$appPackageName.AI_EVENT"
 
         // Edit this URL before using the pull-mode OTA test button.
         // In the official app, the phone runs an HTTP server on its own
         // Wi‑Fi Direct address and the glasses fetch the file from there.
         // For experiments you can point this at a simple `python -m http.server`
         // instance on the phone or on a reachable host.
-        private const val TEST_PULL_OTA_URL =
-            "http://192.168.49.1:8080/dummy.swu"
+        private const val TEST_PULL_OTA_URL = "http://192.168.49.1:8080/dummy.swu"
     }
 
     private lateinit var binding: AcitivytMainBinding
+    private lateinit var glassesProtocolManager: AppGlassesProtocolManager
     private val deviceNotifyListener by lazy { MyDeviceNotifyListener() }
 
     // AI Hijack settings
@@ -294,6 +298,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         super.onCreate(savedInstanceState)
         binding = AcitivytMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        glassesProtocolManager = AppGlassesProtocolManager(this)
         setupBottomNavigation()
         initView()
         setupMeetingCaptureUi()
@@ -303,27 +308,46 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // Check for app updates
         VersionUpdateChecker.checkForUpdates(this)
         // Initialize TTS
-        tts = TextToSpeech(this, this)
+        tts = TextToSpeech(
+            this,
+            this
+        )
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
             }
 
             override fun onDone(utteranceId: String?) {
-                utteranceId?.let { ttsDoneCallbacks.remove(it)?.invoke() }
+                utteranceId?.let {
+                    ttsDoneCallbacks.remove(it)
+                        ?.invoke()
+                }
             }
 
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
-                utteranceId?.let { ttsDoneCallbacks.remove(it)?.invoke() }
+                utteranceId?.let {
+                    ttsDoneCallbacks.remove(it)
+                        ?.invoke()
+                }
             }
 
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                utteranceId?.let { ttsDoneCallbacks.remove(it)?.invoke() }
+            override fun onError(
+                utteranceId: String?,
+                errorCode: Int
+            ) {
+                utteranceId?.let {
+                    ttsDoneCallbacks.remove(it)
+                        ?.invoke()
+                }
             }
         })
 
         // Ensure we always listen for glasses reports (battery, AI, volume, etc.)
-        LargeDataHandler.getInstance().addOutDeviceListener(100, deviceNotifyListener)
+        LargeDataHandler.getInstance()
+            .addOutDeviceListener(
+                100,
+                deviceNotifyListener
+            )
 
         // Lazily register the import/download notify listener the first time we need it.
         handleTaskerCommand(intent)
@@ -333,8 +357,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onStart() {
         super.onStart()
-        if (!EventBus.getDefault().isRegistered(this)) {
-            EventBus.getDefault().register(this)
+        if (!EventBus.getDefault()
+                .isRegistered(this)
+        ) {
+            EventBus.getDefault()
+                .register(this)
         }
         updateConnectionStatus(BleOperateManager.getInstance().isConnected)
         registerMeetingCaptureReceiver()
@@ -342,7 +369,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         if (!agentReceiverRegistered) {
             LocalBroadcastManager.getInstance(this)
-                .registerReceiver(agentStatusReceiver, IntentFilter(LocalAgentIntents.ACTION_STATUS_CHANGED))
+                .registerReceiver(
+                    agentStatusReceiver,
+                    IntentFilter(LocalAgentIntents.ACTION_STATUS_CHANGED)
+                )
             agentReceiverRegistered = true
         }
         LocalAgentController.requestStatus(this)
@@ -355,22 +385,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         unregisterMeetingCaptureReceiver()
 
         if (agentReceiverRegistered) {
-            LocalBroadcastManager.getInstance(this).unregisterReceiver(agentStatusReceiver)
+            LocalBroadcastManager.getInstance(this)
+                .unregisterReceiver(agentStatusReceiver)
             agentReceiverRegistered = false
         }
 
-        if (EventBus.getDefault().isRegistered(this)) {
-            EventBus.getDefault().unregister(this)
+        if (EventBus.getDefault()
+                .isRegistered(this)
+        ) {
+            EventBus.getDefault()
+                .unregister(this)
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        glassesProtocolManager.close()
         tts?.stop()
         tts?.shutdown()
     }
+
     inner class PermissionCallback : OnPermissionCallback {
-        override fun onGranted(permissions: MutableList<String>, all: Boolean) {
+        override fun onGranted(
+            permissions: MutableList<String>,
+            all: Boolean
+        ) {
             if (!all) {
                 // Permissions not fully granted; do nothing for now
             } else {
@@ -378,10 +417,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        override fun onDenied(permissions: MutableList<String>, never: Boolean) {
-            super.onDenied(permissions, never)
-            if(never){
-                XXPermissions.startPermissionActivity(this@MainActivity, permissions);
+        override fun onDenied(
+            permissions: MutableList<String>,
+            never: Boolean
+        ) {
+            super.onDenied(
+                permissions,
+                never
+            )
+            if (never) {
+                XXPermissions.startPermissionActivity(
+                    this@MainActivity,
+                    permissions
+                )
             }
         }
 
@@ -402,15 +450,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         return
                     }
                 }
-                startActivityForResult(intent, 300)
+                startActivityForResult(
+                    intent,
+                    300
+                )
             }
         } catch (e: Exception) {
         }
         if (!hasBluetooth(this)) {
-            requestBluetoothPermission(this, BluetoothPermissionCallback())
+            requestBluetoothPermission(
+                this,
+                BluetoothPermissionCallback()
+            )
         }
 
-        requestAllPermission(this, OnPermissionCallback { permissions, all ->  })
+        requestAllPermission(
+            this,
+            OnPermissionCallback { permissions, all -> })
 
         // Check for Overlay permission needed for background launch
         if (isAiHijackEnabled && !Settings.canDrawOverlays(this)) {
@@ -418,8 +474,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")
             )
-            startActivityForResult(intent, 1234)
-            Toast.makeText(this, "Please enable Overlay permission for background AI", Toast.LENGTH_LONG).show()
+            startActivityForResult(
+                intent,
+                1234
+            )
+            Toast.makeText(
+                this,
+                "Please enable Overlay permission for background AI",
+                Toast.LENGTH_LONG
+            )
+                .show()
         }
 
         // Ensure correct nav highlight when returning via CLEAR_TOP/SINGLE_TOP.
@@ -436,19 +500,107 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     inner class BluetoothPermissionCallback : OnPermissionCallback {
-        override fun onGranted(permissions: MutableList<String>, all: Boolean) {
+        override fun onGranted(
+            permissions: MutableList<String>,
+            all: Boolean
+        ) {
             if (!all) {
 
             }
         }
 
-        override fun onDenied(permissions: MutableList<String>, never: Boolean) {
-            super.onDenied(permissions, never)
+        override fun onDenied(
+            permissions: MutableList<String>,
+            never: Boolean
+        ) {
+            super.onDenied(
+                permissions,
+                never
+            )
             if (never) {
-                XXPermissions.startPermissionActivity(this@MainActivity, permissions)
+                XXPermissions.startPermissionActivity(
+                    this@MainActivity,
+                    permissions
+                )
             }
         }
 
+    }
+
+    private fun currentGlassesProtocolOrToast(): com.fersaiyan.cyanbridge.protocol.GlassesProtocol? {
+        val selectedClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass
+        val protocol = glassesProtocolManager.currentOrCreate(selectedClass)
+
+        if (protocol == null) {
+            val label = selectedClass?.displayName() ?: "Unknown"
+            Toast.makeText(
+                this,
+                "No protocol implementation for: $label",
+                Toast.LENGTH_SHORT,
+            )
+                .show()
+        }
+
+        return protocol
+    }
+
+    private fun currentGlassesDevice(): GlassesDevice? {
+        val address = try {
+            DeviceManager.getInstance().deviceAddress
+        } catch (_: Throwable) {
+            null
+        }
+
+        if (address.isNullOrBlank()) {
+            Toast.makeText(
+                this,
+                "No saved glasses address",
+                Toast.LENGTH_SHORT
+            )
+                .show()
+            return null
+        }
+
+        val name = try {
+            DeviceManager.getInstance().deviceName
+        } catch (_: Throwable) {
+            null
+        }
+
+        val protocol = currentGlassesProtocolOrToast() ?: return null
+
+        return GlassesDevice(
+            address = address,
+            name = name,
+            protocolHint = protocol.id,
+        )
+    }
+
+    private fun showCommandResult(
+        commandName: String,
+        result: GlassesCommandResult
+    ) {
+        when (result) {
+            GlassesCommandResult.Accepted -> {
+                Log.i(
+                    "GlassesProtocol",
+                    "$commandName accepted"
+                )
+            }
+
+            is GlassesCommandResult.Rejected -> {
+                Log.e(
+                    "GlassesProtocol",
+                    "$commandName rejected: ${result.error.message}"
+                )
+                Toast.makeText(
+                    this,
+                    "$commandName failed: ${result.error.message}",
+                    Toast.LENGTH_LONG,
+                )
+                    .show()
+            }
+        }
     }
 
     private fun setupBottomNavigation() {
@@ -458,7 +610,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 R.id.nav_glasses -> true
                 R.id.nav_chats -> {
                     binding.bottomNavigation.post {
-                        val last = ChatStore.listNonEmptyThreads().firstOrNull()
+                        val last = ChatStore.listNonEmptyThreads()
+                            .firstOrNull()
                         val now = System.currentTimeMillis()
 
                         fun lastUserMessageAtMs(chatId: String): Long? {
@@ -471,39 +624,61 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                             if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
                         } else null
 
-                        val intent = Intent(this, ChatThreadActivity::class.java)
+                        val intent = Intent(
+                            this,
+                            ChatThreadActivity::class.java
+                        )
                         if (openChatId != null) {
-                            intent.putExtra(ChatThreadActivity.EXTRA_CHAT_ID, openChatId)
+                            intent.putExtra(
+                                ChatThreadActivity.EXTRA_CHAT_ID,
+                                openChatId
+                            )
                         }
                         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                         startActivity(intent)
                     }
                     true
                 }
+
                 R.id.nav_transcriptions_recordings -> {
                     binding.bottomNavigation.post {
-                        startActivity(Intent(this, RecordingsListActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
+                        startActivity(
+                            Intent(
+                                this,
+                                RecordingsListActivity::class.java
+                            ).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            })
                     }
                     true
                 }
+
                 R.id.nav_settings -> {
                     binding.bottomNavigation.post {
-                        startActivity(Intent(this, SettingsActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
+                        startActivity(
+                            Intent(
+                                this,
+                                SettingsActivity::class.java
+                            ).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            })
                     }
                     true
                 }
+
                 R.id.nav_community_plugins -> {
                     binding.bottomNavigation.post {
-                        startActivity(Intent(this, CommunityPluginsActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
+                        startActivity(
+                            Intent(
+                                this,
+                                CommunityPluginsActivity::class.java
+                            ).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            })
                     }
                     true
                 }
+
                 else -> false
             }
         }
@@ -542,23 +717,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         ) {
             // Safety: stop glasses audio recording before most actions.
             // Users often press camera/video/etc while audio is running.
-            val shouldStopGlassesAudio = this != binding.btnScan && this != binding.btnConnect && this != binding.btnTransferStop
+            val shouldStopGlassesAudio =
+                this != binding.btnScan && this != binding.btnConnect && this != binding.btnTransferStop
             if (shouldStopGlassesAudio) {
                 controlAudioRecording(false)
                 // If auto audio capture is enabled, give the user a short window to operate other controls.
                 if (AutoAudioCapturePrefs.isEnabled(this@MainActivity) && this != binding.btnRecord) {
-                    AutoAudioCapturePrefs.pauseForMs(this@MainActivity, 90_000)
+                    AutoAudioCapturePrefs.pauseForMs(
+                        this@MainActivity,
+                        90_000
+                    )
                 }
             }
 
             when (this) {
                 binding.btnToggleAdvanced -> {
                     val container = binding.layoutAdvancedContainer
-                    if (container.visibility == android.view.View.VISIBLE) {
-                        container.visibility = android.view.View.GONE
+                    if (container.visibility == View.VISIBLE) {
+                        container.visibility = View.GONE
                         binding.btnToggleAdvanced.text = "Advanced ▼"
                     } else {
-                        container.visibility = android.view.View.VISIBLE
+                        container.visibility = View.VISIBLE
                         binding.btnToggleAdvanced.text = "Advanced ▲"
                     }
                 }
@@ -574,7 +753,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                             this@MainActivity,
                             unsupportedReason,
                             Toast.LENGTH_SHORT,
-                        ).show()
+                        )
+                            .show()
                         return@setOnClickListener
                     }
 
@@ -588,13 +768,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 binding.btnModeGemini -> {
                     aiAssistantMode = AI_MODE_GEMINI
                     refreshAiModeButtons()
-                    Toast.makeText(this@MainActivity, "AI Mode: Google Gemini", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "AI Mode: Google Gemini",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                 }
 
                 binding.btnModeChatgpt -> {
                     aiAssistantMode = AI_MODE_CHATGPT
                     refreshAiModeButtons()
-                    Toast.makeText(this@MainActivity, "AI Mode: ChatGPT", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "AI Mode: ChatGPT",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                 }
 
                 binding.btnModeTasker -> {
@@ -606,7 +796,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         AgentProviderType.PRO_SUBSCRIPTION -> "AI Mode: Chosen Provider (Pro Subscription)"
                         AgentProviderType.LOCAL_AGENT -> "AI Mode: Chosen Provider (Local Agent)"
                     }
-                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        msg,
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                 }
 
                 // Notes & Summaries entry removed (moved to Transcriptions & recordings section)
@@ -620,85 +815,164 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnScan -> {
-                    requestLocationPermission(this@MainActivity, PermissionCallback())
+                    requestLocationPermission(
+                        this@MainActivity,
+                        PermissionCallback()
+                    )
                 }
 
                 binding.btnConnect -> {
-                    // User explicitly wants to reconnect, so re-enable auto pairing.
-                    AutoPairManager.setAutoReconnectSuppressed(false, reason = "user_reconnect_button")
-                    Toast.makeText(this@MainActivity, "Reconnecting to glasses…", Toast.LENGTH_SHORT).show()
-                    BleOperateManager.getInstance()
-                        .connectDirectly(DeviceManager.getInstance().deviceAddress)
-                }
+                    AutoPairManager.setAutoReconnectSuppressed(
+                        false,
+                        reason = "user_reconnect_button"
+                    )
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Reconnecting to glasses…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
 
-                binding.btnDisconnect -> {
-                    // Prevent the background reconnection loop from immediately reconnecting.
-                    AutoPairManager.setAutoReconnectSuppressed(true, reason = "user_disconnect_button")
-                    Toast.makeText(this@MainActivity, "Disconnecting from glasses…", Toast.LENGTH_SHORT).show()
-                    BleOperateManager.getInstance().unBindDevice()
-                }
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+                    val device = currentGlassesDevice() ?: return@setOnClickListener
 
-                binding.btnAddListener -> {
-                    Toast.makeText(this@MainActivity, "Registering device event listener…", Toast.LENGTH_SHORT).show()
-                    LargeDataHandler.getInstance().addOutDeviceListener(100, deviceNotifyListener)
-                }
-
-                binding.btnSetTime -> {
-                    Toast.makeText(this@MainActivity, "Syncing glasses time…", Toast.LENGTH_SHORT).show()
-                    Log.i("setTime", "setTime" + BleOperateManager.getInstance().isConnected)
-                    LargeDataHandler.getInstance().syncTime { _, _ -> }
-                }
-
-                binding.btnVersion -> {
-                    Toast.makeText(this@MainActivity, "Reading device version…", Toast.LENGTH_SHORT).show()
-                    LargeDataHandler.getInstance().syncDeviceInfo { _, response ->
-                        if (response != null) {
-                            val message =
-                                "WiFi FW: ${response.wifiFirmwareVersion}, BT FW: ${response.firmwareVersion}"
-                            Log.i("DeviceInfo", message)
-                            runOnUiThread {
-                                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
-                            }
-                        } else {
-                            runOnUiThread {
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "Failed to get device version",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                    CoroutineScope(Dispatchers.Main).launch {
+                        runCatching {
+                            protocol.connect(device)
+                        }.onFailure { error ->
+                            Log.e(
+                                "GlassesProtocol",
+                                "Connect failed",
+                                error
+                            )
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Connect failed: ${error.message}",
+                                Toast.LENGTH_LONG,
+                            )
+                                .show()
                         }
                     }
                 }
 
-                binding.btnCamera -> {
-                    LargeDataHandler.getInstance().glassesControl(
-                        byteArrayOf(0x02, 0x01, 0x01)
-                    ) { _, it ->
-                        if (it.dataType == 1 && it.errorCode == 0) {
-                            when (it.workTypeIng) {
-                                2 -> {
-                                    //Glasses are recording video
-                                }
-                                4 -> {
-                                    //Glasses are in transfer mode
-                                }
-                                5 -> {
-                                    //Glasses are in OTA mode
-                                }
-                                1, 6 ->{
-                                    //Glasses are in camera mode
-                                }
-                                7 -> {
-                                    //Glasses are in AI conversation
-                                }
-                                8 ->{
-                                    //Glasses are in recording mode
-                                }
-                            }
-                        } else {
-                            //Execute start and end
+                binding.btnDisconnect -> {
+                    AutoPairManager.setAutoReconnectSuppressed(
+                        true,
+                        reason = "user_disconnect_button"
+                    )
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Disconnecting from glasses…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
+
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        runCatching {
+                            protocol.disconnect()
+                        }.onFailure { error ->
+                            Log.e(
+                                "GlassesProtocol",
+                                "Disconnect failed",
+                                error
+                            )
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Disconnect failed: ${error.message}",
+                                Toast.LENGTH_LONG,
+                            )
+                                .show()
                         }
+                    }
+                }
+
+                binding.btnAddListener -> {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Registering device event listener…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
+                    LargeDataHandler.getInstance()
+                        .addOutDeviceListener(
+                            100,
+                            deviceNotifyListener
+                        )
+                }
+
+                binding.btnSetTime -> {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Syncing glasses time…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
+
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        val result = protocol.syncTime()
+                        showCommandResult(
+                            "Sync time",
+                            result
+                        )
+                    }
+                }
+
+                binding.btnVersion -> {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Reading device version…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
+
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        val result = protocol.requestDeviceInfo()
+
+                        result.onSuccess { info ->
+                            val message =
+                                "WiFi FW: ${info.wifiFirmwareVersion}, BT FW: ${info.bluetoothFirmwareVersion}"
+                            Log.i(
+                                "DeviceInfo",
+                                message
+                            )
+                            Toast.makeText(
+                                this@MainActivity,
+                                message,
+                                Toast.LENGTH_LONG
+                            )
+                                .show()
+                        }
+                            .onFailure { error ->
+                                Log.e(
+                                    "DeviceInfo",
+                                    "Failed to get device version",
+                                    error
+                                )
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Failed to get device version",
+                                    Toast.LENGTH_SHORT,
+                                )
+                                    .show()
+                            }
+                    }
+                }
+
+                binding.btnCamera -> {
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        val result = protocol.takePhoto(aiTransfer = false)
+                        showCommandResult(
+                            "Take photo",
+                            result
+                        )
                     }
                 }
 
@@ -706,10 +980,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     // Toggle video recording. While video is active, pause the auto audio loop.
                     val isRecording = GlassesMediaPrefs.isVideoRecording(this@MainActivity)
                     if (isRecording) {
-                        Toast.makeText(this@MainActivity, "Stopping video recording…", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Stopping video recording…",
+                            Toast.LENGTH_SHORT
+                        )
+                            .show()
                         controlVideoRecording(false)
                     } else {
-                        Toast.makeText(this@MainActivity, "Starting video recording…", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Starting video recording…",
+                            Toast.LENGTH_SHORT
+                        )
+                            .show()
                         controlVideoRecording(true)
                     }
                 }
@@ -720,94 +1004,223 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnBt -> {
-                    Toast.makeText(this@MainActivity, "Starting classic Bluetooth scan…", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Starting classic Bluetooth scan…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                     //BT scan
-                    BleOperateManager.getInstance().classicBluetoothStartScan()
+                    BleOperateManager.getInstance()
+                        .classicBluetoothStartScan()
 
                 }
+
                 binding.btnBattery -> {
-                    requestBatteryStatus(showToast = true)
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Requesting battery level…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
+
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        val result = protocol.requestBattery()
+
+                        result.onSuccess { battery ->
+                            updateBatteryText(battery.percent)
+                            val chargingText = when (battery.charging) {
+                                true -> "charging"
+                                false -> "not charging"
+                                null -> "unknown"
+                            }
+
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Battery: ${battery.percent}% ($chargingText)",
+                                Toast.LENGTH_LONG,
+                            )
+                                .show()
+                        }
+                            .onFailure { error ->
+                                Log.e(
+                                    "BatteryCallback",
+                                    "Failed to get battery",
+                                    error
+                                )
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Failed to get battery",
+                                    Toast.LENGTH_SHORT,
+                                )
+                                    .show()
+                            }
+                    }
                 }
-                binding.btnVolume ->{
-                    Toast.makeText(this@MainActivity, "Requesting volume info…", Toast.LENGTH_SHORT).show()
+
+                binding.btnVolume -> {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Requesting volume info…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                     //Read volume control and show values
-                    LargeDataHandler.getInstance().getVolumeControl { _, response ->
-                        if (response != null) {
-                            val msg = """
+                    LargeDataHandler.getInstance()
+                        .getVolumeControl { _, response ->
+                            if (response != null) {
+                                val msg = """
                                 Music: ${response.currVolumeMusic}/${response.maxVolumeMusic}
                                 Call: ${response.currVolumeCall}/${response.maxVolumeCall}
                                 System: ${response.currVolumeSystem}/${response.maxVolumeSystem}
                                 Mode: ${response.currVolumeType}
                             """.trimIndent()
-                            Log.i("VolumeControl", msg.replace('\n', ' '))
-                            runOnUiThread {
-                                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-                            }
-                        } else {
-                            runOnUiThread {
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "Failed to read volume info",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                                Log.i(
+                                    "VolumeControl",
+                                    msg.replace(
+                                        '\n',
+                                        ' '
+                                    )
+                                )
+                                runOnUiThread {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        msg,
+                                        Toast.LENGTH_LONG
+                                    )
+                                        .show()
+                                }
+                            } else {
+                                runOnUiThread {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Failed to read volume info",
+                                        Toast.LENGTH_SHORT
+                                    )
+                                        .show()
+                                }
                             }
                         }
-                    }
                 }
-                binding.btnMediaCount ->{
-                    Toast.makeText(this@MainActivity, "Requesting media count…", Toast.LENGTH_SHORT).show()
-                    LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x04)) { _, it ->
-                        if (it.dataType == 4) {
-                            val mediaCount = it.imageCount + it.videoCount + it.recordCount
-                            val msg = if (mediaCount > 0) {
-                                "Media not uploaded - Photos: ${it.imageCount}, Videos: ${it.videoCount}, Records: ${it.recordCount}"
+
+                binding.btnMediaCount -> {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Requesting media count…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
+
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        val result = protocol.requestMediaCounts()
+
+                        result.onSuccess { counts ->
+                            val msg = if (counts.total > 0) {
+                                "Media not uploaded - Photos: ${counts.photos}, Videos: ${counts.videos}, Records: ${counts.audios}"
                             } else {
                                 "No pending media on glasses"
                             }
-                            Log.i("MediaCount", msg)
-                            runOnUiThread {
-                                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-                            }
+
+                            Log.i(
+                                "MediaCount",
+                                msg
+                            )
+                            Toast.makeText(
+                                this@MainActivity,
+                                msg,
+                                Toast.LENGTH_LONG
+                            )
+                                .show()
                         }
+                            .onFailure { error ->
+                                Log.e(
+                                    "MediaCount",
+                                    "Failed to get media count",
+                                    error
+                                )
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Failed to get media count",
+                                    Toast.LENGTH_SHORT,
+                                )
+                                    .show()
+                            }
                     }
                 }
+
                 binding.btnDataDownload -> {
-                    Toast.makeText(this@MainActivity, "Starting data download…", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Starting data download…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                     // Check and request necessary permissions
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         // Android 13+ requires NEARBY_WIFI_DEVICES permission
-                        requestNearbyWifiDevicesPermission(this@MainActivity, object : OnPermissionCallback {
-                            override fun onGranted(permissions: MutableList<String>, all: Boolean) {
-                                if (all) {
-                                    // Start BLE+WiFi P2P data download
-                                    startDataDownload()
+                        requestNearbyWifiDevicesPermission(
+                            this@MainActivity,
+                            object : OnPermissionCallback {
+                                override fun onGranted(
+                                    permissions: MutableList<String>,
+                                    all: Boolean
+                                ) {
+                                    if (all) {
+                                        // Start BLE+WiFi P2P data download
+                                        startDataDownload()
+                                    }
                                 }
-                            }
 
-                            override fun onDenied(permissions: MutableList<String>, never: Boolean) {
-                                super.onDenied(permissions, never)
-                                if (never) {
-                                    XXPermissions.startPermissionActivity(this@MainActivity, permissions)
+                                override fun onDenied(
+                                    permissions: MutableList<String>,
+                                    never: Boolean
+                                ) {
+                                    super.onDenied(
+                                        permissions,
+                                        never
+                                    )
+                                    if (never) {
+                                        XXPermissions.startPermissionActivity(
+                                            this@MainActivity,
+                                            permissions
+                                        )
+                                    }
                                 }
-                            }
-                        })
+                            })
                     } else {
                         // Android 12 and below start download directly
                         startDataDownload()
                     }
                 }
+
                 binding.btnTransferStop -> {
                     cancelDataDownloadAttempt(
                         reason = "Sync stopped by user",
                         showToast = true,
                     )
                 }
+
                 binding.btnOtaInfo -> {
-                    Toast.makeText(this@MainActivity, "Dumping OTA server info…", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Dumping OTA server info…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                     dumpOtaServerInfo()
                 }
+
                 binding.btnPullOtaTest -> {
-                    Toast.makeText(this@MainActivity, "Triggering pull‑mode OTA test…", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Triggering pull‑mode OTA test…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                     testPullModeOta()
                 }
             }
@@ -818,121 +1231,169 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.cbHijackEnabled.setOnCheckedChangeListener { _, isChecked ->
 
             isAiHijackEnabled = isChecked
-            Toast.makeText(this, "Hijack ${if (isChecked) "Enabled" else "Disabled"}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                "Hijack ${if (isChecked) "Enabled" else "Disabled"}",
+                Toast.LENGTH_SHORT
+            )
+                .show()
         }
 
         binding.cbImageAsAssistant.isChecked = isImageAssistantMode
-        binding.cbImageAsAssistant.text = if (isImageAssistantMode) "Direct Assistant" else "App Sharing"
-        
+        binding.cbImageAsAssistant.text =
+            if (isImageAssistantMode) "Direct Assistant" else "App Sharing"
+
         binding.cbImageAsAssistant.setOnCheckedChangeListener { _, isChecked ->
             isImageAssistantMode = isChecked
             val modeName = if (isChecked) "Direct Assistant" else "App Sharing"
             binding.cbImageAsAssistant.text = modeName
-            Toast.makeText(this, "Image Hijack: $modeName", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                "Image Hijack: $modeName",
+                Toast.LENGTH_SHORT
+            )
+                .show()
         }
     }
 
     private fun dumpOtaServerInfo() {
         if (!BleOperateManager.getInstance().isConnected) {
-            Log.e("OTAProbe", "Bluetooth not connected. Please connect to glasses first.")
+            Log.e(
+                "OTAProbe",
+                "Bluetooth not connected. Please connect to glasses first."
+            )
             Toast.makeText(
                 this,
                 "Bluetooth not connected. Please connect to glasses first.",
                 Toast.LENGTH_LONG
-            ).show()
+            )
+                .show()
             return
         }
 
-        LargeDataHandler.getInstance().syncDeviceInfo { _, response ->
-            if (response == null) {
-                Log.e("OTAProbe", "syncDeviceInfo returned null response")
-                runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "Failed to read device info for OTA",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                return@syncDeviceInfo
-            }
-
-            val wifiHw = response.wifiHardwareVersion ?: ""
-            val wifiFw = response.wifiFirmwareVersion ?: ""
-            val btFw = response.firmwareVersion ?: ""
-            val hw = response.hardwareVersion ?: ""
-
-            // OTA binary URL used by the official app's debug/down path.
-            val otaBinaryUrl =
-                "https://qcwxfactory.oss-cn-beijing.aliyuncs.com/bin/glasses/${wifiHw}.swu"
-
-            // Try to download the OTA file directly into the app's files dir
-            // so you can pull it with `adb` for inspection.
-            val otaDir = File(getExternalFilesDir(null), "ota")
-            if (!otaDir.exists()) {
-                otaDir.mkdirs()
-            }
-            val outFile = File(otaDir, "${wifiHw}.swu")
-
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    Log.i(
-                        "OTAProbe",
-                        "Attempting OTA binary download to: ${outFile.absolutePath}"
-                    )
-                    val url = URL(otaBinaryUrl)
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "GET"
-                    conn.connectTimeout = 15000
-                    conn.readTimeout = 60000
-
-                    if (conn.responseCode == HttpURLConnection.HTTP_OK) {
-                        conn.inputStream.use { input ->
-                            FileOutputStream(outFile).use { output ->
-                                val buffer = ByteArray(8 * 1024)
-                                while (true) {
-                                    val read = input.read(buffer)
-                                    if (read <= 0) break
-                                    output.write(buffer, 0, read)
-                                }
-                                output.flush()
-                            }
-                        }
-                        Log.i(
-                            "OTAProbe",
-                            "OTA binary download completed: ${outFile.absolutePath} (size=${outFile.length()} bytes)"
-                        )
-                    } else {
-                        Log.e(
-                            "OTAProbe",
-                            "OTA binary download failed, HTTP ${conn.responseCode}"
-                        )
-                    }
-                    conn.disconnect()
-                } catch (e: Exception) {
+        LargeDataHandler.getInstance()
+            .syncDeviceInfo { _, response ->
+                if (response == null) {
                     Log.e(
                         "OTAProbe",
-                        "Exception while downloading OTA binary: ${e.message}",
-                        e
+                        "syncDeviceInfo returned null response"
                     )
+                    runOnUiThread {
+                        Toast.makeText(
+                            this,
+                            "Failed to read device info for OTA",
+                            Toast.LENGTH_SHORT
+                        )
+                            .show()
+                    }
+                    return@syncDeviceInfo
                 }
-            }
 
-            Log.i("OTAProbe", "==== OTA SERVER INFO START ====")
-            Log.i("OTAProbe", "Device hardware version     : $hw")
-            Log.i("OTAProbe", "WiFi hardware version       : $wifiHw")
-            Log.i("OTAProbe", "WiFi firmware version       : $wifiFw")
-            Log.i("OTAProbe", "Bluetooth firmware version  : $btFw")
-            Log.i(
-                "OTAProbe",
-                "OTA metadata API (global)   : https://www.qlifesnap.com/glasses/app-update/last-ota"
-            )
-            Log.i(
-                "OTAProbe",
-                "OTA metadata API (China)    : https://www.qlifesnap.com/glasses/app-update/last-ota/china"
-            )
-            Log.i("OTAProbe", "OTA binary URL candidate    : $otaBinaryUrl")
+                val wifiHw = response.wifiHardwareVersion ?: ""
+                val wifiFw = response.wifiFirmwareVersion ?: ""
+                val btFw = response.firmwareVersion ?: ""
+                val hw = response.hardwareVersion ?: ""
 
-            val lastOtaJsonTemplate = """
+                // OTA binary URL used by the official app's debug/down path.
+                val otaBinaryUrl =
+                    "https://qcwxfactory.oss-cn-beijing.aliyuncs.com/bin/glasses/${wifiHw}.swu"
+
+                // Try to download the OTA file directly into the app's files dir
+                // so you can pull it with `adb` for inspection.
+                val otaDir = File(
+                    getExternalFilesDir(null),
+                    "ota"
+                )
+                if (!otaDir.exists()) {
+                    otaDir.mkdirs()
+                }
+                val outFile = File(
+                    otaDir,
+                    "${wifiHw}.swu"
+                )
+
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        Log.i(
+                            "OTAProbe",
+                            "Attempting OTA binary download to: ${outFile.absolutePath}"
+                        )
+                        val url = URL(otaBinaryUrl)
+                        val conn = url.openConnection() as HttpURLConnection
+                        conn.requestMethod = "GET"
+                        conn.connectTimeout = 15000
+                        conn.readTimeout = 60000
+
+                        if (conn.responseCode == HttpURLConnection.HTTP_OK) {
+                            conn.inputStream.use { input ->
+                                FileOutputStream(outFile).use { output ->
+                                    val buffer = ByteArray(8 * 1024)
+                                    while (true) {
+                                        val read = input.read(buffer)
+                                        if (read <= 0) break
+                                        output.write(
+                                            buffer,
+                                            0,
+                                            read
+                                        )
+                                    }
+                                    output.flush()
+                                }
+                            }
+                            Log.i(
+                                "OTAProbe",
+                                "OTA binary download completed: ${outFile.absolutePath} (size=${outFile.length()} bytes)"
+                            )
+                        } else {
+                            Log.e(
+                                "OTAProbe",
+                                "OTA binary download failed, HTTP ${conn.responseCode}"
+                            )
+                        }
+                        conn.disconnect()
+                    } catch (e: Exception) {
+                        Log.e(
+                            "OTAProbe",
+                            "Exception while downloading OTA binary: ${e.message}",
+                            e
+                        )
+                    }
+                }
+
+                Log.i(
+                    "OTAProbe",
+                    "==== OTA SERVER INFO START ===="
+                )
+                Log.i(
+                    "OTAProbe",
+                    "Device hardware version     : $hw"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "WiFi hardware version       : $wifiHw"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "WiFi firmware version       : $wifiFw"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "Bluetooth firmware version  : $btFw"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "OTA metadata API (global)   : https://www.qlifesnap.com/glasses/app-update/last-ota"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "OTA metadata API (China)    : https://www.qlifesnap.com/glasses/app-update/last-ota/china"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "OTA binary URL candidate    : $otaBinaryUrl"
+                )
+
+                val lastOtaJsonTemplate = """
                 {
                   "appId": <APP_ID>,
                   "uid": <USER_ID>,
@@ -945,26 +1406,36 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             """.trimIndent()
 
-            Log.i("OTAProbe", "Sample LastOtaRequest JSON (fill in placeholders):")
-            Log.i("OTAProbe", lastOtaJsonTemplate)
-            Log.i(
-                "OTAProbe",
-                "Sample curl (metadata): curl -X POST 'https://www.qlifesnap.com/glasses/app-update/last-ota' -H 'Content-Type: application/json' -d '<JSON_ABOVE>'"
-            )
-            Log.i(
-                "OTAProbe",
-                "Sample curl (binary)  : curl -o '${wifiHw}.swu' '$otaBinaryUrl'"
-            )
-            Log.i("OTAProbe", "==== OTA SERVER INFO END ====")
+                Log.i(
+                    "OTAProbe",
+                    "Sample LastOtaRequest JSON (fill in placeholders):"
+                )
+                Log.i(
+                    "OTAProbe",
+                    lastOtaJsonTemplate
+                )
+                Log.i(
+                    "OTAProbe",
+                    "Sample curl (metadata): curl -X POST 'https://www.qlifesnap.com/glasses/app-update/last-ota' -H 'Content-Type: application/json' -d '<JSON_ABOVE>'"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "Sample curl (binary)  : curl -o '${wifiHw}.swu' '$otaBinaryUrl'"
+                )
+                Log.i(
+                    "OTAProbe",
+                    "==== OTA SERVER INFO END ===="
+                )
 
-            runOnUiThread {
-                Toast.makeText(
-                    this,
-                    "OTA server info dumped to logcat (tag: OTAProbe)",
-                    Toast.LENGTH_LONG
-                ).show()
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "OTA server info dumped to logcat (tag: OTAProbe)",
+                        Toast.LENGTH_LONG
+                    )
+                        .show()
+                }
             }
-        }
     }
 
     /**
@@ -977,101 +1448,134 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
      */
     private fun testPullModeOta() {
         if (!BleOperateManager.getInstance().isConnected) {
-            Log.e("PullOtaTest", "Bluetooth not connected. Please connect to glasses first.")
+            Log.e(
+                "PullOtaTest",
+                "Bluetooth not connected. Please connect to glasses first."
+            )
             Toast.makeText(
                 this,
                 "Bluetooth not connected. Please connect to glasses first.",
                 Toast.LENGTH_LONG
-            ).show()
+            )
+                .show()
             return
         }
 
         val url = TEST_PULL_OTA_URL
         if (url.isBlank()) {
-            Log.e("PullOtaTest", "TEST_PULL_OTA_URL is blank; edit MainActivity to set it.")
+            Log.e(
+                "PullOtaTest",
+                "TEST_PULL_OTA_URL is blank; edit MainActivity to set it."
+            )
             Toast.makeText(
                 this,
                 "TEST_PULL_OTA_URL is blank. Edit MainActivity first.",
                 Toast.LENGTH_LONG
-            ).show()
+            )
+                .show()
             return
         }
 
-        Log.i("PullOtaTest", "Calling writeIpToSoc with URL: $url")
-        LargeDataHandler.getInstance().writeIpToSoc(url) { cmdType, response ->
-            Log.i(
-                "PullOtaTest",
-                "writeIpToSoc callback: cmdType=$cmdType, response=$response"
+        Log.i(
+            "PullOtaTest",
+            "Calling writeIpToSoc with URL: $url"
+        )
+        LargeDataHandler.getInstance()
+            .writeIpToSoc(url) { cmdType, response ->
+                Log.i(
+                    "PullOtaTest",
+                    "writeIpToSoc callback: cmdType=$cmdType, response=$response"
+                )
+            }
+    }
+
+    private fun controlVideoRecording(start: Boolean) {
+        val protocol = currentGlassesProtocolOrToast() ?: return
+
+        if (start) {
+            AutoAudioCapturePrefs.setPausedForVideo(
+                this,
+                true
+            )
+            GlassesMediaPrefs.setVideoRecording(
+                this,
+                true
             )
         }
-    }
-    
-    private fun controlVideoRecording(start: Boolean) {
-        val value = if (start) 0x02 else 0x03
 
-        // While video is recording, pause the auto audio loop.
-        if (start) {
-            AutoAudioCapturePrefs.setPausedForVideo(this, true)
-            GlassesMediaPrefs.setVideoRecording(this, true) // optimistic
-        }
+        CoroutineScope(Dispatchers.Main).launch {
+            when (val result = protocol.setVideoRecording(start)) {
+                GlassesCommandResult.Accepted -> {
+                    GlassesMediaPrefs.setVideoRecording(
+                        this@MainActivity,
+                        start
+                    )
+                    AutoAudioCapturePrefs.setPausedForVideo(
+                        this@MainActivity,
+                        start
+                    )
+                }
 
-        LargeDataHandler.getInstance().glassesControl(
-            byteArrayOf(0x02, 0x01, value.toByte())
-        ) { _, rsp ->
-            if (rsp.dataType == 1) {
-                if (rsp.errorCode == 0) {
-                    when (rsp.workTypeIng) {
-                        2 -> {
-                            // Glasses are recording video
-                            GlassesMediaPrefs.setVideoRecording(this, true)
-                            AutoAudioCapturePrefs.setPausedForVideo(this, true)
-                        }
-                        else -> {
-                            // Anything other than 2 means not actively recording video.
-                            GlassesMediaPrefs.setVideoRecording(this, false)
-                            AutoAudioCapturePrefs.setPausedForVideo(this, false)
-                        }
-                    }
-                } else {
-                    // Command failed; revert optimistic state.
+                is GlassesCommandResult.Rejected -> {
                     if (start) {
-                        GlassesMediaPrefs.setVideoRecording(this, false)
-                        AutoAudioCapturePrefs.setPausedForVideo(this, false)
+                        GlassesMediaPrefs.setVideoRecording(
+                            this@MainActivity,
+                            false
+                        )
+                        AutoAudioCapturePrefs.setPausedForVideo(
+                            this@MainActivity,
+                            false
+                        )
                     }
+
+                    Log.e(
+                        "GlassesProtocol",
+                        "Video command failed: ${result.error.message}"
+                    )
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Video command failed: ${result.error.message}",
+                        Toast.LENGTH_LONG,
+                    )
+                        .show()
                 }
             }
         }
     }
-    
+
     private fun controlAudioRecording(start: Boolean) {
-        val value = if (start) 0x08 else 0x0c
-        LargeDataHandler.getInstance().glassesControl(
-            byteArrayOf(0x02, 0x01, value.toByte())
-        ) { _, it ->
-            if (it.dataType == 1) {
-                if (it.errorCode == 0) {
-                    when (it.workTypeIng) {
-                        2 -> {
-                            //Glasses are recording video
-                        }
-                        4 -> {
-                            //Glasses are in transfer mode
-                        }
-                        5 -> {
-                            //Glasses are in OTA mode
-                        }
-                        1, 6 ->{
-                            //Glasses are in camera mode
-                        }
-                        7 -> {
-                            //Glasses are in AI conversation
-                        }
-                        8 ->{
-                            //Glasses are in recording mode
-                        }
+        val protocol = currentGlassesProtocolOrToast() ?: return
+
+        CoroutineScope(Dispatchers.Main).launch {
+            when (val result = protocol.setAudioRecording(start)) {
+                GlassesCommandResult.Accepted -> {
+                    Log.i(
+                        "GlassesProtocol",
+                        "Audio recording command accepted: start=$start"
+                    )
+                }
+
+                is GlassesCommandResult.Rejected -> {
+                    if (start) {
+                        Log.e(
+                            "GlassesProtocol",
+                            "Audio command failed: ${result.error.message}"
+                        )
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Audio command failed: ${result.error.message}",
+                            Toast.LENGTH_LONG,
+                        )
+                            .show()
+                    } else {
+                        // Legacy MainActivity behavior: stop-audio was a best-effort safety command
+                        // sent before most actions. A missing/odd SDK ACK should not be treated
+                        // as a user-visible failure.
+                        Log.d(
+                            "GlassesProtocol",
+                            "Ignoring stopAudioRecording failure: ${result.error.message}"
+                        )
                     }
-                } else {
-                    //Execute start and end
                 }
             }
         }
@@ -1125,8 +1629,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (!isChosenProviderMode()) return false
         return when (AutomationPrefs.getProviderType(this)) {
             AgentProviderType.PRO_SUBSCRIPTION -> true
-            AgentProviderType.LOCAL_AGENT,
-            AgentProviderType.TASKER -> false
+            AgentProviderType.LOCAL_AGENT, AgentProviderType.TASKER -> false
         }
     }
 
@@ -1136,12 +1639,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val selected = LocalModelStorageRepository.resolveSelectedModel(this)
             ?: return "No local model selected. Install/select Gemma 4 LiteRT first."
-        val settings = LocalModelSettingsRepository.getForModel(this, selected.id)
+        val settings = LocalModelSettingsRepository.getForModel(
+            this,
+            selected.id
+        )
         if (settings.modelRuntime != LocalModelRuntime.LITERT) {
             return "Image questions require Local Runtime = LiteRT for the selected model."
         }
 
-        val modelHint = "${selected.displayName} ${selected.catalogId.orEmpty()} ${selected.fileName}".lowercase(Locale.US)
+        val modelHint =
+            "${selected.displayName} ${selected.catalogId.orEmpty()} ${selected.fileName}".lowercase(Locale.US)
         if (!modelHint.contains("gemma")) {
             return "Select a Gemma LiteRT model for local image questions."
         }
@@ -1159,7 +1666,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun isTaskerInstalled(): Boolean {
         return runCatching {
-            packageManager.getPackageInfo(TASKER_PACKAGE_NAME, 0)
+            packageManager.getPackageInfo(
+                TASKER_PACKAGE_NAME,
+                0
+            )
             true
         }.getOrDefault(false)
     }
@@ -1172,20 +1682,25 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (taskerInstalled && pluginEnabled) return false
 
         val msg = when {
-            !taskerInstalled && !pluginEnabled ->
-                "AI image questions won't work until Tasker and the Gemini/ChatGPT Image Questions automation plugin are enabled."
-            !taskerInstalled ->
-                "AI image questions won't work until Tasker is installed and enabled."
-            else ->
-                "AI image questions won't work until the Gemini/ChatGPT app automation plugin for Image Questions is downloaded from Community Plugins and enabled."
+            !taskerInstalled && !pluginEnabled -> "AI image questions won't work until Tasker and the Gemini/ChatGPT Image Questions automation plugin are enabled."
+            !taskerInstalled -> "AI image questions won't work until Tasker is installed and enabled."
+            else -> "AI image questions won't work until the Gemini/ChatGPT app automation plugin for Image Questions is downloaded from Community Plugins and enabled."
         }
 
         AlertDialog.Builder(this)
             .setTitle("AI image setup required")
             .setMessage(msg)
-            .setNegativeButton("Not now", null)
+            .setNegativeButton(
+                "Not now",
+                null
+            )
             .setPositiveButton("Open Plugins") { _, _ ->
-                startActivity(Intent(this, CommunityPluginsActivity::class.java))
+                startActivity(
+                    Intent(
+                        this,
+                        CommunityPluginsActivity::class.java
+                    )
+                )
             }
             .show()
 
@@ -1206,8 +1721,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun refreshAiModeButtons() {
-        val activeColor = ContextCompat.getColor(this, R.color.cyan_accent)
-        val inactiveColor = ContextCompat.getColor(this, R.color.text_secondary)
+        val activeColor = ContextCompat.getColor(
+            this,
+            R.color.cyan_accent
+        )
+        val inactiveColor = ContextCompat.getColor(
+            this,
+            R.color.text_secondary
+        )
 
         binding.btnModeGemini.setTextColor(if (aiAssistantMode == AI_MODE_GEMINI) activeColor else inactiveColor)
         binding.btnModeChatgpt.setTextColor(if (aiAssistantMode == AI_MODE_CHATGPT) activeColor else inactiveColor)
@@ -1216,48 +1737,124 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         refreshAiQueryButtonsState()
     }
 
-    private fun sendAiBroadcast(type: String, path: String? = null, assistantMode: String = resolveEffectiveAiAssistantMode()) {
+    private fun sendAiBroadcast(
+        type: String,
+        path: String? = null,
+        assistantMode: String = resolveEffectiveAiAssistantMode()
+    ) {
         val intent = Intent(aiEventAction(packageName)).apply {
-            putExtra("type", type)
-            path?.let { putExtra("path", it) }
-            putExtra("assistant", assistantMode)
+            putExtra(
+                "type",
+                type
+            )
+            path?.let {
+                putExtra(
+                    "path",
+                    it
+                )
+            }
+            putExtra(
+                "assistant",
+                assistantMode
+            )
             addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
         sendBroadcast(intent)
-        Log.i("AIHijack", "Sent Broadcast to Tasker: $type")
+        Log.i(
+            "AIHijack",
+            "Sent Broadcast to Tasker: $type"
+        )
     }
 
     private fun todayDateString(tsMs: Long = System.currentTimeMillis()): String {
-        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val fmt = SimpleDateFormat(
+            "yyyy-MM-dd",
+            Locale.US
+        )
         return fmt.format(java.util.Date(tsMs))
     }
 
     private fun tokenizeMemoryQuery(text: String): List<String> {
         val stopwords = setOf(
-            "the", "and", "for", "with", "that", "this", "from", "into", "what", "when",
-            "how", "who", "why", "are", "was", "were", "can", "could", "should", "would",
-            "will", "just", "like", "your", "you", "about", "have", "has", "had", "then",
-            "que", "para", "com", "uma", "nao", "não", "isso", "essa", "esse", "foi", "tem",
-            "como", "porque", "por", "das", "dos", "uns", "umas"
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "what",
+            "when",
+            "how",
+            "who",
+            "why",
+            "are",
+            "was",
+            "were",
+            "can",
+            "could",
+            "should",
+            "would",
+            "will",
+            "just",
+            "like",
+            "your",
+            "you",
+            "about",
+            "have",
+            "has",
+            "had",
+            "then",
+            "que",
+            "para",
+            "com",
+            "uma",
+            "nao",
+            "não",
+            "isso",
+            "essa",
+            "esse",
+            "foi",
+            "tem",
+            "como",
+            "porque",
+            "por",
+            "das",
+            "dos",
+            "uns",
+            "umas"
         )
 
-        return text
-            .lowercase(Locale.US)
+        return text.lowercase(Locale.US)
             .split(Regex("[^\\p{L}\\p{N}]+"))
             .map { it.trim() }
             .filter { it.length >= 3 && it !in stopwords }
             .distinct()
     }
 
-    private fun selectRelevantMemoryItems(items: List<String>, queryText: String, maxItems: Int): List<String> {
-        val clean = items
-            .map { it.trim().removePrefix("- ").removePrefix("* ").trim() }
+    private fun selectRelevantMemoryItems(
+        items: List<String>,
+        queryText: String,
+        maxItems: Int
+    ): List<String> {
+        val clean = items.map {
+            it.trim()
+                .removePrefix("- ")
+                .removePrefix("* ")
+                .trim()
+        }
             .filter { it.isNotBlank() }
             .distinct()
 
         if (clean.isEmpty()) return emptyList()
         val tokens = tokenizeMemoryQuery(queryText)
-        if (tokens.isEmpty()) return clean.take(minOf(maxItems, 2))
+        if (tokens.isEmpty()) return clean.take(
+            minOf(
+                maxItems,
+                2
+            )
+        )
 
         val scored = clean.map { item ->
             val hay = item.lowercase(Locale.US)
@@ -1268,16 +1865,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             item to score
         }
 
-        val hits = scored
-            .filter { it.second > 0 }
+        val hits = scored.filter { it.second > 0 }
             .sortedWith(compareByDescending<Pair<String, Int>> { it.second }.thenBy { it.first.length })
             .map { it.first }
             .take(maxItems)
 
-        return if (hits.isNotEmpty()) hits else clean.take(minOf(maxItems, 2))
+        return if (hits.isNotEmpty()) hits else clean.take(
+            minOf(
+                maxItems,
+                2
+            )
+        )
     }
 
-    private fun buildCompactMemoryAwareSystemPrompt(queryText: String, date: String): String {
+    private fun buildCompactMemoryAwareSystemPrompt(
+        queryText: String,
+        date: String
+    ): String {
         val extraSections = mutableListOf<LocalAgentContextBuilder.Section>()
 
         val retrieval = LocalAgentMemorySearch.buildRelevantMemoryBlock(
@@ -1296,13 +1900,29 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             )
         }
 
-        val draftFacts = runCatching { DailyFactsStorage.load(this, date).draft }.getOrDefault(emptyList())
+        val draftFacts = runCatching {
+            DailyFactsStorage.load(
+                this,
+                date
+            ).draft
+        }.getOrDefault(emptyList())
         val draftRef = LocalAgentMemoryStore.memoryRefForFile(
             this,
-            LocalAgentMemoryStore.dailyFactsFileForDate(this, date),
+            LocalAgentMemoryStore.dailyFactsFileForDate(
+                this,
+                date
+            ),
         )
-        val relevantDraft = if (MemoryPolicyService.isMemoryRefSearchEligible(this, draftRef)) {
-            selectRelevantMemoryItems(draftFacts, queryText, maxItems = 4)
+        val relevantDraft = if (MemoryPolicyService.isMemoryRefSearchEligible(
+                this,
+                draftRef
+            )
+        ) {
+            selectRelevantMemoryItems(
+                draftFacts,
+                queryText,
+                maxItems = 4
+            )
         } else {
             emptyList()
         }
@@ -1313,13 +1933,29 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             )
         }
 
-        val candidateFacts = runCatching { CandidateUserFactsStorage.load(this, date) }.getOrDefault(emptyList())
+        val candidateFacts = runCatching {
+            CandidateUserFactsStorage.load(
+                this,
+                date
+            )
+        }.getOrDefault(emptyList())
         val candidateRef = LocalAgentMemoryStore.memoryRefForFile(
             this,
-            LocalAgentMemoryStore.userFactsCandidatesFileForDate(this, date),
+            LocalAgentMemoryStore.userFactsCandidatesFileForDate(
+                this,
+                date
+            ),
         )
-        val relevantCandidates = if (MemoryPolicyService.isMemoryRefSearchEligible(this, candidateRef)) {
-            selectRelevantMemoryItems(candidateFacts, queryText, maxItems = 3)
+        val relevantCandidates = if (MemoryPolicyService.isMemoryRefSearchEligible(
+                this,
+                candidateRef
+            )
+        ) {
+            selectRelevantMemoryItems(
+                candidateFacts,
+                queryText,
+                maxItems = 3
+            )
         } else {
             emptyList()
         }
@@ -1352,11 +1988,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         audioPath: String? = null,
     ): String {
         val date = todayDateString()
-        val systemPrompt = buildCompactMemoryAwareSystemPrompt(queryText = userPrompt, date = date)
+        val systemPrompt = buildCompactMemoryAwareSystemPrompt(
+            queryText = userPrompt,
+            date = date
+        )
 
         val messages = listOf(
-            mapOf("role" to "System", "content" to systemPrompt),
-            mapOf("role" to "User", "content" to userPrompt),
+            mapOf(
+                "role" to "System",
+                "content" to systemPrompt
+            ),
+            mapOf(
+                "role" to "User",
+                "content" to userPrompt
+            ),
         )
 
         return when (providerType) {
@@ -1367,26 +2012,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     prompt = userPrompt,
                     messages = messages,
                     modelOverride = ProSubscriptionAiPrefs.getRequestsModel(this),
-                ).getOrElse {
-                    "Pro endpoint error: ${it.message ?: "unknown error"}"
-                }
+                )
+                    .getOrElse {
+                        "Pro endpoint error: ${it.message ?: "unknown error"}"
+                    }
             }
 
-            AgentProviderType.LOCAL_AGENT ->
-                runCatching {
-                    val modelIssue = validateSelectedGemmaForChosenProvider(imageRequested = imagePaths.isNotEmpty())
-                    if (modelIssue != null) {
-                        return@runCatching modelIssue
-                    }
-                    LocalModelsProvider().streamChat(
-                        context = this,
-                        messages = messages,
-                        imagePaths = imagePaths,
-                        audioPath = audioPath,
-                    )
-                }.getOrElse {
-                    "Local Models error: ${it.message ?: "unknown error"}"
+            AgentProviderType.LOCAL_AGENT -> runCatching {
+                val modelIssue =
+                    validateSelectedGemmaForChosenProvider(imageRequested = imagePaths.isNotEmpty())
+                if (modelIssue != null) {
+                    return@runCatching modelIssue
                 }
+                LocalModelsProvider().streamChat(
+                    context = this,
+                    messages = messages,
+                    imagePaths = imagePaths,
+                    audioPath = audioPath,
+                )
+            }.getOrElse {
+                "Local Models error: ${it.message ?: "unknown error"}"
+            }
 
             AgentProviderType.TASKER -> {
                 CliRelayClient.chat(
@@ -1394,7 +2040,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     chatId = "glasses_${System.currentTimeMillis()}",
                     prompt = userPrompt,
                     messages = messages,
-                ).getOrElse { "Endpoint unavailable: ${it.message ?: "unknown error"}" }
+                )
+                    .getOrElse { "Endpoint unavailable: ${it.message ?: "unknown error"}" }
             }
         }.trim()
     }
@@ -1402,12 +2049,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun validateSelectedGemmaForChosenProvider(imageRequested: Boolean): String? {
         val selected = LocalModelStorageRepository.resolveSelectedModel(this)
             ?: return "No local model selected. Install/select Gemma 4 LiteRT in Settings."
-        val settings = LocalModelSettingsRepository.getForModel(this, selected.id)
+        val settings = LocalModelSettingsRepository.getForModel(
+            this,
+            selected.id
+        )
         if (settings.modelRuntime != LocalModelRuntime.LITERT) {
             return "Selected local model runtime is not LiteRT. Switch runtime to LiteRT for Gemma 4 flows."
         }
 
-        val modelHint = "${selected.displayName} ${selected.catalogId.orEmpty()} ${selected.fileName}".lowercase(Locale.US)
+        val modelHint =
+            "${selected.displayName} ${selected.catalogId.orEmpty()} ${selected.fileName}".lowercase(Locale.US)
         if (!modelHint.contains("gemma")) {
             return "Selected local model is not Gemma. Please select a Gemma 4 LiteRT model."
         }
@@ -1423,7 +2074,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         providerType: AgentProviderType,
         userQuestion: String?,
     ) {
-        Log.i("AIHijack", "Running memory-aware image query for chosen provider $providerType: $imagePath")
+        Log.i(
+            "AIHijack",
+            "Running memory-aware image query for chosen provider $providerType: $imagePath"
+        )
 
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -1436,24 +2090,43 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         )
 
                         if (visionResult.isFailure) {
-                            val errorMsg = visionResult.exceptionOrNull()?.message ?: "unknown error"
-                            Log.e("AIHijack", "Image query failed: $errorMsg")
+                            val errorMsg =
+                                visionResult.exceptionOrNull()?.message ?: "unknown error"
+                            Log.e(
+                                "AIHijack",
+                                "Image query failed: $errorMsg"
+                            )
                             runOnUiThread {
-                                Toast.makeText(this@MainActivity, "Vision error: ${errorMsg.take(80)}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Vision error: ${errorMsg.take(80)}",
+                                    Toast.LENGTH_LONG
+                                )
+                                    .show()
                             }
                             "I couldn't analyze the image. Please try again."
                         } else {
-                            val visionReply = visionResult.getOrNull()?.trim() ?: ""
+                            val visionReply = visionResult.getOrNull()
+                                ?.trim() ?: ""
                             if (visionReply.isBlank()) {
                                 "I couldn't analyze that image right now. Please try again."
                             } else if (looksLikeVisionFailed(visionReply)) {
-                                Log.w("AIHijack", "Vision relay couldn't process image. Reply: ${visionReply.take(100)}")
+                                Log.w(
+                                    "AIHijack",
+                                    "Vision relay couldn't process image. Reply: ${visionReply.take(100)}"
+                                )
                                 runOnUiThread {
-                                    Toast.makeText(this@MainActivity, "Vision model couldn't process image", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Vision model couldn't process image",
+                                        Toast.LENGTH_LONG
+                                    )
+                                        .show()
                                 }
                                 "I couldn't analyze the image. Please try again."
                             } else {
-                                val leadPrompt = userQuestion?.trim().takeUnless { it.isNullOrBlank() }
+                                val leadPrompt = userQuestion?.trim()
+                                    .takeUnless { it.isNullOrBlank() }
                                     ?: "Describe and translate to English the following picture if it isn't in English."
                                 val followUpPrompt = buildString {
                                     appendLine(leadPrompt)
@@ -1472,7 +2145,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
 
                     AgentProviderType.LOCAL_AGENT -> {
-                        val multimodalPrompt = userQuestion?.trim().takeUnless { it.isNullOrBlank() }
+                        val multimodalPrompt = userQuestion?.trim()
+                            .takeUnless { it.isNullOrBlank() }
                             ?: "Describe this image clearly, and translate any visible non-English text to English. Keep it concise."
                         runMemoryAwareChosenProviderQuery(
                             userPrompt = multimodalPrompt,
@@ -1482,16 +2156,29 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
 
                     AgentProviderType.TASKER -> {
-                        val visionResult = CliRelayClient.imageQuery(this@MainActivity, imagePath)
+                        val visionResult = CliRelayClient.imageQuery(
+                            this@MainActivity,
+                            imagePath
+                        )
                         if (visionResult.isFailure) {
-                            val errorMsg = visionResult.exceptionOrNull()?.message ?: "unknown error"
-                            Log.e("AIHijack", "Image query failed: $errorMsg")
+                            val errorMsg =
+                                visionResult.exceptionOrNull()?.message ?: "unknown error"
+                            Log.e(
+                                "AIHijack",
+                                "Image query failed: $errorMsg"
+                            )
                             runOnUiThread {
-                                Toast.makeText(this@MainActivity, "Vision error: ${errorMsg.take(80)}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Vision error: ${errorMsg.take(80)}",
+                                    Toast.LENGTH_LONG
+                                )
+                                    .show()
                             }
                             "I couldn't analyze the image. Please try again."
                         } else {
-                            val visionReply = visionResult.getOrNull()?.trim() ?: ""
+                            val visionReply = visionResult.getOrNull()
+                                ?.trim() ?: ""
                             if (visionReply.isBlank()) {
                                 "I couldn't analyze that image right now. Please try again."
                             } else {
@@ -1513,28 +2200,43 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun triggerCliRelayImageCaptureAndQuery() {
-        handleGlassesImageButtonPressed(triggerCapture = true, sourceTag = "test_button")
+        handleGlassesImageButtonPressed(
+            triggerCapture = true,
+            sourceTag = "test_button"
+        )
     }
 
-    private fun handleGlassesImageButtonPressed(triggerCapture: Boolean, sourceTag: String) {
+    private fun handleGlassesImageButtonPressed(
+        triggerCapture: Boolean,
+        sourceTag: String
+    ) {
         if (!BleOperateManager.getInstance().isConnected) {
             runOnUiThread {
                 Toast.makeText(
                     this@MainActivity,
                     "Glasses are not connected. Connect first to use image query.",
                     Toast.LENGTH_SHORT,
-                ).show()
+                )
+                    .show()
             }
             return
         }
 
         if (triggerCapture) {
-            Toast.makeText(this, "Triggering glasses camera…", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                "Triggering glasses camera…",
+                Toast.LENGTH_SHORT
+            )
+                .show()
         }
 
         val outDir = getExternalFilesDir("DCIM") ?: filesDir
         val fileName = "AI_Thumb_${sourceTag}_${System.currentTimeMillis()}.jpg"
-        val file = File(outDir, fileName)
+        val file = File(
+            outDir,
+            fileName
+        )
         runCatching {
             file.parentFile?.mkdirs()
             if (file.exists()) file.delete()
@@ -1548,15 +2250,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (data != null && data.isNotEmpty()) {
                 gotChunk.set(true)
                 runCatching {
-                    FileOutputStream(file, true).use { it.write(data) }
+                    FileOutputStream(
+                        file,
+                        true
+                    ).use { it.write(data) }
                 }.onFailure {
-                    Log.e("AIHijack", "Failed to write thumbnail chunk: ${it.message}")
+                    Log.e(
+                        "AIHijack",
+                        "Failed to write thumbnail chunk: ${it.message}"
+                    )
                 }
             }
 
-            if (isComplete && completed.compareAndSet(false, true)) {
-                Log.i("AIHijack", "[$sourceTag] Thumbnail transfer complete: ${file.absolutePath} (${file.length()} bytes)")
-                if (imageProcessed.compareAndSet(false, true)) {
+            if (isComplete && completed.compareAndSet(
+                    false,
+                    true
+                )
+            ) {
+                Log.i(
+                    "AIHijack",
+                    "[$sourceTag] Thumbnail transfer complete: ${file.absolutePath} (${file.length()} bytes)"
+                )
+                if (imageProcessed.compareAndSet(
+                        false,
+                        true
+                    )
+                ) {
                     onImageThumbnailReadyForQuestion(file.absolutePath)
                 }
             }
@@ -1565,27 +2284,53 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         CoroutineScope(Dispatchers.IO).launch {
             if (triggerCapture) {
                 runCatching {
-                    LargeDataHandler.getInstance().glassesControl(
-                        byteArrayOf(0x02, 0x01, 0x06, 0x02, 0x02)
-                    ) { _, _ -> }
+                    LargeDataHandler.getInstance()
+                        .glassesControl(
+                            byteArrayOf(
+                                0x02,
+                                0x01,
+                                0x06,
+                                0x02,
+                                0x02
+                            )
+                        ) { _, _ -> }
                 }
                 delay(250)
-                LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x01)) { _, _ -> }
+                LargeDataHandler.getInstance()
+                    .glassesControl(
+                        byteArrayOf(
+                            0x02,
+                            0x01,
+                            0x01
+                        )
+                    ) { _, _ -> }
                 delay(3000)
             }
 
-            LargeDataHandler.getInstance().getPictureThumbnails(thumbCallback)
+            LargeDataHandler.getInstance()
+                .getPictureThumbnails(thumbCallback)
 
             // Wait for BLE transfer to complete. Total: 5s + 8s = 13s.
             delay(5000)
             if (!gotChunk.get() && !completed.get()) {
-                Log.w("AIHijack", "[$sourceTag] No thumbnail chunks yet; retrying getPictureThumbnails()…")
-                LargeDataHandler.getInstance().getPictureThumbnails(thumbCallback)
+                Log.w(
+                    "AIHijack",
+                    "[$sourceTag] No thumbnail chunks yet; retrying getPictureThumbnails()…"
+                )
+                LargeDataHandler.getInstance()
+                    .getPictureThumbnails(thumbCallback)
             }
 
             delay(8000)
-            if (!completed.get() && imageProcessed.compareAndSet(false, true)) {
-                Log.w("AIHijack", "[$sourceTag] BLE thumbnail timed out, falling back to latest image")
+            if (!completed.get() && imageProcessed.compareAndSet(
+                    false,
+                    true
+                )
+            ) {
+                Log.w(
+                    "AIHijack",
+                    "[$sourceTag] BLE thumbnail timed out, falling back to latest image"
+                )
                 useLatestImageFallback(sourceTag)
             }
         }
@@ -1600,16 +2345,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val fallbackFile = File(fallbackImage)
             val ageMs = System.currentTimeMillis() - fallbackFile.lastModified()
             if (ageMs > IMAGE_FALLBACK_MAX_AGE_MS || ageMs < 0) {
-                Log.w("AIHijack", "[$sourceTag] Image too old: age=${ageMs / 1000}s")
+                Log.w(
+                    "AIHijack",
+                    "[$sourceTag] Image too old: age=${ageMs / 1000}s"
+                )
                 runOnUiThread {
                     Toast.makeText(
                         this@MainActivity,
                         "Last image is ${ageMs / 60000} min old — too old to use.",
                         Toast.LENGTH_LONG,
-                    ).show()
+                    )
+                        .show()
                 }
             } else {
-                Log.i("AIHijack", "[$sourceTag] Using latest captured image (age=${ageMs / 1000}s)")
+                Log.i(
+                    "AIHijack",
+                    "[$sourceTag] Using latest captured image (age=${ageMs / 1000}s)"
+                )
                 onImageThumbnailReadyForQuestion(fallbackImage)
             }
         } else {
@@ -1618,7 +2370,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     this@MainActivity,
                     "No image found. Take a photo with the glasses first.",
                     Toast.LENGTH_LONG,
-                ).show()
+                )
+                    .show()
             }
         }
     }
@@ -1626,35 +2379,53 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun onImageThumbnailReadyForQuestion(imagePath: String) {
         val imageFile = File(imagePath)
         if (!imageFile.exists() || imageFile.length() < 1000) {
-            Log.e("AIHijack", "Image file missing or too small: $imagePath (${imageFile.length()} bytes)")
+            Log.e(
+                "AIHijack",
+                "Image file missing or too small: $imagePath (${imageFile.length()} bytes)"
+            )
             runOnUiThread {
-                Toast.makeText(this, "Image transfer incomplete. Please try again.", Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    this,
+                    "Image transfer incomplete. Please try again.",
+                    Toast.LENGTH_LONG
+                )
+                    .show()
             }
             return
         }
 
         val ageMs = System.currentTimeMillis() - imageFile.lastModified()
         if (ageMs > IMAGE_FALLBACK_MAX_AGE_MS || ageMs < 0) {
-            Log.w("AIHijack", "Thumbnail too old: age=${ageMs / 1000}s, path=$imagePath")
+            Log.w(
+                "AIHijack",
+                "Thumbnail too old: age=${ageMs / 1000}s, path=$imagePath"
+            )
             runOnUiThread {
                 Toast.makeText(
                     this,
                     "Thumbnail is ${ageMs / 60000} min old — too old to use.",
                     Toast.LENGTH_LONG,
-                ).show()
+                )
+                    .show()
             }
             return
         }
 
         CoroutineScope(Dispatchers.IO).launch {
-            val publicPath = copyImageToPublicCamera(imagePath)
+            copyImageToPublicCamera(imagePath)
 
-            Log.i("AIHijack", "Image ready for AI query: $imagePath (size=${imageFile.length()} bytes, age=${ageMs / 1000}s)")
+            Log.i(
+                "AIHijack",
+                "Image ready for AI query: $imagePath (size=${imageFile.length()} bytes, age=${ageMs / 1000}s)"
+            )
 
             // Process the image query first (model inference + TTS reply).
             // triggerAssistantImageQuery launches a background coroutine and returns immediately,
             // so we must wait for TTS to finish before opening the follow-up voice window.
-            triggerAssistantImageQuery(imagePath, userQuestion = null)
+            triggerAssistantImageQuery(
+                imagePath,
+                userQuestion = null
+            )
 
             // Wait for the model's TTS reply to finish (polls tts?.isSpeaking every 500ms).
             waitForTtsToFinish(timeoutMs = 90_000L)
@@ -1664,9 +2435,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             // Now open the voice window for a follow-up question.
             withContext(Dispatchers.Main) {
-                val spokenQuestion = captureOptionalImageQuestionFromBluetoothMic(timeoutMs = 3_000L)
+                val spokenQuestion =
+                    captureOptionalImageQuestionFromBluetoothMic(timeoutMs = 3_000L)
                 if (!spokenQuestion.isNullOrBlank()) {
-                    triggerAssistantImageQuery(imagePath, spokenQuestion)
+                    triggerAssistantImageQuery(
+                        imagePath,
+                        spokenQuestion
+                    )
                 }
             }
         }
@@ -1678,14 +2453,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         while (isTtsSpeaking() && System.currentTimeMillis() < deadline) {
             if (!warned) {
                 runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Replying…", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Replying…",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                 }
                 warned = true
             }
             delay(500)
         }
         if (isTtsSpeaking()) {
-            Log.w("AIHijack", "TTS still speaking after ${timeoutMs}ms, proceeding anyway")
+            Log.w(
+                "AIHijack",
+                "TTS still speaking after ${timeoutMs}ms, proceeding anyway"
+            )
         }
     }
 
@@ -1700,23 +2483,49 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun copyImageToPublicCamera(sourcePath: String): String? {
         val source = File(sourcePath)
         if (!source.exists() || source.length() == 0L) {
-            Log.w("AIHijack", "Source image missing or empty: $sourcePath")
+            Log.w(
+                "AIHijack",
+                "Source image missing or empty: $sourcePath"
+            )
             return null
         }
         return try {
-            val publicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
-            val cameraDir = File(publicDir, "Camera")
+            val publicDir =
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+            val cameraDir = File(
+                publicDir,
+                "Camera"
+            )
             if (!cameraDir.exists()) cameraDir.mkdirs()
-            val publicFile = File(cameraDir, "Glasses_AI_${System.currentTimeMillis()}.jpg")
-            source.copyTo(publicFile, overwrite = true)
+            val publicFile = File(
+                cameraDir,
+                "Glasses_AI_${System.currentTimeMillis()}.jpg"
+            )
+            source.copyTo(
+                publicFile,
+                overwrite = true
+            )
             // Scan so MediaStore / Tasker file picker can see it immediately
-            MediaScannerConnection.scanFile(this, arrayOf(publicFile.absolutePath), arrayOf("image/jpeg")) { _, _ ->
-                Log.i("AIHijack", "Scanned to gallery: ${publicFile.absolutePath} (${publicFile.length()} bytes)")
+            MediaScannerConnection.scanFile(
+                this,
+                arrayOf(publicFile.absolutePath),
+                arrayOf("image/jpeg")
+            ) { _, _ ->
+                Log.i(
+                    "AIHijack",
+                    "Scanned to gallery: ${publicFile.absolutePath} (${publicFile.length()} bytes)"
+                )
             }
-            Log.i("AIHijack", "Copied thumbnail to public: ${publicFile.absolutePath}")
+            Log.i(
+                "AIHijack",
+                "Copied thumbnail to public: ${publicFile.absolutePath}"
+            )
             publicFile.absolutePath
         } catch (e: Exception) {
-            Log.e("AIHijack", "Failed to copy image to public DCIM: ${e.message}")
+            Log.e(
+                "AIHijack",
+                "Failed to copy image to public DCIM: ${e.message}"
+            )
             null
         }
     }
@@ -1730,34 +2539,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             )
             if (!cameraDir.isDirectory) return null
             cameraDir.listFiles { f ->
-                f.isFile && f.name.startsWith("Glasses_AI_") && f.name.endsWith(".jpg", ignoreCase = true)
+                f.isFile && f.name.startsWith("Glasses_AI_") && f.name.endsWith(
+                    ".jpg",
+                    ignoreCase = true
+                )
             }
                 ?.filter { it.length() > 0 }
-                ?.maxByOrNull { it.lastModified() }
-                ?.absolutePath
-        } catch (_: Exception) { null }
+                ?.maxByOrNull { it.lastModified() }?.absolutePath
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** Detect when the vision model couldn't actually see the image (server-side issue). */
     private fun looksLikeVisionFailed(reply: String): Boolean {
         val lower = reply.lowercase()
-        return lower.contains("upload") && lower.contains("image") ||
-            lower.contains("please provide the image") ||
-            lower.contains("i can't see") ||
-            lower.contains("no image") && lower.contains("provided") ||
-            lower.contains("attach") && lower.contains("image") ||
-            lower.contains("invalid") && lower.contains("image") ||
-            lower.contains("does not represent a valid image") ||
-            lower.contains("image data") && lower.contains("invalid") ||
-            lower.contains("vision") && lower.contains("failed") ||
-            lower.contains("couldn't analyze") ||
-            lower.contains("openrouter_image_failed")
+        return lower.contains("upload") && lower.contains("image") || lower.contains("please provide the image") || lower.contains("i can't see") || lower.contains("no image") && lower.contains("provided") || lower.contains("attach") && lower.contains("image") || lower.contains("invalid") && lower.contains("image") || lower.contains("does not represent a valid image") || lower.contains("image data") && lower.contains("invalid") || lower.contains("vision") && lower.contains("failed") || lower.contains("couldn't analyze") || lower.contains("openrouter_image_failed")
     }
 
     private suspend fun captureOptionalImageQuestionFromBluetoothMic(timeoutMs: Long): String? {
         return withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { cont ->
-                val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                val audioManager = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
                 var recognizer: SpeechRecognizer? = null
                 var timeoutJob: Job? = null
                 var finished = false
@@ -1781,11 +2584,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     finished = true
                     timeoutJob?.cancel()
                     timeoutJob = null
-                    val cleaned = result?.trim()?.takeIf { it.isNotBlank() }
+                    val cleaned = result?.trim()
+                        ?.takeIf { it.isNotBlank() }
 
                     runCatching {
-                        val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_VOICE_CALL, 90)
-                        tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP2, 170)
+                        val tone = android.media.ToneGenerator(
+                            android.media.AudioManager.STREAM_VOICE_CALL,
+                            90
+                        )
+                        tone.startTone(
+                            android.media.ToneGenerator.TONE_PROP_BEEP2,
+                            170
+                        )
                         CoroutineScope(Dispatchers.Main).launch {
                             delay(190)
                             runCatching { tone.release() }
@@ -1809,8 +2619,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 runCatching {
-                    val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_VOICE_CALL, 90)
-                    tone.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 180)
+                    val tone = android.media.ToneGenerator(
+                        android.media.AudioManager.STREAM_VOICE_CALL,
+                        90
+                    )
+                    tone.startTone(
+                        android.media.ToneGenerator.TONE_PROP_BEEP,
+                        180
+                    )
                     CoroutineScope(Dispatchers.Main).launch {
                         delay(250)
                         runCatching { tone.release() }
@@ -1819,11 +2635,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                 recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity)
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 500L)
+                    putExtra(
+                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                    )
+                    putExtra(
+                        RecognizerIntent.EXTRA_MAX_RESULTS,
+                        1
+                    )
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        1500L
+                    )
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        1500L
+                    )
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                        500L
+                    )
                 }
 
                 recognizer?.setRecognitionListener(object : RecognitionListener {
@@ -1833,22 +2664,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         timeoutJob?.cancel()
                         timeoutJob = null
                     }
+
                     override fun onRmsChanged(rmsdB: Float) {}
                     override fun onBufferReceived(buffer: ByteArray?) {}
                     override fun onEndOfSpeech() {}
 
                     override fun onError(error: Int) {
-                        Log.i("AIHijack", "Image question listener ended with error code=$error")
+                        Log.i(
+                            "AIHijack",
+                            "Image question listener ended with error code=$error"
+                        )
                         finish(null)
                     }
 
                     override fun onResults(results: Bundle?) {
-                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        val matches =
+                            results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         finish(matches?.firstOrNull())
                     }
 
                     override fun onPartialResults(partialResults: Bundle?) {}
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                    override fun onEvent(
+                        eventType: Int,
+                        params: Bundle?
+                    ) {
+                    }
                 })
 
                 timeoutJob = CoroutineScope(Dispatchers.Main).launch {
@@ -1876,13 +2716,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
             val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
-            keyguardManager.requestDismissKeyguard(this, null)
+            keyguardManager.requestDismissKeyguard(
+                this,
+                null
+            )
         }
 
         // Tell glasses to stop proprietary AI audio stream
-        LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x0b)) { _, _ -> }
+        LargeDataHandler.getInstance()
+            .glassesControl(
+                byteArrayOf(
+                    0x02,
+                    0x01,
+                    0x0b
+                )
+            ) { _, _ -> }
 
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val audioManager = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
 
         fun stopSco() {
             runCatching {
@@ -1898,12 +2748,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             audioManager.isBluetoothScoOn = true
         }
 
-        Toast.makeText(this, "Listening for voice query…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            this,
+            "Listening for voice query…",
+            Toast.LENGTH_SHORT
+        )
+            .show()
 
         val recognizer = SpeechRecognizer.createSpeechRecognizer(this)
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_MAX_RESULTS,
+                1
+            )
         }
 
         recognizer.setRecognitionListener(object : RecognitionListener {
@@ -1917,14 +2778,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             override fun onEndOfSpeech() {}
 
             override fun onError(error: Int) {
-                Toast.makeText(this@MainActivity, "Voice query failed: $error", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@MainActivity,
+                    "Voice query failed: $error",
+                    Toast.LENGTH_SHORT
+                )
+                    .show()
                 recognizer.destroy()
                 stopSco()
             }
 
             override fun onResults(results: Bundle?) {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val prompt = matches?.firstOrNull()?.trim().orEmpty()
+                val prompt = matches?.firstOrNull()
+                    ?.trim()
+                    .orEmpty()
 
                 if (prompt.isBlank()) {
                     recognizer.destroy()
@@ -1932,7 +2800,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     return
                 }
 
-                Toast.makeText(this@MainActivity, "Asking: $prompt", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@MainActivity,
+                    "Asking: $prompt",
+                    Toast.LENGTH_SHORT
+                )
+                    .show()
 
                 CoroutineScope(Dispatchers.IO).launch {
                     val reply = if (memoryAwareChosenProvider) {
@@ -1942,11 +2815,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         )
                     } else {
                         val selectedProvider = AutomationPrefs.getProviderType(this@MainActivity)
-                        val modelOverride = if (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION) {
-                            ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
-                        } else {
-                            null
-                        }
+                        val modelOverride =
+                            if (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION) {
+                                ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
+                            } else {
+                                null
+                            }
 
                         CliRelayClient.voiceQuery(
                             context = this@MainActivity,
@@ -1957,7 +2831,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
 
                     runOnUiThread {
-                        speak(reply, utteranceId = "AI_REPLY") {
+                        speak(
+                            reply,
+                            utteranceId = "AI_REPLY"
+                        ) {
                             stopSco()
                         }
                     }
@@ -1967,7 +2844,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
+            override fun onEvent(
+                eventType: Int,
+                params: Bundle?
+            ) {
+            }
         })
 
         recognizer.startListening(intent)
@@ -1975,13 +2856,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun triggerAssistantVoiceQuery() {
         val effectiveMode = resolveEffectiveAiAssistantMode()
-        Log.i("AIHijack", "Triggering Voice Query for $effectiveMode")
+        Log.i(
+            "AIHijack",
+            "Triggering Voice Query for $effectiveMode"
+        )
 
         val selectedProvider = AutomationPrefs.getProviderType(this)
         val useChosenProviderMemoryAware =
-            aiAssistantMode == AI_MODE_CHOSEN_PROVIDER &&
-                (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION ||
-                    selectedProvider == AgentProviderType.LOCAL_AGENT)
+            aiAssistantMode == AI_MODE_CHOSEN_PROVIDER && (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION || selectedProvider == AgentProviderType.LOCAL_AGENT)
         if (useChosenProviderMemoryAware) {
             triggerCliRelayVoiceQuery(
                 memoryAwareChosenProvider = true,
@@ -2001,7 +2883,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         if (effectiveMode == AI_MODE_TASKER) {
-            sendAiBroadcast(type = "voice", assistantMode = AI_MODE_TASKER)
+            sendAiBroadcast(
+                type = "voice",
+                assistantMode = AI_MODE_TASKER
+            )
             return
         }
 
@@ -2011,11 +2896,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
             val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
-            keyguardManager.requestDismissKeyguard(this, null)
+            keyguardManager.requestDismissKeyguard(
+                this,
+                null
+            )
         }
 
         // Tell glasses to stop proprietary AI audio stream
-        LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x0b)) { _, _ -> }
+        LargeDataHandler.getInstance()
+            .glassesControl(
+                byteArrayOf(
+                    0x02,
+                    0x01,
+                    0x0b
+                )
+            ) { _, _ -> }
 
         try {
             val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
@@ -2026,53 +2921,80 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
             startActivity(intent)
         } catch (e: Exception) {
-            Log.e("AIHijack", "Failed to trigger assistant: ${e.message}")
+            Log.e(
+                "AIHijack",
+                "Failed to trigger assistant: ${e.message}"
+            )
             runOnUiThread {
-                Toast.makeText(this, "Assistant not found or failed", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this,
+                    "Assistant not found or failed",
+                    Toast.LENGTH_SHORT
+                )
+                    .show()
             }
         }
     }
 
-    private fun triggerAssistantImageQuery(imagePath: String, userQuestion: String? = null) {
+    private fun triggerAssistantImageQuery(
+        imagePath: String,
+        userQuestion: String? = null
+    ) {
         // Debounce: prevent duplicate requests within 5 seconds
         val now = System.currentTimeMillis()
         if (now - lastImageQueryAtMs < 5000) {
-            Log.w("AIHijack", "Image query debounced (last was ${now - lastImageQueryAtMs}ms ago)")
+            Log.w(
+                "AIHijack",
+                "Image query debounced (last was ${now - lastImageQueryAtMs}ms ago)"
+            )
             return
         }
-        
+
         // Guard against concurrent requests
-        if (!imageQueryInProgress.compareAndSet(false, true)) {
-            Log.w("AIHijack", "Image query already in progress, skipping")
+        if (!imageQueryInProgress.compareAndSet(
+                false,
+                true
+            )
+        ) {
+            Log.w(
+                "AIHijack",
+                "Image query already in progress, skipping"
+            )
             return
         }
-        
+
         lastImageQueryAtMs = now
-        
+
         val selectedProvider = AutomationPrefs.getProviderType(this)
         val isChosenProviderMode = aiAssistantMode == AI_MODE_CHOSEN_PROVIDER
 
         // Route ChosenProvider with memory-aware providers
         val useChosenProviderMemoryAware =
-            isChosenProviderMode &&
-                (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION ||
-                    selectedProvider == AgentProviderType.LOCAL_AGENT)
+            isChosenProviderMode && (selectedProvider == AgentProviderType.PRO_SUBSCRIPTION || selectedProvider == AgentProviderType.LOCAL_AGENT)
         if (useChosenProviderMemoryAware) {
-            triggerMemoryAwareImageQuery(imagePath, selectedProvider, userQuestion)
+            triggerMemoryAwareImageQuery(
+                imagePath,
+                selectedProvider,
+                userQuestion
+            )
             return
         }
 
         val relayProvider = AiProviderPrefs.getProvider(this)
         if (relayProvider == RelayProviderType.CLI_RELAY) {
-            Log.i("AIHijack", "Sending image query to CLI relay: $imagePath")
+            Log.i(
+                "AIHijack",
+                "Sending image query to CLI relay: $imagePath"
+            )
 
             CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val modelOverride = if (AutomationPrefs.getProviderType(this@MainActivity) == AgentProviderType.PRO_SUBSCRIPTION) {
-                        ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
-                    } else {
-                        null
-                    }
+                    val modelOverride =
+                        if (AutomationPrefs.getProviderType(this@MainActivity) == AgentProviderType.PRO_SUBSCRIPTION) {
+                            ProSubscriptionAiPrefs.getQuestionsModel(this@MainActivity)
+                        } else {
+                            null
+                        }
 
                     val result = CliRelayClient.imageQuery(
                         context = this@MainActivity,
@@ -2083,13 +3005,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     runOnUiThread {
                         if (result.isFailure) {
                             val errorMsg = result.exceptionOrNull()?.message ?: "unknown error"
-                            Log.e("AIHijack", "Image query failed: $errorMsg")
-                            Toast.makeText(this@MainActivity, "Vision error: ${errorMsg.take(80)}", Toast.LENGTH_LONG).show()
+                            Log.e(
+                                "AIHijack",
+                                "Image query failed: $errorMsg"
+                            )
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Vision error: ${errorMsg.take(80)}",
+                                Toast.LENGTH_LONG
+                            )
+                                .show()
                             speak("I couldn't analyze the image. Please try again.")
                         } else {
                             val reply = result.getOrNull() ?: ""
                             if (looksLikeVisionFailed(reply)) {
-                                Toast.makeText(this@MainActivity, "Vision model couldn't process image", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Vision model couldn't process image",
+                                    Toast.LENGTH_LONG
+                                )
+                                    .show()
                                 speak("I couldn't analyze the image. Please try again.")
                             } else {
                                 speak(reply)
@@ -2103,7 +3038,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        Log.i("AIHijack", "Redirecting Image Query to Tasker logic with $imagePath")
+        Log.i(
+            "AIHijack",
+            "Redirecting Image Query to Tasker logic with $imagePath"
+        )
 
         try {
             val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
@@ -2117,7 +3055,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (isLocked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 setShowWhenLocked(true)
                 setTurnScreenOn(true)
-                keyguardManager.requestDismissKeyguard(this, null)
+                keyguardManager.requestDismissKeyguard(
+                    this,
+                    null
+                )
             }
 
             if (isLocked) {
@@ -2125,32 +3066,65 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             // Stop glasses AI mode
-            LargeDataHandler.getInstance().glassesControl(byteArrayOf(0x02, 0x01, 0x0b)) { _, _ -> }
+            LargeDataHandler.getInstance()
+                .glassesControl(
+                    byteArrayOf(
+                        0x02,
+                        0x01,
+                        0x0b
+                    )
+                ) { _, _ -> }
 
             val file = File(imagePath)
             if (!file.exists()) {
-                Log.e("AIHijack", "Image file does not exist: $imagePath")
+                Log.e(
+                    "AIHijack",
+                    "Image file does not exist: $imagePath"
+                )
                 return
             }
 
             // Copy file to public DCIM folder so it shows up in Gallery/Recents
-            val publicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
-            val cameraDir = File(publicDir, "Camera")
+            val publicDir =
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+            val cameraDir = File(
+                publicDir,
+                "Camera"
+            )
             if (!cameraDir.exists()) cameraDir.mkdirs()
-            
-            val publicFile = File(cameraDir, "Glasses_AI_${System.currentTimeMillis()}.jpg")
-            file.copyTo(publicFile, overwrite = true)
-            
+
+            val publicFile = File(
+                cameraDir,
+                "Glasses_AI_${System.currentTimeMillis()}.jpg"
+            )
+            file.copyTo(
+                publicFile,
+                overwrite = true
+            )
+
             // Scan the file so MediaStore/Gallery sees it immediately
-            MediaScannerConnection.scanFile(this, arrayOf(publicFile.absolutePath), arrayOf("image/jpeg")) { path, uri ->
-                Log.i("AIHijack", "Scanned to Gallery: $path")
+            MediaScannerConnection.scanFile(
+                this,
+                arrayOf(publicFile.absolutePath),
+                arrayOf("image/jpeg")
+            ) { path, uri ->
+                Log.i(
+                    "AIHijack",
+                    "Scanned to Gallery: $path"
+                )
                 // Once scanned, trigger the Tasker broadcast
                 runOnUiThread {
-                    sendAiBroadcast("image", path)
+                    sendAiBroadcast(
+                        "image",
+                        path
+                    )
                 }
             }
         } catch (e: Exception) {
-            Log.e("AIHijack", "Failed to process image for Tasker: ${e.message}")
+            Log.e(
+                "AIHijack",
+                "Failed to process image for Tasker: ${e.message}"
+            )
         } finally {
             imageQueryInProgress.set(false)
         }
@@ -2194,16 +3168,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         // Expanded controls panel (HeyCyan-only in MVP baseline)
         binding.layoutHeycyanExtras.visibility =
-            if (model.isVisible(GlassesManagerGating.Action.HEY_CYAN_EXTRAS)) android.view.View.VISIBLE else android.view.View.GONE
+            if (model.isVisible(GlassesManagerGating.Action.HEY_CYAN_EXTRAS)) View.VISIBLE else View.GONE
 
         // Status placeholders
         val showBattery = model.isVisible(GlassesManagerGating.Action.STATUS_BATTERY)
         val showStorage = model.isVisible(GlassesManagerGating.Action.STATUS_STORAGE)
 
-        binding.layoutBattery.visibility = if (showBattery) android.view.View.VISIBLE else android.view.View.GONE
-        binding.layoutStorage.visibility = if (showStorage) android.view.View.VISIBLE else android.view.View.GONE
+        binding.layoutBattery.visibility = if (showBattery) View.VISIBLE else View.GONE
+        binding.layoutStorage.visibility = if (showStorage) View.VISIBLE else View.GONE
         binding.layoutStatusMetrics.visibility =
-            if (showBattery || showStorage) android.view.View.VISIBLE else android.view.View.GONE
+            if (showBattery || showStorage) View.VISIBLE else View.GONE
 
         // Only poll battery for profiles that claim to support it.
         if (showBattery) {
@@ -2222,7 +3196,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun setupMeetingCaptureUi() {
         val labels = meetingTimerOptions.map { it.second }
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).also {
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            labels
+        ).also {
             it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         }
         binding.spinnerMeetingTimer.adapter = adapter
@@ -2233,28 +3211,56 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.btnAgentStart.setOnClickListener {
             val res = LocalAgentController.start(this)
             if (res.ok) {
-                LocalAgentPrefs.setStatus(this, "Starting…")
+                LocalAgentPrefs.setStatus(
+                    this,
+                    "Starting…"
+                )
                 LocalAgentPrefs.clearLastError(this)
             } else {
-                LocalAgentPrefs.setStatus(this, "Error")
-                LocalAgentPrefs.setLastError(this, res.error ?: res.userMessage)
+                LocalAgentPrefs.setStatus(
+                    this,
+                    "Error"
+                )
+                LocalAgentPrefs.setLastError(
+                    this,
+                    res.error ?: res.userMessage
+                )
             }
             refreshAgentStatusUi()
-            Toast.makeText(this, res.userMessage, Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                res.userMessage,
+                Toast.LENGTH_SHORT
+            )
+                .show()
             LocalAgentController.requestStatus(this)
         }
 
         binding.btnAgentStop.setOnClickListener {
             val res = LocalAgentController.stop(this)
             if (res.ok) {
-                LocalAgentPrefs.setStatus(this, "Stopping…")
+                LocalAgentPrefs.setStatus(
+                    this,
+                    "Stopping…"
+                )
                 LocalAgentPrefs.clearLastError(this)
             } else {
-                LocalAgentPrefs.setStatus(this, "Error")
-                LocalAgentPrefs.setLastError(this, res.error ?: res.userMessage)
+                LocalAgentPrefs.setStatus(
+                    this,
+                    "Error"
+                )
+                LocalAgentPrefs.setLastError(
+                    this,
+                    res.error ?: res.userMessage
+                )
             }
             refreshAgentStatusUi()
-            Toast.makeText(this, res.userMessage, Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                res.userMessage,
+                Toast.LENGTH_SHORT
+            )
+                .show()
             LocalAgentController.requestStatus(this)
         }
 
@@ -2263,18 +3269,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 this,
                 "Demo: I will read the screen content through your glasses in 5 seconds…",
                 Toast.LENGTH_LONG
-            ).show()
+            )
+                .show()
 
             val res = LocalAgentController.demo(this)
             if (res.ok) {
-                LocalAgentPrefs.setStatus(this, "Running demo…")
+                LocalAgentPrefs.setStatus(
+                    this,
+                    "Running demo…"
+                )
                 LocalAgentPrefs.clearLastError(this)
             } else {
-                LocalAgentPrefs.setStatus(this, "Error")
-                LocalAgentPrefs.setLastError(this, res.error ?: res.userMessage)
+                LocalAgentPrefs.setStatus(
+                    this,
+                    "Error"
+                )
+                LocalAgentPrefs.setLastError(
+                    this,
+                    res.error ?: res.userMessage
+                )
             }
             refreshAgentStatusUi()
-            Toast.makeText(this, res.userMessage, Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                res.userMessage,
+                Toast.LENGTH_SHORT
+            )
+                .show()
             LocalAgentController.requestStatus(this)
         }
 
@@ -2286,7 +3307,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.tvAgentLastError.text = "Last error: ${LocalAgentPrefs.getLastError(this)}"
     }
 
-    private fun selectedMeetingTimerDurationSec(): Long? { 
+    private fun selectedMeetingTimerDurationSec(): Long? {
         val idx = binding.spinnerMeetingTimer.selectedItemPosition
         return meetingTimerOptions.getOrNull(idx)?.first
     }
@@ -2300,17 +3321,39 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         XXPermissions.with(this)
             .permission(perms)
             .request(object : OnPermissionCallback {
-                override fun onGranted(permissions: MutableList<String>, all: Boolean) {
+                override fun onGranted(
+                    permissions: MutableList<String>,
+                    all: Boolean
+                ) {
                     if (all) onGranted() else {
-                        Toast.makeText(this@MainActivity, "Missing permissions for recording", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Missing permissions for recording",
+                            Toast.LENGTH_SHORT
+                        )
+                            .show()
                     }
                 }
 
-                override fun onDenied(permissions: MutableList<String>, never: Boolean) {
-                    super.onDenied(permissions, never)
-                    Toast.makeText(this@MainActivity, "Recording permission denied", Toast.LENGTH_SHORT).show()
+                override fun onDenied(
+                    permissions: MutableList<String>,
+                    never: Boolean
+                ) {
+                    super.onDenied(
+                        permissions,
+                        never
+                    )
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Recording permission denied",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                     if (never) {
-                        XXPermissions.startPermissionActivity(this@MainActivity, permissions)
+                        XXPermissions.startPermissionActivity(
+                            this@MainActivity,
+                            permissions
+                        )
                     }
                 }
             })
@@ -2318,14 +3361,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun startMeetingCaptureFromUi() {
         requestMeetingCapturePermissions {
-            val deviceClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass?.name ?: "UNKNOWN"
+            val deviceClass =
+                DeviceProfileStore.loadLastSelected(this)?.selectedClass?.name ?: "UNKNOWN"
             val durationSec = selectedMeetingTimerDurationSec()
 
             // Optimistic UI so user instantly sees a recording indicator.
-            setRecordingUi(isRecording = true, source = null)
+            setRecordingUi(
+                isRecording = true,
+                source = null
+            )
             binding.tvMeetingBanner.text = "Starting recording…"
 
-            MeetingCaptureService.start(this, timerDurationSec = durationSec, deviceClass = deviceClass)
+            MeetingCaptureService.start(
+                this,
+                timerDurationSec = durationSec,
+                deviceClass = deviceClass
+            )
         }
     }
 
@@ -2338,51 +3389,81 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (meetingCaptureStateReceiver != null) return
 
         meetingCaptureStateReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?
+            ) {
                 if (intent?.action != MeetingCaptureService.ACTION_STATE) return
 
-                val isRecording = intent.getBooleanExtra(MeetingCaptureService.EXTRA_IS_RECORDING, false)
-                val source = intent.getStringExtra(MeetingCaptureService.EXTRA_SOURCE)?.let {
-                    runCatching { CaptureSource.valueOf(it) }.getOrNull()
-                }
+                val isRecording = intent.getBooleanExtra(
+                    MeetingCaptureService.EXTRA_IS_RECORDING,
+                    false
+                )
+                val source = intent.getStringExtra(MeetingCaptureService.EXTRA_SOURCE)
+                    ?.let {
+                        runCatching { CaptureSource.valueOf(it) }.getOrNull()
+                    }
                 val stopReason = intent.getStringExtra(MeetingCaptureService.EXTRA_STOP_REASON)
                 val error = intent.getStringExtra(MeetingCaptureService.EXTRA_ERROR)
 
-                setRecordingUi(isRecording = isRecording, source = source)
+                setRecordingUi(
+                    isRecording = isRecording,
+                    source = source
+                )
 
                 if (!isRecording && stopReason == "timer") {
-                    Toast.makeText(this@MainActivity, "Meeting capture auto-stopped (timer)", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Meeting capture auto-stopped (timer)",
+                        Toast.LENGTH_SHORT
+                    )
+                        .show()
                 }
                 if (!error.isNullOrBlank()) {
-                    Toast.makeText(this@MainActivity, "Recording error: $error", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Recording error: $error",
+                        Toast.LENGTH_LONG
+                    )
+                        .show()
                 }
             }
         }
 
         LocalBroadcastManager.getInstance(this)
-            .registerReceiver(meetingCaptureStateReceiver!!, IntentFilter(MeetingCaptureService.ACTION_STATE))
+            .registerReceiver(
+                meetingCaptureStateReceiver!!,
+                IntentFilter(MeetingCaptureService.ACTION_STATE)
+            )
     }
 
     private fun unregisterMeetingCaptureReceiver() {
         val r = meetingCaptureStateReceiver ?: return
         meetingCaptureStateReceiver = null
         runCatching {
-            LocalBroadcastManager.getInstance(this).unregisterReceiver(r)
+            LocalBroadcastManager.getInstance(this)
+                .unregisterReceiver(r)
         }
     }
 
     private fun syncMeetingCaptureUiFromPrefs() {
         val state = MeetingCapturePrefs.getState(this)
-        setRecordingUi(isRecording = state.isRecording, source = state.source)
+        setRecordingUi(
+            isRecording = state.isRecording,
+            source = state.source
+        )
     }
 
-    private fun setRecordingUi(isRecording: Boolean, source: CaptureSource?) {
+    private fun setRecordingUi(
+        isRecording: Boolean,
+        source: CaptureSource?
+    ) {
         binding.btnMeetingStart.isEnabled = !isRecording
         binding.btnMeetingStop.isEnabled = isRecording
         binding.btnMeetingBannerStop.isEnabled = isRecording
 
         if (isRecording) {
-            binding.meetingRecordingBanner.visibility = android.view.View.VISIBLE
+            binding.meetingRecordingBanner.visibility = View.VISIBLE
             val src = when (source) {
                 CaptureSource.BLUETOOTH_MIC -> "Bluetooth mic"
                 CaptureSource.PHONE_MIC -> "Phone mic"
@@ -2391,7 +3472,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.tvMeetingBanner.text = "Recording active · $src"
             binding.tvMeetingSource.text = "Source: $src"
         } else {
-            binding.meetingRecordingBanner.visibility = android.view.View.GONE
+            binding.meetingRecordingBanner.visibility = View.GONE
             binding.tvMeetingSource.text = "Source: (not recording)"
         }
     }
@@ -2401,7 +3482,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     // --- Transcription UI moved to RecordingsListActivity (per-item) ---
 
 
-
     private fun updateBatteryText(battery: Int?) {
         binding.batteryText.text = battery?.let { "$it%" } ?: "--%"
     }
@@ -2409,11 +3489,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun requestBatteryStatus(showToast: Boolean) {
         if (showToast) {
             pendingBatteryToast = true
-            Toast.makeText(this@MainActivity, "Requesting battery level…", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this@MainActivity,
+                "Requesting battery level…",
+                Toast.LENGTH_SHORT
+            )
+                .show()
         }
         ensureBatteryCallback()
         // Trigger battery sync
-        LargeDataHandler.getInstance().syncBattery()
+        LargeDataHandler.getInstance()
+            .syncBattery()
     }
 
     private fun ensureBatteryCallback() {
@@ -2423,21 +3509,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         batteryCallbackRegistered = true
         // Add battery listener. According to the SDK docs this
         // callback is invoked when syncBattery completes.
-        LargeDataHandler.getInstance().addBatteryCallBack("init") { _, response ->
-            val result = parseBatteryResponse(response)
-            Log.i("BatteryCallback", result.message)
-            runOnUiThread {
-                updateBatteryText(result.battery)
-                if (pendingBatteryToast) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        result.message,
-                        Toast.LENGTH_LONG
-                    ).show()
-                    pendingBatteryToast = false
+        LargeDataHandler.getInstance()
+            .addBatteryCallBack("init") { _, response ->
+                val result = parseBatteryResponse(response)
+                Log.i(
+                    "BatteryCallback",
+                    result.message
+                )
+                runOnUiThread {
+                    updateBatteryText(result.battery)
+                    if (pendingBatteryToast) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            result.message,
+                            Toast.LENGTH_LONG
+                        )
+                            .show()
+                        pendingBatteryToast = false
+                    }
                 }
             }
-        }
     }
 
     private data class BatteryResult(
@@ -2448,35 +3539,63 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun parseBatteryResponse(response: Any?): BatteryResult {
         if (response == null) {
-            return BatteryResult(null, null, "Battery callback: null response")
+            return BatteryResult(
+                null,
+                null,
+                "Battery callback: null response"
+            )
         }
         return try {
             val clazz = response.javaClass
-            val batteryField = clazz.getDeclaredField("battery").apply {
-                isAccessible = true
-            }
-            val chargingField = clazz.getDeclaredField("charging").apply {
-                isAccessible = true
-            }
+            val batteryField = clazz.getDeclaredField("battery")
+                .apply {
+                    isAccessible = true
+                }
+            val chargingField = clazz.getDeclaredField("charging")
+                .apply {
+                    isAccessible = true
+                }
 
             val battery = batteryField.getInt(response)
             val charging = chargingField.getBoolean(response)
-            val message =
-                "Battery: $battery% (${if (charging) "charging" else "not charging"})"
-            BatteryResult(battery, charging, message)
+            val message = "Battery: $battery% (${if (charging) "charging" else "not charging"})"
+            BatteryResult(
+                battery,
+                charging,
+                message
+            )
         } catch (e: Exception) {
-            Log.e("BatteryCallback", "Failed to parse BatteryResponse", e)
-            BatteryResult(null, null, "Battery: $response")
+            Log.e(
+                "BatteryCallback",
+                "Failed to parse BatteryResponse",
+                e
+            )
+            BatteryResult(
+                null,
+                null,
+                "Battery: $response"
+            )
         }
     }
 
-    private fun handleBatteryReport(battery: Int, charging: Boolean) {
+    private fun handleBatteryReport(
+        battery: Int,
+        charging: Boolean
+    ) {
         val message = "Battery: $battery% (${if (charging) "charging" else "not charging"})"
-        Log.i("BatteryCallback", message)
+        Log.i(
+            "BatteryCallback",
+            message
+        )
         runOnUiThread {
             updateBatteryText(battery)
             if (pendingBatteryToast) {
-                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    this@MainActivity,
+                    message,
+                    Toast.LENGTH_LONG
+                )
+                    .show()
                 pendingBatteryToast = false
             }
         }
@@ -2523,8 +3642,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun currentBleMacNoColonUpper(): String? {
         return try {
-            DeviceManager.getInstance().deviceAddress
-                ?.replace(":", "")
+            DeviceManager.getInstance().deviceAddress?.replace(
+                ":",
+                ""
+            )
                 ?.uppercase(Locale.US)
                 ?.takeIf { it.isNotBlank() }
         } catch (_: Exception) {
@@ -2532,7 +3653,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun isLikelyGlassesPeer(device: WifiP2pDevice, bleMacNoColon: String?): Boolean {
+    private fun isLikelyGlassesPeer(
+        device: WifiP2pDevice,
+        bleMacNoColon: String?
+    ): Boolean {
         val name = (device.deviceName ?: "").uppercase(Locale.US)
         if (name.isBlank()) return false
 
@@ -2558,51 +3682,76 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         if (byBleMac != null) return byBleMac
 
-        val likely = peers.filter { isLikelyGlassesPeer(it, bleMacNoColon) }
+        val likely = peers.filter {
+            isLikelyGlassesPeer(
+                it,
+                bleMacNoColon
+            )
+        }
         return likely.firstOrNull()
     }
 
     private fun startDataDownload() {
-        Log.i("DataDownload", "Starting BLE+WiFi P2P data download...")
+        Log.i(
+            "DataDownload",
+            "Starting BLE+WiFi P2P data download..."
+        )
 
         // Check Bluetooth connection status
         if (!BleOperateManager.getInstance().isConnected) {
-            Log.e("DataDownload", "Bluetooth not connected. Please connect to glasses first.")
+            Log.e(
+                "DataDownload",
+                "Bluetooth not connected. Please connect to glasses first."
+            )
             Toast.makeText(
                 this,
                 "Bluetooth not connected. Please connect to glasses first.",
                 Toast.LENGTH_LONG
-            ).show()
+            )
+                .show()
             return
         }
 
         // Check WiFi is enabled (required for WiFi Direct / P2P)
-        val wifiManager = getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        val wifiManager = getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager
         if (!wifiManager.isWifiEnabled) {
-            Log.e("DataDownload", "WiFi is disabled. WiFi must be on for P2P sync.")
+            Log.e(
+                "DataDownload",
+                "WiFi is disabled. WiFi must be on for P2P sync."
+            )
             Toast.makeText(
                 this,
                 "Please enable WiFi to sync with glasses.",
                 Toast.LENGTH_LONG
-            ).show()
+            )
+                .show()
             return
         }
 
         // Check NEARBY_WIFI_DEVICES on Android 13+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            !XXPermissions.isGranted(this, "android.permission.NEARBY_WIFI_DEVICES")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !XXPermissions.isGranted(
+                this,
+                "android.permission.NEARBY_WIFI_DEVICES"
+            )
         ) {
-            Log.e("DataDownload", "NEARBY_WIFI_DEVICES permission not granted")
+            Log.e(
+                "DataDownload",
+                "NEARBY_WIFI_DEVICES permission not granted"
+            )
             Toast.makeText(
                 this,
                 "NEARBY_WIFI_DEVICES permission not granted.",
                 Toast.LENGTH_LONG
-            ).show()
+            )
+                .show()
             return
         }
 
         // Tear down any stale session first so retries do not stack callbacks/jobs.
-        teardownDownloadP2pSession(sendExitTransfer = false, hideTransferUi = false)
+        teardownDownloadP2pSession(
+            sendExitTransfer = false,
+            hideTransferUi = false
+        )
         downloadCancelledByUser = false
 
         // Reset state for a fresh run
@@ -2619,11 +3768,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         if (!downloadNotifyListenerRegistered) {
             try {
-                LargeDataHandler.getInstance().addOutDeviceListener(2, downloadNotifyListener)
+                LargeDataHandler.getInstance()
+                    .addOutDeviceListener(
+                        2,
+                        downloadNotifyListener
+                    )
                 downloadNotifyListenerRegistered = true
-                Log.i("DataDownload", "Registered download notify listener (cmdType=2)")
+                Log.i(
+                    "DataDownload",
+                    "Registered download notify listener (cmdType=2)"
+                )
             } catch (e: Exception) {
-                Log.e("DataDownload", "Failed to register download notify listener", e)
+                Log.e(
+                    "DataDownload",
+                    "Failed to register download notify listener",
+                    e
+                )
             }
         }
 
@@ -2638,20 +3798,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val callback = object : WifiP2pManagerSingleton.WifiP2pCallback {
             override fun onWifiP2pEnabled() {
-                Log.i("DataDownload", "WiFi P2P enabled")
+                Log.i(
+                    "DataDownload",
+                    "WiFi P2P enabled"
+                )
             }
 
             override fun onWifiP2pDisabled() {
-                Log.e("DataDownload", "WiFi P2P disabled")
+                Log.e(
+                    "DataDownload",
+                    "WiFi P2P disabled"
+                )
             }
 
             override fun onPeersChanged(peers: Collection<WifiP2pDevice>) {
-                Log.i("DataDownload", "Found ${peers.size} P2P devices")
+                Log.i(
+                    "DataDownload",
+                    "Found ${peers.size} P2P devices"
+                )
                 if (peers.isEmpty()) return
 
                 // Guard against redundant connection attempts (official app uses isP2PConnecting).
                 if (downloadWifiP2pManager?.isConnecting() == true || downloadWifiP2pManager?.isConnected() == true) {
-                    Log.i("DataDownload", "Already connecting/connected, skipping peer re-evaluation")
+                    Log.i(
+                        "DataDownload",
+                        "Already connecting/connected, skipping peer re-evaluation"
+                    )
                     return
                 }
 
@@ -2688,15 +3860,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             override fun onDisconnected() {
-                Log.i("DataDownload", "P2P disconnected")
+                Log.i(
+                    "DataDownload",
+                    "P2P disconnected"
+                )
                 downloadP2pConnected = false
                 downloadP2pNetwork = null
                 unbindProcessFromNetwork()
 
-                val shouldRecover = !downloadCancelledByUser &&
-                    (downloadAttemptJob?.isActive == true || downloadInProgress)
+                val shouldRecover =
+                    !downloadCancelledByUser && (downloadAttemptJob?.isActive == true || downloadInProgress)
                 if (shouldRecover) {
-                    Log.i("DataDownload", "P2P disconnected during sync; restarting peer discovery")
+                    Log.i(
+                        "DataDownload",
+                        "P2P disconnected during sync; restarting peer discovery"
+                    )
                     setTransferDetail("P2P disconnected; retrying discovery...")
                     downloadWifiP2pManager?.discoverPeersStable()
                     downloadWifiP2pManager?.startPeerDiscovery()
@@ -2704,35 +3882,59 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             override fun onPeerDiscoveryStarted() {
-                Log.i("DataDownload", "Peer discovery started")
+                Log.i(
+                    "DataDownload",
+                    "Peer discovery started"
+                )
             }
 
             override fun onPeerDiscoveryFailed(reason: Int) {
-                Log.e("DataDownload", "Peer discovery failed: $reason")
+                Log.e(
+                    "DataDownload",
+                    "Peer discovery failed: $reason"
+                )
             }
 
             override fun onConnectRequestSent() {
-                Log.i("DataDownload", "Connect request sent")
+                Log.i(
+                    "DataDownload",
+                    "Connect request sent"
+                )
             }
 
             override fun onConnectRequestFailed(reason: Int) {
-                Log.e("DataDownload", "Connect request failed: $reason")
+                Log.e(
+                    "DataDownload",
+                    "Connect request failed: $reason"
+                )
             }
 
             override fun connecting() {
-                Log.i("DataDownload", "Connecting to P2P device...")
+                Log.i(
+                    "DataDownload",
+                    "Connecting to P2P device..."
+                )
             }
 
             override fun cancelConnect() {
-                Log.i("DataDownload", "P2P connection cancelled")
+                Log.i(
+                    "DataDownload",
+                    "P2P connection cancelled"
+                )
             }
 
             override fun cancelConnectFail(reason: Int) {
-                Log.e("DataDownload", "Cancel connect failed: $reason")
+                Log.e(
+                    "DataDownload",
+                    "Cancel connect failed: $reason"
+                )
             }
 
             override fun retryAlsoFailed() {
-                Log.e("DataDownload", "P2P connection retry failed")
+                Log.e(
+                    "DataDownload",
+                    "P2P connection retry failed"
+                )
             }
         }
 
@@ -2746,14 +3948,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         // Ask the glasses (over BLE) to bring up WiFi/P2P and report their IP,
         // mirroring the official app's importAlbum() flow.
-        LargeDataHandler.getInstance().glassesControl(
-            byteArrayOf(0x02, 0x01, 0x04)
-        ) { _, resp ->
-            Log.i(
-                "DataDownload",
-                "glassesControl[0x02,0x01,0x04] -> dataType=${resp.dataType}, error=${resp.errorCode}"
-            )
-        }
+        LargeDataHandler.getInstance()
+            .glassesControl(
+                byteArrayOf(
+                    0x02,
+                    0x01,
+                    0x04
+                )
+            ) { _, resp ->
+                Log.i(
+                    "DataDownload",
+                    "glassesControl[0x02,0x01,0x04] -> dataType=${resp.dataType}, error=${resp.errorCode}"
+                )
+            }
     }
 
     private fun setTransferUiVisible(visible: Boolean) {
@@ -2775,7 +3982,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         binding.tvTransferDetail.text = "Idle"
     }
 
-    private fun setTransferPlan(jpg: Int, mp4: Int, opus: Int) {
+    private fun setTransferPlan(
+        jpg: Int,
+        mp4: Int,
+        opus: Int
+    ) {
         transferTotalJpg = jpg
         transferTotalMp4 = mp4
         transferTotalOpus = opus
@@ -2815,26 +4026,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun setTransferDetail(text: String) {
         binding.tvTransferDetail.text = text
     }
-    
+
     private fun getDeviceIpFromBLE(): String? {
         // Prefer IP detected from BLE notifications, fall back to the
         // known sample IP if we have not seen one yet.
         val ipFromBle = bleIpBridge.ip.value
         if (!ipFromBle.isNullOrEmpty()) {
-            Log.i("DataDownload", "Device IP from BleIpBridge: $ipFromBle")
+            Log.i(
+                "DataDownload",
+                "Device IP from BleIpBridge: $ipFromBle"
+            )
             return ipFromBle
         }
         // No safe fallback: the glasses IP varies per session.
         return null
     }
-    
+
     private fun downloadMediaList(deviceIp: String) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 // Lock the device IP for the whole transfer session.
                 downloadResolvedHttpIp = deviceIp
                 val url = "http://$deviceIp/files/media.config"
-                Log.i("DataDownload", "Downloading media list from: $url")
+                Log.i(
+                    "DataDownload",
+                    "Downloading media list from: $url"
+                )
 
                 withContext(Dispatchers.Main) {
                     binding.progressTransfer.isIndeterminate = true
@@ -2842,110 +4059,181 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 var content: String? = null
-                httpGet(URL(url), 10000, 30000) { stream, _ ->
-                    content = stream.bufferedReader().use { it.readText() }
+                httpGet(
+                    URL(url),
+                    10000,
+                    30000
+                ) { stream, _ ->
+                    content = stream.bufferedReader()
+                        .use { it.readText() }
                 }
 
                 if (content != null) {
-                    Log.i("DataDownload", "=== MEDIA CONFIG CONTENT ===")
-                    Log.i("DataDownload", content!!)
-                    Log.i("DataDownload", "=== END MEDIA CONFIG ===")
-                    parseMediaList(content!!, deviceIp)
+                    Log.i(
+                        "DataDownload",
+                        "=== MEDIA CONFIG CONTENT ==="
+                    )
+                    Log.i(
+                        "DataDownload",
+                        content!!
+                    )
+                    Log.i(
+                        "DataDownload",
+                        "=== END MEDIA CONFIG ==="
+                    )
+                    parseMediaList(
+                        content!!,
+                        deviceIp
+                    )
                 } else {
-                    Log.e("DataDownload", "Failed to download media list.")
+                    Log.e(
+                        "DataDownload",
+                        "Failed to download media list."
+                    )
                     withContext(Dispatchers.Main) {
                         showDownloadError("Failed to download media list.")
                     }
                 }
             } catch (e: Exception) {
-                    Log.e("DataDownload", "Error downloading media list: ${e.message}", e)
-                    CoroutineScope(Dispatchers.Main).launch {
-                        when (e) {
-                            is java.io.IOException -> {
-                                if (e.message?.contains("Cleartext HTTP traffic") == true) {
-                                    showDownloadError("Network security blocked HTTP connection. Please check app settings.")
-                                } else if (e.message?.contains("Failed to connect") == true) {
-                                    showDownloadError("Cannot connect to glasses device. Please ensure P2P connection is established.")
-                                } else {
-                                    showDownloadError("Network error: ${e.message}")
-                                }
-                            }
-                            else -> showDownloadError("Download failed: ${e.message}")
-                        }
-                    }
-                }
-            }
-        }
-    
-        private fun parseMediaList(content: String, deviceIp: String) {
-            // Parse the media configuration file content - this is a text file containing media file names.
-            Log.i("DataDownload", "Parsing media list content...")
-            
-            try {
-                // Split by line, each line should be a file name
-                val lines = content.trim().lines()
-                val jpgFiles = mutableListOf<String>()
-                val mp4Files = mutableListOf<String>()
-                val opusFiles = mutableListOf<String>()
-                var otherFiles = 0
-                
-                lines.forEach { line ->
-                    val trimmedLine = line.trim()
-                    if (trimmedLine.isNotEmpty()) {
-                        when {
-                            trimmedLine.endsWith(".jpg", ignoreCase = true) ||
-                                trimmedLine.endsWith(".jpeg", ignoreCase = true) -> {
-                                jpgFiles.add(trimmedLine)
-                                Log.i("DataDownload", "Found JPG file: $trimmedLine")
-                            }
-
-                            trimmedLine.endsWith(".mp4", ignoreCase = true) -> {
-                                mp4Files.add(trimmedLine)
-                                Log.i("DataDownload", "Found MP4 file: $trimmedLine")
-                            }
-
-                            trimmedLine.endsWith(".opus", ignoreCase = true) -> {
-                                opusFiles.add(trimmedLine)
-                                Log.i("DataDownload", "Found OPUS file: $trimmedLine")
-                            }
-
-                            else -> {
-                                otherFiles++
-                                Log.i("DataDownload", "Found other file: $trimmedLine")
-                            }
-                        }
-                    }
-                }
-
-                Log.i(
+                Log.e(
                     "DataDownload",
-                    "Media list parsed: jpg=${jpgFiles.size}, mp4=${mp4Files.size}, opus=${opusFiles.size}, other=$otherFiles"
+                    "Error downloading media list: ${e.message}",
+                    e
                 )
-
                 CoroutineScope(Dispatchers.Main).launch {
-                    setTransferPlan(jpgFiles.size, mp4Files.size, opusFiles.size)
-                    val total = jpgFiles.size + mp4Files.size + opusFiles.size
-                    setTransferDetail("Preparing downloads (0/$total)...")
-                }
+                    when (e) {
+                        is java.io.IOException -> {
+                            if (e.message?.contains("Cleartext HTTP traffic") == true) {
+                                showDownloadError("Network security blocked HTTP connection. Please check app settings.")
+                            } else if (e.message?.contains("Failed to connect") == true) {
+                                showDownloadError("Cannot connect to glasses device. Please ensure P2P connection is established.")
+                            } else {
+                                showDownloadError("Network error: ${e.message}")
+                            }
+                        }
 
-                if (jpgFiles.isEmpty() && mp4Files.isEmpty() && opusFiles.isEmpty()) {
-                    Log.w("DataDownload", "No JPG/MP4/OPUS files found in media.config")
-                    CoroutineScope(Dispatchers.Main).launch {
-                        showDownloadError("No JPG/MP4/OPUS files found in media.config")
+                        else -> showDownloadError("Download failed: ${e.message}")
                     }
-                    return
-                }
-
-                // Download everything we understand. Keep P2P bound until all downloads finish.
-                downloadAllMediaFiles(jpgFiles, mp4Files, opusFiles, deviceIp)
-                
-            } catch (e: Exception) {
-                Log.e("DataDownload", "Error parsing media list: ${e.message}", e)
-                CoroutineScope(Dispatchers.Main).launch {
-                    showDownloadError("Failed to parse media list: ${e.message}")
                 }
             }
         }
+    }
+
+    private fun parseMediaList(
+        content: String,
+        deviceIp: String
+    ) {
+        // Parse the media configuration file content - this is a text file containing media file names.
+        Log.i(
+            "DataDownload",
+            "Parsing media list content..."
+        )
+
+        try {
+            // Split by line, each line should be a file name
+            val lines = content.trim()
+                .lines()
+            val jpgFiles = mutableListOf<String>()
+            val mp4Files = mutableListOf<String>()
+            val opusFiles = mutableListOf<String>()
+            var otherFiles = 0
+
+            lines.forEach { line ->
+                val trimmedLine = line.trim()
+                if (trimmedLine.isNotEmpty()) {
+                    when {
+                        trimmedLine.endsWith(
+                            ".jpg",
+                            ignoreCase = true
+                        ) || trimmedLine.endsWith(
+                            ".jpeg",
+                            ignoreCase = true
+                        ) -> {
+                            jpgFiles.add(trimmedLine)
+                            Log.i(
+                                "DataDownload",
+                                "Found JPG file: $trimmedLine"
+                            )
+                        }
+
+                        trimmedLine.endsWith(
+                            ".mp4",
+                            ignoreCase = true
+                        ) -> {
+                            mp4Files.add(trimmedLine)
+                            Log.i(
+                                "DataDownload",
+                                "Found MP4 file: $trimmedLine"
+                            )
+                        }
+
+                        trimmedLine.endsWith(
+                            ".opus",
+                            ignoreCase = true
+                        ) -> {
+                            opusFiles.add(trimmedLine)
+                            Log.i(
+                                "DataDownload",
+                                "Found OPUS file: $trimmedLine"
+                            )
+                        }
+
+                        else -> {
+                            otherFiles++
+                            Log.i(
+                                "DataDownload",
+                                "Found other file: $trimmedLine"
+                            )
+                        }
+                    }
+                }
+            }
+
+            Log.i(
+                "DataDownload",
+                "Media list parsed: jpg=${jpgFiles.size}, mp4=${mp4Files.size}, opus=${opusFiles.size}, other=$otherFiles"
+            )
+
+            CoroutineScope(Dispatchers.Main).launch {
+                setTransferPlan(
+                    jpgFiles.size,
+                    mp4Files.size,
+                    opusFiles.size
+                )
+                val total = jpgFiles.size + mp4Files.size + opusFiles.size
+                setTransferDetail("Preparing downloads (0/$total)...")
+            }
+
+            if (jpgFiles.isEmpty() && mp4Files.isEmpty() && opusFiles.isEmpty()) {
+                Log.w(
+                    "DataDownload",
+                    "No JPG/MP4/OPUS files found in media.config"
+                )
+                CoroutineScope(Dispatchers.Main).launch {
+                    showDownloadError("No JPG/MP4/OPUS files found in media.config")
+                }
+                return
+            }
+
+            // Download everything we understand. Keep P2P bound until all downloads finish.
+            downloadAllMediaFiles(
+                jpgFiles,
+                mp4Files,
+                opusFiles,
+                deviceIp
+            )
+
+        } catch (e: Exception) {
+            Log.e(
+                "DataDownload",
+                "Error parsing media list: ${e.message}",
+                e
+            )
+            CoroutineScope(Dispatchers.Main).launch {
+                showDownloadError("Failed to parse media list: ${e.message}")
+            }
+        }
+    }
 
     private fun downloadAllMediaFiles(
         jpgFiles: List<String>,
@@ -2966,41 +4254,57 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
                 setTransferDetail("Downloading 0/$totalAll...")
             }
-            
+
             var jpgSuccess = 0
             var jpgFail = 0
             var mp4Success = 0
             var mp4Fail = 0
             var opusSuccess = 0
             var opusFail = 0
-            
+
             for ((index, fileName) in jpgFiles.withIndex()) {
                 try {
                     withContext(Dispatchers.Main) {
                         setTransferDetail("Downloading photo ${index + 1}/${jpgFiles.size}...")
                     }
-                    Log.i("DataDownload", "Downloading file ${index + 1}/${jpgFiles.size}: $fileName")
+                    Log.i(
+                        "DataDownload",
+                        "Downloading file ${index + 1}/${jpgFiles.size}: $fileName"
+                    )
 
-                    val success = downloadSingleJpgFile(fileName, deviceIp)
+                    val success = downloadSingleJpgFile(
+                        fileName,
+                        deviceIp
+                    )
                     if (success) {
                         jpgSuccess++
-                        Log.i("DataDownload", "✓ Successfully downloaded: $fileName")
+                        Log.i(
+                            "DataDownload",
+                            "✓ Successfully downloaded: $fileName"
+                        )
                     } else {
                         jpgFail++
-                        Log.e("DataDownload", "✗ Failed to download: $fileName")
+                        Log.e(
+                            "DataDownload",
+                            "✗ Failed to download: $fileName"
+                        )
                     }
 
                     withContext(Dispatchers.Main) {
                         onTransferItemDone("jpg")
                         setTransferDetail("Downloaded ${binding.progressTransfer.progress}/${binding.progressTransfer.max}")
                     }
-                    
+
                     // Add a small delay to avoid excessively fast requests
                     delay(500)
-                    
+
                 } catch (e: Exception) {
                     jpgFail++
-                    Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+                    Log.e(
+                        "DataDownload",
+                        "Error downloading $fileName: ${e.message}",
+                        e
+                    )
 
                     withContext(Dispatchers.Main) {
                         onTransferItemDone("jpg")
@@ -3014,15 +4318,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     withContext(Dispatchers.Main) {
                         setTransferDetail("Downloading video ${index + 1}/${mp4Files.size}...")
                     }
-                    Log.i("DataDownload", "Downloading video ${index + 1}/${mp4Files.size}: $fileName")
+                    Log.i(
+                        "DataDownload",
+                        "Downloading video ${index + 1}/${mp4Files.size}: $fileName"
+                    )
 
-                    val success = downloadSingleMp4File(fileName, deviceIp)
+                    val success = downloadSingleMp4File(
+                        fileName,
+                        deviceIp
+                    )
                     if (success) {
                         mp4Success++
-                        Log.i("DataDownload", "✓ Successfully downloaded: $fileName")
+                        Log.i(
+                            "DataDownload",
+                            "✓ Successfully downloaded: $fileName"
+                        )
                     } else {
                         mp4Fail++
-                        Log.e("DataDownload", "✗ Failed to download: $fileName")
+                        Log.e(
+                            "DataDownload",
+                            "✗ Failed to download: $fileName"
+                        )
                     }
 
                     withContext(Dispatchers.Main) {
@@ -3034,7 +4350,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     delay(800)
                 } catch (e: Exception) {
                     mp4Fail++
-                    Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+                    Log.e(
+                        "DataDownload",
+                        "Error downloading $fileName: ${e.message}",
+                        e
+                    )
 
                     withContext(Dispatchers.Main) {
                         onTransferItemDone("mp4")
@@ -3048,15 +4368,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     withContext(Dispatchers.Main) {
                         setTransferDetail("Downloading audio ${index + 1}/${opusFiles.size}...")
                     }
-                    Log.i("DataDownload", "Downloading audio ${index + 1}/${opusFiles.size}: $fileName")
+                    Log.i(
+                        "DataDownload",
+                        "Downloading audio ${index + 1}/${opusFiles.size}: $fileName"
+                    )
 
-                    val success = downloadSingleOpusFile(fileName, deviceIp)
+                    val success = downloadSingleOpusFile(
+                        fileName,
+                        deviceIp
+                    )
                     if (success) {
                         opusSuccess++
-                        Log.i("DataDownload", "✓ Successfully downloaded: $fileName")
+                        Log.i(
+                            "DataDownload",
+                            "✓ Successfully downloaded: $fileName"
+                        )
                     } else {
                         opusFail++
-                        Log.e("DataDownload", "✗ Failed to download: $fileName")
+                        Log.e(
+                            "DataDownload",
+                            "✗ Failed to download: $fileName"
+                        )
                     }
 
                     withContext(Dispatchers.Main) {
@@ -3067,7 +4399,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     delay(500)
                 } catch (e: Exception) {
                     opusFail++
-                    Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+                    Log.e(
+                        "DataDownload",
+                        "Error downloading $fileName: ${e.message}",
+                        e
+                    )
 
                     withContext(Dispatchers.Main) {
                         onTransferItemDone("opus")
@@ -3075,7 +4411,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
                 }
             }
-            
+
             // Show final result
             val totalSuccess = jpgSuccess + mp4Success + opusSuccess
             val totalFail = jpgFail + mp4Fail + opusFail
@@ -3083,7 +4419,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 "DataDownload",
                 "Download completed: jpg=$jpgSuccess/${jpgFiles.size} ok, mp4=$mp4Success/${mp4Files.size} ok, opus=$opusSuccess/${opusFiles.size} ok, failed=$totalFail"
             )
-            
+
             withContext(Dispatchers.Main) {
                 if (totalFail == 0) {
                     showDownloadSuccess("All $totalSuccess files downloaded successfully!")
@@ -3093,72 +4429,138 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
     }
-    
-    private suspend fun downloadSingleJpgFile(fileName: String, deviceIp: String): Boolean {
+
+    private suspend fun downloadSingleJpgFile(
+        fileName: String,
+        deviceIp: String
+    ): Boolean {
         return try {
             val url = "http://$deviceIp/files/$fileName"
-            Log.i("DataDownload", "Downloading: $url")
+            Log.i(
+                "DataDownload",
+                "Downloading: $url"
+            )
 
             var saved: GallerySaveResult? = null
-            httpGet(URL(url), 10000, 30000) { stream, _ ->
-                val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-                saved = saveJpegToGallery(stream, fileName, takenMs)
+            httpGet(
+                URL(url),
+                10000,
+                30000
+            ) { stream, _ ->
+                val takenMs =
+                    parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
+                saved = saveJpegToGallery(
+                    stream,
+                    fileName,
+                    takenMs
+                )
             }
 
             if (saved != null && saved!!.bytes > 0) {
-                Log.i("DataDownload", "File downloaded: $fileName (${saved!!.bytes} bytes)")
+                Log.i(
+                    "DataDownload",
+                    "File downloaded: $fileName (${saved!!.bytes} bytes)"
+                )
             }
             if (saved != null && saved!!.success) {
-                Log.i("DataDownload", "Saved to gallery: name=$fileName uri=${saved!!.uri}")
+                Log.i(
+                    "DataDownload",
+                    "Saved to gallery: name=$fileName uri=${saved!!.uri}"
+                )
                 true
             } else {
-                Log.e("DataDownload", "Failed to download/save: $fileName")
+                Log.e(
+                    "DataDownload",
+                    "Failed to download/save: $fileName"
+                )
                 false
             }
         } catch (e: Exception) {
-            Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+            Log.e(
+                "DataDownload",
+                "Error downloading $fileName: ${e.message}",
+                e
+            )
             false
         }
     }
 
-    private suspend fun downloadSingleMp4File(fileName: String, deviceIp: String): Boolean {
+    private suspend fun downloadSingleMp4File(
+        fileName: String,
+        deviceIp: String
+    ): Boolean {
         return try {
             val url = "http://$deviceIp/files/$fileName"
-            Log.i("DataDownload", "Downloading: $url")
+            Log.i(
+                "DataDownload",
+                "Downloading: $url"
+            )
 
             var saved: GallerySaveResult? = null
-            httpGet(URL(url), 15000, 180000) { stream, _ ->
-                val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-                saved = saveMp4ToGallery(stream, fileName, takenMs)
+            httpGet(
+                URL(url),
+                15000,
+                180000
+            ) { stream, _ ->
+                val takenMs =
+                    parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
+                saved = saveMp4ToGallery(
+                    stream,
+                    fileName,
+                    takenMs
+                )
             }
 
             if (saved != null && saved!!.bytes > 0) {
-                Log.i("DataDownload", "File downloaded: $fileName (${saved!!.bytes} bytes)")
+                Log.i(
+                    "DataDownload",
+                    "File downloaded: $fileName (${saved!!.bytes} bytes)"
+                )
             }
             if (saved != null && saved!!.success) {
-                Log.i("DataDownload", "Saved to gallery: name=$fileName uri=${saved!!.uri}")
+                Log.i(
+                    "DataDownload",
+                    "Saved to gallery: name=$fileName uri=${saved!!.uri}"
+                )
                 true
             } else {
-                Log.e("DataDownload", "Failed to download/save: $fileName")
+                Log.e(
+                    "DataDownload",
+                    "Failed to download/save: $fileName"
+                )
                 false
             }
         } catch (e: Exception) {
-            Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+            Log.e(
+                "DataDownload",
+                "Error downloading $fileName: ${e.message}",
+                e
+            )
             false
         }
     }
 
-    private suspend fun downloadSingleOpusFile(fileName: String, deviceIp: String): Boolean {
+    private suspend fun downloadSingleOpusFile(
+        fileName: String,
+        deviceIp: String
+    ): Boolean {
         return try {
             val url = "http://$deviceIp/files/$fileName"
-            Log.i("DataDownload", "Downloading: $url")
+            Log.i(
+                "DataDownload",
+                "Downloading: $url"
+            )
 
             var saved: GallerySaveResult? = null
             var payloadBytes: ByteArray? = null
             var rawBytesSize = 0
             var payloadNote = "raw"
             val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-            httpGet(URL(url), 15000, 120000) { stream, _ ->
+            httpGet(
+                URL(url),
+                15000,
+                120000
+            ) { stream, _ ->
                 val rawBytes = readAllBytes(stream)
                 rawBytesSize = rawBytes.size
                 val wrapped = wrapOpusIfNeeded(rawBytes)
@@ -3174,7 +4576,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             if (saved != null && saved!!.bytes > 0) {
-                Log.i("DataDownload", "File downloaded: $fileName (${saved!!.bytes} bytes)")
+                Log.i(
+                    "DataDownload",
+                    "File downloaded: $fileName (${saved!!.bytes} bytes)"
+                )
             }
             if (saved != null && saved!!.success) {
                 payloadBytes?.let { bytes ->
@@ -3192,21 +4597,35 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                             )
                         }
                     }.onFailure {
-                        Log.e("DataDownload", "Failed to persist synced audio session for $fileName: ${it.message}", it)
+                        Log.e(
+                            "DataDownload",
+                            "Failed to persist synced audio session for $fileName: ${it.message}",
+                            it
+                        )
                     }
                 }
-                Log.i("DataDownload", "Saved to library: name=$fileName uri=${saved!!.uri}")
+                Log.i(
+                    "DataDownload",
+                    "Saved to library: name=$fileName uri=${saved!!.uri}"
+                )
                 true
             } else {
-                Log.e("DataDownload", "Failed to download/save: $fileName (raw=$rawBytesSize mode=$payloadNote)")
+                Log.e(
+                    "DataDownload",
+                    "Failed to download/save: $fileName (raw=$rawBytesSize mode=$payloadNote)"
+                )
                 false
             }
         } catch (e: Exception) {
-            Log.e("DataDownload", "Error downloading $fileName: ${e.message}", e)
+            Log.e(
+                "DataDownload",
+                "Error downloading $fileName: ${e.message}",
+                e
+            )
             false
         }
     }
-    
+
     private data class GallerySaveResult(
         val success: Boolean,
         val uri: String?,
@@ -3220,10 +4639,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (digits.length < 14) return null
 
         return try {
-            val base = digits.substring(0, 14)
-            val sdf = SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
+            val base = digits.substring(
+                0,
+                14
+            )
+            val sdf = SimpleDateFormat(
+                "yyyyMMddHHmmss",
+                Locale.US
+            )
             val baseDate = sdf.parse(base) ?: return null
-            val msPart = digits.substring(14).take(3)
+            val msPart = digits.substring(14)
+                .take(3)
             val extraMs = msPart.toIntOrNull() ?: 0
             baseDate.time + extraMs
         } catch (_: Exception) {
@@ -3231,44 +4657,101 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun saveJpegToGallery(input: InputStream, displayName: String, takenTimeMs: Long): GallerySaveResult {
+    private fun saveJpegToGallery(
+        input: InputStream,
+        displayName: String,
+        takenTimeMs: Long
+    ): GallerySaveResult {
         return try {
             val resolver = contentResolver
 
             val values = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                put(MediaStore.Images.Media.DATE_TAKEN, takenTimeMs)
-                put(MediaStore.Images.Media.DATE_ADDED, takenTimeMs / 1000)
-                put(MediaStore.Images.Media.DATE_MODIFIED, takenTimeMs / 1000)
+                put(
+                    MediaStore.Images.Media.DISPLAY_NAME,
+                    displayName
+                )
+                put(
+                    MediaStore.Images.Media.MIME_TYPE,
+                    "image/jpeg"
+                )
+                put(
+                    MediaStore.Images.Media.DATE_TAKEN,
+                    takenTimeMs
+                )
+                put(
+                    MediaStore.Images.Media.DATE_ADDED,
+                    takenTimeMs / 1000
+                )
+                put(
+                    MediaStore.Images.Media.DATE_MODIFIED,
+                    takenTimeMs / 1000
+                )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Images.Media.RELATIVE_PATH, SyncedMediaFolder.relativePath)
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                    put(
+                        MediaStore.Images.Media.RELATIVE_PATH,
+                        SyncedMediaFolder.relativePath
+                    )
+                    put(
+                        MediaStore.Images.Media.IS_PENDING,
+                        1
+                    )
                 }
             }
 
-            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                ?: return GallerySaveResult(false, null, 0)
+            val uri = resolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                values
+            ) ?: return GallerySaveResult(
+                false,
+                null,
+                0
+            )
 
             var bytes = 0L
             try {
-                resolver.openOutputStream(uri, "w")?.use { out ->
-                    val buffer = ByteArray(8 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read <= 0) break
-                        out.write(buffer, 0, read)
-                        bytes += read
-                    }
-                    out.flush()
-                } ?: run {
-                    resolver.delete(uri, null, null)
-                    return GallerySaveResult(false, null, bytes)
+                resolver.openOutputStream(
+                    uri,
+                    "w"
+                )
+                    ?.use { out ->
+                        val buffer = ByteArray(8 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            out.write(
+                                buffer,
+                                0,
+                                read
+                            )
+                            bytes += read
+                        }
+                        out.flush()
+                    } ?: run {
+                    resolver.delete(
+                        uri,
+                        null,
+                        null
+                    )
+                    return GallerySaveResult(
+                        false,
+                        null,
+                        bytes
+                    )
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val done = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
-                    resolver.update(uri, done, null, null)
+                    val done = ContentValues().apply {
+                        put(
+                            MediaStore.Images.Media.IS_PENDING,
+                            0
+                        )
+                    }
+                    resolver.update(
+                        uri,
+                        done,
+                        null,
+                        null
+                    )
                 } else {
                     // Pre-Android 10: some galleries need an explicit media scan.
                     MediaScannerConnection.scanFile(
@@ -3279,68 +4762,173 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     )
                 }
 
-                GallerySaveResult(true, uri.toString(), bytes)
+                GallerySaveResult(
+                    true,
+                    uri.toString(),
+                    bytes
+                )
             } catch (e: Exception) {
-                resolver.delete(uri, null, null)
-                Log.e("DataDownload", "Gallery write failed for $displayName: ${e.message}", e)
-                GallerySaveResult(false, uri.toString(), bytes)
+                resolver.delete(
+                    uri,
+                    null,
+                    null
+                )
+                Log.e(
+                    "DataDownload",
+                    "Gallery write failed for $displayName: ${e.message}",
+                    e
+                )
+                GallerySaveResult(
+                    false,
+                    uri.toString(),
+                    bytes
+                )
             }
         } catch (e: Exception) {
-            Log.e("DataDownload", "saveJpegToGallery failed for $displayName: ${e.message}", e)
-            GallerySaveResult(false, null, 0)
+            Log.e(
+                "DataDownload",
+                "saveJpegToGallery failed for $displayName: ${e.message}",
+                e
+            )
+            GallerySaveResult(
+                false,
+                null,
+                0
+            )
         }
     }
 
-    private fun saveMp4ToGallery(input: InputStream, displayName: String, takenTimeMs: Long): GallerySaveResult {
+    private fun saveMp4ToGallery(
+        input: InputStream,
+        displayName: String,
+        takenTimeMs: Long
+    ): GallerySaveResult {
         return try {
             val resolver = contentResolver
 
             val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
-                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.DATE_TAKEN, takenTimeMs)
-                put(MediaStore.Video.Media.DATE_ADDED, takenTimeMs / 1000)
-                put(MediaStore.Video.Media.DATE_MODIFIED, takenTimeMs / 1000)
+                put(
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    displayName
+                )
+                put(
+                    MediaStore.Video.Media.MIME_TYPE,
+                    "video/mp4"
+                )
+                put(
+                    MediaStore.Video.Media.DATE_TAKEN,
+                    takenTimeMs
+                )
+                put(
+                    MediaStore.Video.Media.DATE_ADDED,
+                    takenTimeMs / 1000
+                )
+                put(
+                    MediaStore.Video.Media.DATE_MODIFIED,
+                    takenTimeMs / 1000
+                )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // Keep videos in the same DCIM/CyanBridge folder as photos.
-                    put(MediaStore.Video.Media.RELATIVE_PATH, SyncedMediaFolder.relativePath)
-                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                    put(
+                        MediaStore.Video.Media.RELATIVE_PATH,
+                        SyncedMediaFolder.relativePath
+                    )
+                    put(
+                        MediaStore.Video.Media.IS_PENDING,
+                        1
+                    )
                 }
             }
 
-            val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                ?: return GallerySaveResult(false, null, 0)
+            val uri = resolver.insert(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                values
+            ) ?: return GallerySaveResult(
+                false,
+                null,
+                0
+            )
 
             var bytes = 0L
             try {
-                resolver.openOutputStream(uri, "w")?.use { out ->
-                    val buffer = ByteArray(128 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read <= 0) break
-                        out.write(buffer, 0, read)
-                        bytes += read
-                    }
-                    out.flush()
-                } ?: run {
-                    resolver.delete(uri, null, null)
-                    return GallerySaveResult(false, null, bytes)
+                resolver.openOutputStream(
+                    uri,
+                    "w"
+                )
+                    ?.use { out ->
+                        val buffer = ByteArray(128 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            out.write(
+                                buffer,
+                                0,
+                                read
+                            )
+                            bytes += read
+                        }
+                        out.flush()
+                    } ?: run {
+                    resolver.delete(
+                        uri,
+                        null,
+                        null
+                    )
+                    return GallerySaveResult(
+                        false,
+                        null,
+                        bytes
+                    )
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val done = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
-                    resolver.update(uri, done, null, null)
+                    val done = ContentValues().apply {
+                        put(
+                            MediaStore.Video.Media.IS_PENDING,
+                            0
+                        )
+                    }
+                    resolver.update(
+                        uri,
+                        done,
+                        null,
+                        null
+                    )
                 }
 
-                GallerySaveResult(true, uri.toString(), bytes)
+                GallerySaveResult(
+                    true,
+                    uri.toString(),
+                    bytes
+                )
             } catch (e: Exception) {
-                resolver.delete(uri, null, null)
-                Log.e("DataDownload", "Gallery video write failed for $displayName: ${e.message}", e)
-                GallerySaveResult(false, uri.toString(), bytes)
+                resolver.delete(
+                    uri,
+                    null,
+                    null
+                )
+                Log.e(
+                    "DataDownload",
+                    "Gallery video write failed for $displayName: ${e.message}",
+                    e
+                )
+                GallerySaveResult(
+                    false,
+                    uri.toString(),
+                    bytes
+                )
             }
         } catch (e: Exception) {
-            Log.e("DataDownload", "saveMp4ToGallery failed for $displayName: ${e.message}", e)
-            GallerySaveResult(false, null, 0)
+            Log.e(
+                "DataDownload",
+                "saveMp4ToGallery failed for $displayName: ${e.message}",
+                e
+            )
+            GallerySaveResult(
+                false,
+                null,
+                0
+            )
         }
     }
 
@@ -3354,57 +4942,139 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return try {
             val resolver = contentResolver
 
-            val headHex = bytesToHex(payloadBytes, 24)
+            val headHex = bytesToHex(
+                payloadBytes,
+                24
+            )
             Log.i(
                 "DataDownload",
                 "OPUS save: name=$displayName, raw=$rawBytesSize bytes, out=${payloadBytes.size} bytes, mode=$payloadNote, head=$headHex"
             )
 
-            val title = displayName.substringBeforeLast('.', displayName)
+            val title = displayName.substringBeforeLast(
+                '.',
+                displayName
+            )
             val values = ContentValues().apply {
-                put(MediaStore.Audio.Media.DISPLAY_NAME, displayName)
+                put(
+                    MediaStore.Audio.Media.DISPLAY_NAME,
+                    displayName
+                )
                 // Use Ogg/Opus container when possible.
-                put(MediaStore.Audio.Media.MIME_TYPE, "audio/ogg")
-                put(MediaStore.Audio.Media.TITLE, title)
-                put(MediaStore.Audio.Media.IS_MUSIC, 0)
-                put(MediaStore.MediaColumns.DATE_ADDED, takenTimeMs / 1000)
-                put(MediaStore.MediaColumns.DATE_MODIFIED, takenTimeMs / 1000)
+                put(
+                    MediaStore.Audio.Media.MIME_TYPE,
+                    "audio/ogg"
+                )
+                put(
+                    MediaStore.Audio.Media.TITLE,
+                    title
+                )
+                put(
+                    MediaStore.Audio.Media.IS_MUSIC,
+                    0
+                )
+                put(
+                    MediaStore.MediaColumns.DATE_ADDED,
+                    takenTimeMs / 1000
+                )
+                put(
+                    MediaStore.MediaColumns.DATE_MODIFIED,
+                    takenTimeMs / 1000
+                )
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     // Keep alongside photos/videos per your preference (DCIM/CyanBridge).
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, SyncedMediaFolder.relativePath)
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    put(
+                        MediaStore.MediaColumns.RELATIVE_PATH,
+                        SyncedMediaFolder.relativePath
+                    )
+                    put(
+                        MediaStore.MediaColumns.IS_PENDING,
+                        1
+                    )
                 }
             }
 
-            val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
-                ?: return GallerySaveResult(false, null, 0)
+            val uri = resolver.insert(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                values
+            ) ?: return GallerySaveResult(
+                false,
+                null,
+                0
+            )
 
             var bytes = 0L
             try {
-                resolver.openOutputStream(uri, "w")?.use { out ->
-                    out.write(payloadBytes)
-                    bytes = payloadBytes.size.toLong()
-                    out.flush()
-                } ?: run {
-                    resolver.delete(uri, null, null)
-                    return GallerySaveResult(false, null, bytes)
+                resolver.openOutputStream(
+                    uri,
+                    "w"
+                )
+                    ?.use { out ->
+                        out.write(payloadBytes)
+                        bytes = payloadBytes.size.toLong()
+                        out.flush()
+                    } ?: run {
+                    resolver.delete(
+                        uri,
+                        null,
+                        null
+                    )
+                    return GallerySaveResult(
+                        false,
+                        null,
+                        bytes
+                    )
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val done = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-                    resolver.update(uri, done, null, null)
+                    val done = ContentValues().apply {
+                        put(
+                            MediaStore.MediaColumns.IS_PENDING,
+                            0
+                        )
+                    }
+                    resolver.update(
+                        uri,
+                        done,
+                        null,
+                        null
+                    )
                 }
 
-                GallerySaveResult(true, uri.toString(), bytes)
+                GallerySaveResult(
+                    true,
+                    uri.toString(),
+                    bytes
+                )
             } catch (e: Exception) {
-                resolver.delete(uri, null, null)
-                Log.e("DataDownload", "Gallery audio write failed for $displayName: ${e.message}", e)
-                GallerySaveResult(false, uri.toString(), bytes)
+                resolver.delete(
+                    uri,
+                    null,
+                    null
+                )
+                Log.e(
+                    "DataDownload",
+                    "Gallery audio write failed for $displayName: ${e.message}",
+                    e
+                )
+                GallerySaveResult(
+                    false,
+                    uri.toString(),
+                    bytes
+                )
             }
         } catch (e: Exception) {
-            Log.e("DataDownload", "saveOpusToLibrary failed for $displayName: ${e.message}", e)
-            GallerySaveResult(false, null, 0)
+            Log.e(
+                "DataDownload",
+                "saveOpusToLibrary failed for $displayName: ${e.message}",
+                e
+            )
+            GallerySaveResult(
+                false,
+                null,
+                0
+            )
         }
     }
 
@@ -3414,16 +5084,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         while (true) {
             val read = input.read(buffer)
             if (read <= 0) break
-            bos.write(buffer, 0, read)
+            bos.write(
+                buffer,
+                0,
+                read
+            )
         }
         return bos.toByteArray()
     }
 
-    private fun bytesToHex(bytes: ByteArray, max: Int): String {
-        val n = minOf(bytes.size, max)
+    private fun bytesToHex(
+        bytes: ByteArray,
+        max: Int
+    ): String {
+        val n = minOf(
+            bytes.size,
+            max
+        )
         val sb = StringBuilder(n * 2)
         for (i in 0 until n) {
-            sb.append(String.format("%02x", bytes[i]))
+            sb.append(
+                String.format(
+                    "%02x",
+                    bytes[i]
+                )
+            )
         }
         if (bytes.size > max) sb.append("...")
         return sb.toString()
@@ -3436,10 +5121,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         // Try to interpret the file as a sequence of length-prefixed Opus packets and wrap
         // them into a proper Ogg/Opus container so standard players (VLC) can open it.
-        val packets = parseLengthPrefixedPackets(raw, littleEndian = true)
-            ?: parseLengthPrefixedPackets(raw, littleEndian = false)
-            ?: parseLengthPrefixedPackets1B(raw)
-            ?: guessFixedSizePackets(raw)
+        val packets = parseLengthPrefixedPackets(
+            raw,
+            littleEndian = true
+        ) ?: parseLengthPrefixedPackets(
+            raw,
+            littleEndian = false
+        ) ?: parseLengthPrefixedPackets1B(raw) ?: guessFixedSizePackets(raw)
 
         if (packets == null || packets.isEmpty()) {
             // Unknown/proprietary layout (the official app decodes these with jl_opus).
@@ -3447,15 +5135,24 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         return try {
-            val ogg = buildOggOpusFromPackets(packets, packetDurationMs = 40)
+            val ogg = buildOggOpusFromPackets(
+                packets,
+                packetDurationMs = 40
+            )
             ogg to "wrapped packets=${packets.size}"
         } catch (e: Exception) {
-            Log.w("DataDownload", "Failed to wrap opus into ogg: ${e.message}")
+            Log.w(
+                "DataDownload",
+                "Failed to wrap opus into ogg: ${e.message}"
+            )
             raw to "raw-unwrapped"
         }
     }
 
-    private fun parseLengthPrefixedPackets(raw: ByteArray, littleEndian: Boolean): List<ByteArray>? {
+    private fun parseLengthPrefixedPackets(
+        raw: ByteArray,
+        littleEndian: Boolean
+    ): List<ByteArray>? {
         // Heuristic: repeated [u16 len][len bytes]...
         var i = 0
         val out = ArrayList<ByteArray>()
@@ -3466,7 +5163,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             i += 2
             if (len <= 0 || len > 2000) return null
             if (i + len > raw.size) return null
-            out.add(raw.copyOfRange(i, i + len))
+            out.add(
+                raw.copyOfRange(
+                    i,
+                    i + len
+                )
+            )
             i += len
         }
         if (i != raw.size) return null
@@ -3483,7 +5185,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             i += 1
             if (len <= 0 || len > 255) return null
             if (i + len > raw.size) return null
-            out.add(raw.copyOfRange(i, i + len))
+            out.add(
+                raw.copyOfRange(
+                    i,
+                    i + len
+                )
+            )
             i += len
         }
         if (i != raw.size) return null
@@ -3495,7 +5202,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // fixed packet byte size. Try a few common sizes.
         if (raw.isEmpty()) return null
         // 40 bytes is especially common for these glasses (official app uses packetSize=40).
-        val candidates = intArrayOf(40, 60, 80, 100, 120, 160, 200, 240, 320)
+        val candidates = intArrayOf(
+            40,
+            60,
+            80,
+            100,
+            120,
+            160,
+            200,
+            240,
+            320
+        )
         for (size in candidates) {
             if (size <= 0) continue
             if (raw.size % size != 0) continue
@@ -3504,7 +5221,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val out = ArrayList<ByteArray>(count)
             var i = 0
             while (i < raw.size) {
-                out.add(raw.copyOfRange(i, i + size))
+                out.add(
+                    raw.copyOfRange(
+                        i,
+                        i + size
+                    )
+                )
                 i += size
             }
             return out
@@ -3512,7 +5234,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return null
     }
 
-    private fun buildOggOpusFromPackets(packets: List<ByteArray>, packetDurationMs: Int): ByteArray {
+    private fun buildOggOpusFromPackets(
+        packets: List<ByteArray>,
+        packetDurationMs: Int
+    ): ByteArray {
         // Ogg/Opus expects OpusHead + OpusTags packets before audio packets.
         val serial = SecureRandom().nextInt()
         var seq = 0
@@ -3520,12 +5245,29 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val out = ByteArrayOutputStream()
 
-        val opusHead = buildOpusHead(channels = 1, preSkip = 0)
+        val opusHead = buildOpusHead(
+            channels = 1,
+            preSkip = 0
+        )
         val opusTags = buildOpusTags(vendor = "CyanBridge")
 
         // Header pages
-        writeOggPage(out, serial, seq++, granulePosition = 0, headerType = 0x02, packets = listOf(opusHead))
-        writeOggPage(out, serial, seq++, granulePosition = 0, headerType = 0x00, packets = listOf(opusTags))
+        writeOggPage(
+            out,
+            serial,
+            seq++,
+            granulePosition = 0,
+            headerType = 0x02,
+            packets = listOf(opusHead)
+        )
+        writeOggPage(
+            out,
+            serial,
+            seq++,
+            granulePosition = 0,
+            headerType = 0x00,
+            packets = listOf(opusTags)
+        )
 
         // Audio pages
         val samplesPerPacket48k = (packetDurationMs * 48_000L) / 1000L
@@ -3550,13 +5292,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             granulePos = localGranule
             val isLast = idx >= packets.size
             val headerType = if (isLast) 0x04 else 0x00
-            writeOggPage(out, serial, seq++, granulePosition = granulePos, headerType = headerType, packets = pagePackets)
+            writeOggPage(
+                out,
+                serial,
+                seq++,
+                granulePosition = granulePos,
+                headerType = headerType,
+                packets = pagePackets
+            )
         }
 
         return out.toByteArray()
     }
 
-    private fun buildOpusHead(channels: Int, preSkip: Int): ByteArray {
+    private fun buildOpusHead(
+        channels: Int,
+        preSkip: Int
+    ): ByteArray {
         // OpusHead (19 bytes)
         val b = ByteArrayOutputStream()
         b.write("OpusHead".toByteArray(Charsets.US_ASCII))
@@ -3583,14 +5335,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val vendorBytes = vendor.toByteArray(Charsets.UTF_8)
         val b = ByteArrayOutputStream()
         b.write("OpusTags".toByteArray(Charsets.US_ASCII))
-        writeLe32(b, vendorBytes.size)
+        writeLe32(
+            b,
+            vendorBytes.size
+        )
         b.write(vendorBytes)
         // user comment list length = 0
-        writeLe32(b, 0)
+        writeLe32(
+            b,
+            0
+        )
         return b.toByteArray()
     }
 
-    private fun writeLe32(out: ByteArrayOutputStream, v: Int) {
+    private fun writeLe32(
+        out: ByteArrayOutputStream,
+        v: Int
+    ) {
         out.write(v and 0xFF)
         out.write((v shr 8) and 0xFF)
         out.write((v shr 16) and 0xFF)
@@ -3612,9 +5373,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             var remaining = p.size
             var offset = 0
             while (remaining > 0) {
-                val seg = minOf(255, remaining)
+                val seg = minOf(
+                    255,
+                    remaining
+                )
                 segmentTable.write(seg)
-                payload.write(p, offset, seg)
+                payload.write(
+                    p,
+                    offset,
+                    seg
+                )
                 offset += seg
                 remaining -= seg
             }
@@ -3634,11 +5402,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         header.write("OggS".toByteArray(Charsets.US_ASCII))
         header.write(0) // version
         header.write(headerType and 0xFF)
-        writeLe64(header, granulePosition)
-        writeLe32(header, serial)
-        writeLe32(header, seq)
+        writeLe64(
+            header,
+            granulePosition
+        )
+        writeLe32(
+            header,
+            serial
+        )
+        writeLe32(
+            header,
+            seq
+        )
         // checksum placeholder
-        writeLe32(header, 0)
+        writeLe32(
+            header,
+            0
+        )
         header.write(segBytes.size)
         header.write(segBytes)
 
@@ -3654,7 +5434,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         out.write(pageBytes)
     }
 
-    private fun writeLe64(out: ByteArrayOutputStream, v: Long) {
+    private fun writeLe64(
+        out: ByteArrayOutputStream,
+        v: Long
+    ) {
         out.write((v and 0xFF).toInt())
         out.write(((v shr 8) and 0xFF).toInt())
         out.write(((v shr 16) and 0xFF).toInt())
@@ -3689,8 +5472,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         return crc
     }
-    
-    private fun teardownDownloadP2pSession(sendExitTransfer: Boolean, hideTransferUi: Boolean) {
+
+    private fun teardownDownloadP2pSession(
+        sendExitTransfer: Boolean,
+        hideTransferUi: Boolean
+    ) {
         downloadAttemptJob?.cancel()
         downloadAttemptJob = null
         unbindProcessFromNetwork()
@@ -3705,27 +5491,44 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // Stop receiving download-mode notify frames.
         if (downloadNotifyListenerRegistered) {
             try {
-                LargeDataHandler.getInstance().removeOutDeviceListener(2)
+                LargeDataHandler.getInstance()
+                    .removeOutDeviceListener(2)
                 downloadNotifyListenerRegistered = false
-                Log.i("DataDownload", "Unregistered download notify listener (cmdType=2)")
+                Log.i(
+                    "DataDownload",
+                    "Unregistered download notify listener (cmdType=2)"
+                )
             } catch (e: Exception) {
-                Log.w("DataDownload", "Failed to unregister download notify listener", e)
+                Log.w(
+                    "DataDownload",
+                    "Failed to unregister download notify listener",
+                    e
+                )
             }
         }
 
         if (sendExitTransfer) {
             // Tell the glasses to exit transfer mode (official app does this after downloads finish).
             try {
-                LargeDataHandler.getInstance().glassesControl(
-                    byteArrayOf(0x02, 0x01, 0x09)
-                ) { _, resp ->
-                    Log.i(
-                        "DataDownload",
-                        "glassesControl[0x02,0x01,0x09] -> dataType=${resp.dataType}, error=${resp.errorCode}"
-                    )
-                }
+                LargeDataHandler.getInstance()
+                    .glassesControl(
+                        byteArrayOf(
+                            0x02,
+                            0x01,
+                            0x09
+                        )
+                    ) { _, resp ->
+                        Log.i(
+                            "DataDownload",
+                            "glassesControl[0x02,0x01,0x09] -> dataType=${resp.dataType}, error=${resp.errorCode}"
+                        )
+                    }
             } catch (e: Exception) {
-                Log.w("DataDownload", "Failed to send exit-transfer command [0x02,0x01,0x09]", e)
+                Log.w(
+                    "DataDownload",
+                    "Failed to send exit-transfer command [0x02,0x01,0x09]",
+                    e
+                )
             }
         }
 
@@ -3739,7 +5542,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         manager?.cancelP2pConnection()
 
         manager?.removeGroup { success ->
-            Log.i("DataDownload", "P2P group removed: $success")
+            Log.i(
+                "DataDownload",
+                "P2P group removed: $success"
+            )
         }
         manager?.unregisterReceiver()
         downloadWifiP2pManager = null
@@ -3757,8 +5563,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         )
     }
 
-    private fun cancelDataDownloadAttempt(reason: String, showToast: Boolean) {
-        Log.i("DataDownload", reason)
+    private fun cancelDataDownloadAttempt(
+        reason: String,
+        showToast: Boolean
+    ) {
+        Log.i(
+            "DataDownload",
+            reason
+        )
         downloadCancelledByUser = true
         setTransferDetail("Stopping sync...")
         teardownDownloadP2pSession(
@@ -3766,22 +5578,46 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             hideTransferUi = true,
         )
         if (showToast) {
-            Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                reason,
+                Toast.LENGTH_SHORT
+            )
+                .show()
         }
     }
 
     private fun showDownloadSuccess(message: String) {
         cleanupP2pAfterDownload()
-        Log.i("DataDownload", "SUCCESS: $message")
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        Log.i(
+            "DataDownload",
+            "SUCCESS: $message"
+        )
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_LONG
+        )
+            .show()
     }
-    
-    private fun showDownloadError(message: String, cleanup: Boolean = true) {
+
+    private fun showDownloadError(
+        message: String,
+        cleanup: Boolean = true
+    ) {
         if (cleanup) {
             cleanupP2pAfterDownload()
         }
-        Log.e("DataDownload", "ERROR: $message")
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        Log.e(
+            "DataDownload",
+            "ERROR: $message"
+        )
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_LONG
+        )
+            .show()
     }
 
     private fun isProbablyGroupOwnerIp(ip: String?): Boolean {
@@ -3812,10 +5648,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val network = downloadP2pNetwork ?: findLikelyP2pNetwork()
         if (network != null) {
             try {
-                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
                 val lp = cm.getLinkProperties(network)
-                val addr = lp?.linkAddresses
-                    ?.mapNotNull { it.address.hostAddress }
+                val addr = lp?.linkAddresses?.mapNotNull { it.address.hostAddress }
                     ?.firstOrNull { it.count { ch -> ch == '.' } == 3 }
                 ipv4Prefix24(addr)?.let { return it }
             } catch (_: Exception) {
@@ -3847,38 +5682,82 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return set.toList()
     }
 
-    private fun isPortOpen(ip: String, port: Int, timeoutMs: Int): Boolean {
+    private fun isPortOpen(
+        ip: String,
+        port: Int,
+        timeoutMs: Int
+    ): Boolean {
         // Standard path: use P2P network's socket factory.
         try {
-            val factory = downloadP2pNetwork?.socketFactory ?: javax.net.SocketFactory.getDefault()
-            factory.createSocket().use { s ->
-                s.connect(InetSocketAddress(ip, port), timeoutMs)
-                return true
-            }
-        } catch (_: Exception) {}
+            val factory = downloadP2pNetwork?.socketFactory ?: SocketFactory.getDefault()
+            factory.createSocket()
+                .use { s ->
+                    s.connect(
+                        InetSocketAddress(
+                            ip,
+                            port
+                        ),
+                        timeoutMs
+                    )
+                    return true
+                }
+        } catch (_: Exception) {
+        }
 
         // VPN fallback: bind socket to P2P local address to bypass VPN routing.
         val p2pAddr = p2pLocalAddress() ?: return false
         return try {
             Socket().use { s ->
-                s.bind(InetSocketAddress(p2pAddr, 0))
-                s.connect(InetSocketAddress(ip, port), timeoutMs)
+                s.bind(
+                    InetSocketAddress(
+                        p2pAddr,
+                        0
+                    )
+                )
+                s.connect(
+                    InetSocketAddress(
+                        ip,
+                        port
+                    ),
+                    timeoutMs
+                )
                 true
             }
-        } catch (_: Exception) { false }
+        } catch (_: Exception) {
+            false
+        }
     }
 
-    private fun mediaConfigOk(ip: String, timeoutMs: Int, logFailures: Boolean = false): Boolean {
-        if (!isPortOpen(ip, 80, (timeoutMs / 2).coerceAtLeast(400))) {
+    private fun mediaConfigOk(
+        ip: String,
+        timeoutMs: Int,
+        logFailures: Boolean = false
+    ): Boolean {
+        if (!isPortOpen(
+                ip,
+                80,
+                (timeoutMs / 2).coerceAtLeast(400)
+            )
+        ) {
             if (logFailures) {
-                Log.w("DataDownload", "media.config probe skipped for $ip (port 80 closed/unreachable)")
+                Log.w(
+                    "DataDownload",
+                    "media.config probe skipped for $ip (port 80 closed/unreachable)"
+                )
             }
             return false
         }
         val url = URL("http://$ip/files/media.config")
-        val ok = httpGet(url, timeoutMs, timeoutMs)
+        val ok = httpGet(
+            url,
+            timeoutMs,
+            timeoutMs
+        )
         if (!ok && logFailures) {
-            Log.w("DataDownload", "media.config probe failed for $ip")
+            Log.w(
+                "DataDownload",
+                "media.config probe failed for $ip"
+            )
         }
         return ok
     }
@@ -3899,10 +5778,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 launch(Dispatchers.IO) {
                     sem.withPermit {
                         if (found.isCompleted) return@withPermit
-                        if (isPortOpen(ip, 80, connectTimeoutMs)) {
-                            firstOpenPortIp.compareAndSet(null, ip)
+                        if (isPortOpen(
+                                ip,
+                                80,
+                                connectTimeoutMs
+                            )
+                        ) {
+                            firstOpenPortIp.compareAndSet(
+                                null,
+                                ip
+                            )
                             // Prefer an IP that actually serves media.config.
-                            if (mediaConfigOk(ip, verifyTimeoutMs)) {
+                            if (mediaConfigOk(
+                                    ip,
+                                    verifyTimeoutMs
+                                )
+                            ) {
                                 found.complete(ip)
                             }
                         }
@@ -3930,26 +5821,46 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             for (m in methods) {
                 val params = m.parameterTypes.joinToString(",") { it.simpleName ?: it.name }
                 val ret = m.returnType.simpleName ?: m.returnType.name
-                Log.i("LDHMethods", "method=${m.name}, params=($params), return=$ret")
+                Log.i(
+                    "LDHMethods",
+                    "method=${m.name}, params=($params), return=$ret"
+                )
             }
         } catch (e: Exception) {
-            Log.e("LDHMethods", "Failed to introspect LargeDataHandler methods", e)
+            Log.e(
+                "LDHMethods",
+                "Failed to introspect LargeDataHandler methods",
+                e
+            )
         }
     }
 
     private fun testConnection(deviceIp: String): Boolean {
-        Log.i("DataDownload", "Testing connection to $deviceIp...")
+        Log.i(
+            "DataDownload",
+            "Testing connection to $deviceIp..."
+        )
         val url = URL("http://$deviceIp/files/media.config")
         var bytesRead = 0
-        val ok = httpGet(url, 5000, 5000) { stream, _ ->
+        val ok = httpGet(
+            url,
+            5000,
+            5000
+        ) { stream, _ ->
             val buffer = ByteArray(1024)
             bytesRead = stream.read(buffer)
             stream.close()
         }
         if (ok) {
-            Log.i("DataDownload", "Connection test successful - read $bytesRead bytes")
+            Log.i(
+                "DataDownload",
+                "Connection test successful - read $bytesRead bytes"
+            )
         } else {
-            Log.e("DataDownload", "Connection test failed for $deviceIp")
+            Log.e(
+                "DataDownload",
+                "Connection test failed for $deviceIp"
+            )
         }
         return ok
     }
@@ -3957,17 +5868,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun onDownloadBleIp(ip: String) {
         val now = System.currentTimeMillis()
         if (ip == downloadBleIp && (now - lastDownloadBleIpAtMs) < 1200L) {
-            Log.i("DataDownload", "Ignoring duplicate BLE IP report: $ip")
+            Log.i(
+                "DataDownload",
+                "Ignoring duplicate BLE IP report: $ip"
+            )
             return
         }
         lastDownloadBleIpAtMs = now
-        Log.i("DataDownload", "BLE reported device WiFi IP: $ip")
+        Log.i(
+            "DataDownload",
+            "BLE reported device WiFi IP: $ip"
+        )
         downloadBleIp = ip
 
         // If we're stuck scanning/probing without a good route, restart the resolver now that
         // we have the authoritative device IP from BLE.
         if (downloadAttemptJob?.isActive == true && !downloadInProgress) {
-            Log.i("DataDownload", "New BLE IP arrived; restarting HTTP resolver")
+            Log.i(
+                "DataDownload",
+                "New BLE IP arrived; restarting HTTP resolver"
+            )
             downloadAttemptJob?.cancel()
             downloadAttemptJob = null
         }
@@ -3989,23 +5909,35 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun maybeStartHttpDownload(source: String) {
         if (downloadCancelledByUser) {
-            Log.i("DataDownload", "Ignoring HTTP start trigger from $source after user stop")
+            Log.i(
+                "DataDownload",
+                "Ignoring HTTP start trigger from $source after user stop"
+            )
             return
         }
         if (downloadInProgress || downloadAttemptJob?.isActive == true) {
-            Log.i("DataDownload", "Download already in progress, ignoring trigger from $source")
+            Log.i(
+                "DataDownload",
+                "Download already in progress, ignoring trigger from $source"
+            )
             return
         }
 
         if (!downloadP2pConnected) {
-            Log.i("DataDownload", "Ignoring HTTP start trigger from $source; P2P not connected yet")
+            Log.i(
+                "DataDownload",
+                "Ignoring HTTP start trigger from $source; P2P not connected yet"
+            )
             return
         }
 
         val hasDeviceIp = !downloadBleIp.isNullOrBlank() || !bleIpBridge.ip.value.isNullOrBlank()
         if (!hasDeviceIp) {
             setTransferDetail("Waiting for BLE-reported glasses IP...")
-            Log.i("DataDownload", "Ignoring HTTP start trigger from $source; waiting for device IP notify")
+            Log.i(
+                "DataDownload",
+                "Ignoring HTTP start trigger from $source; waiting for device IP notify"
+            )
             return
         }
 
@@ -4043,10 +5975,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         continue
                     }
                     val shouldLog = candidate == downloadBleIp
-                    if (mediaConfigOk(candidate, 2000, logFailures = shouldLog)) {
+                    if (mediaConfigOk(
+                            candidate,
+                            2000,
+                            logFailures = shouldLog
+                        )
+                    ) {
                         downloadResolvedHttpIp = candidate
                         downloadInProgress = true
-                        Log.i("DataDownload", "Resolved glasses HTTP IP via candidate list: $candidate")
+                        Log.i(
+                            "DataDownload",
+                            "Resolved glasses HTTP IP via candidate list: $candidate"
+                        )
                         downloadMediaList(candidate)
                         return@launch
                     }
@@ -4054,21 +5994,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                 // 2) If we still don't have a device IP, scan the local /24 derived from
                 // the best available hint (BLE IP, bridge IP, GO subnet, or interface subnet).
-                if (!didSubnetScan &&
-                    downloadP2pConnected &&
-                    downloadResolvedHttpIp == null &&
-                    downloadBleIp == null &&
-                    bleIpBridge.ip.value == null
-                ) {
+                if (!didSubnetScan && downloadP2pConnected && downloadResolvedHttpIp == null && downloadBleIp == null && bleIpBridge.ip.value == null) {
                     val prefix = guessDownloadSubnetPrefix()
                     if (!prefix.isNullOrBlank()) {
                         didSubnetScan = true
-                        Log.i("DataDownload", "Candidate IPs failed; scanning ${prefix}0/24 for HTTP server...")
+                        Log.i(
+                            "DataDownload",
+                            "Candidate IPs failed; scanning ${prefix}0/24 for HTTP server..."
+                        )
                         val found = discoverGlassesIpByScan(prefix)
                         if (!found.isNullOrBlank()) {
                             downloadResolvedHttpIp = found
                             downloadInProgress = true
-                            Log.i("DataDownload", "Resolved glasses HTTP IP via scan: $found")
+                            Log.i(
+                                "DataDownload",
+                                "Resolved glasses HTTP IP via scan: $found"
+                            )
                             downloadMediaList(found)
                             return@launch
                         }
@@ -4089,7 +6030,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private inner class DownloadNotifyListener : GlassesDeviceNotifyListener() {
         @RequiresApi(Build.VERSION_CODES.O)
-        override fun parseData(cmdType: Int, response: GlassesDeviceNotifyRsp) {
+        override fun parseData(
+            cmdType: Int,
+            response: GlassesDeviceNotifyRsp
+        ) {
             // Only handle download-relevant notifications here to avoid duplicating
             // other flows already handled by MyDeviceNotifyListener.
             val load = response.loadData
@@ -4097,11 +6041,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             when (load[6].toInt()) {
                 0x08 -> {
                     if (load.size >= 11) {
-                        val ip = "${ByteUtil.byteToInt(load[7])}." +
-                                "${ByteUtil.byteToInt(load[8])}." +
-                                "${ByteUtil.byteToInt(load[9])}." +
-                                "${ByteUtil.byteToInt(load[10])}"
-                        Log.i("DeviceNotify", "(download) BLE reported WiFi IP: $ip")
+                        val ip =
+                            "${ByteUtil.byteToInt(load[7])}." + "${ByteUtil.byteToInt(load[8])}." + "${ByteUtil.byteToInt(load[9])}." + "${ByteUtil.byteToInt(load[10])}"
+                        Log.i(
+                            "DeviceNotify",
+                            "(download) BLE reported WiFi IP: $ip"
+                        )
                         onDownloadBleIp(ip)
                     }
                 }
@@ -4109,7 +6054,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 0x09 -> {
                     val raw = load.getOrNull(7) ?: 0
                     val errorCode = ByteUtil.byteToInt(raw)
-                    Log.e("DeviceNotify", "(download) P2P/WiFi error from device: $errorCode (raw=$raw)")
+                    Log.e(
+                        "DeviceNotify",
+                        "(download) P2P/WiFi error from device: $errorCode (raw=$raw)"
+                    )
                     if (errorCode == 255) {
                         maybeResetP2pAfterError255("download")
                     }
@@ -4125,38 +6073,77 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 val conn = network.openConnection(url) as HttpURLConnection
                 conn.instanceFollowRedirects = true
                 return conn
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         }
         return try {
             val conn = url.openConnection() as HttpURLConnection
             conn.instanceFollowRedirects = true
             conn
-        } catch (_: Exception) { null }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** Build an OkHttp client whose sockets bind to the P2P local address (VPN-proof). */
-    private fun vpnSafeHttpClient(connectTimeoutMs: Int, readTimeoutMs: Int): okhttp3.OkHttpClient? {
+    private fun vpnSafeHttpClient(
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int
+    ): okhttp3.OkHttpClient? {
         val p2pAddr = p2pLocalAddress() ?: return null
-        val factory = object : javax.net.SocketFactory() {
+        val factory = object : SocketFactory() {
             override fun createSocket(): Socket {
                 val s = Socket()
-                s.bind(InetSocketAddress(p2pAddr, 0))
+                s.bind(
+                    InetSocketAddress(
+                        p2pAddr,
+                        0
+                    )
+                )
                 return s
             }
-            override fun createSocket(host: String, port: Int) = throw UnsupportedOperationException()
-            override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int) = throw UnsupportedOperationException()
-            override fun createSocket(host: InetAddress, port: Int) = throw UnsupportedOperationException()
-            override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int) = throw UnsupportedOperationException()
+
+            override fun createSocket(
+                host: String,
+                port: Int
+            ) = throw UnsupportedOperationException()
+
+            override fun createSocket(
+                host: String,
+                port: Int,
+                localHost: InetAddress,
+                localPort: Int
+            ) = throw UnsupportedOperationException()
+
+            override fun createSocket(
+                host: InetAddress,
+                port: Int
+            ) = throw UnsupportedOperationException()
+
+            override fun createSocket(
+                address: InetAddress,
+                port: Int,
+                localAddress: InetAddress,
+                localPort: Int
+            ) = throw UnsupportedOperationException()
         }
         return try {
             okhttp3.OkHttpClient.Builder()
                 .socketFactory(factory)
-                .connectTimeout(connectTimeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
-                .readTimeout(readTimeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+                .connectTimeout(
+                    connectTimeoutMs.toLong(),
+                    java.util.concurrent.TimeUnit.MILLISECONDS
+                )
+                .readTimeout(
+                    readTimeoutMs.toLong(),
+                    java.util.concurrent.TimeUnit.MILLISECONDS
+                )
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .build()
-        } catch (_: Exception) { null }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -4175,26 +6162,45 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             conn.connectTimeout = connectTimeoutMs
             conn.readTimeout = readTimeoutMs
             if (conn.responseCode == HttpURLConnection.HTTP_OK) {
-                onStream?.invoke(conn.inputStream, conn.contentLengthLong)
+                onStream?.invoke(
+                    conn.inputStream,
+                    conn.contentLengthLong
+                )
                 conn.disconnect()
                 return true
             }
             conn.disconnect()
         } catch (e: Exception) {
-            Log.w("DataDownload", "httpGet default path failed for $url: ${e.message}")
+            Log.w(
+                "DataDownload",
+                "httpGet default path failed for $url: ${e.message}"
+            )
         }
 
-        val client = vpnSafeHttpClient(connectTimeoutMs, readTimeoutMs) ?: return false
+        val client = vpnSafeHttpClient(
+            connectTimeoutMs,
+            readTimeoutMs
+        ) ?: return false
         return try {
-            val request = okhttp3.Request.Builder().url(url).build()
-            client.newCall(request).execute().use { resp ->
-                if (resp.isSuccessful && resp.body != null) {
-                    onStream?.invoke(resp.body!!.byteStream(), resp.body!!.contentLength())
-                    true
-                } else false
-            }
+            val request = okhttp3.Request.Builder()
+                .url(url)
+                .build()
+            client.newCall(request)
+                .execute()
+                .use { resp ->
+                    if (resp.isSuccessful && resp.body != null) {
+                        onStream?.invoke(
+                            resp.body!!.byteStream(),
+                            resp.body!!.contentLength()
+                        )
+                        true
+                    } else false
+                }
         } catch (e: Exception) {
-            Log.w("DataDownload", "P2P-bound httpGet fallback failed for $url: ${e.message}")
+            Log.w(
+                "DataDownload",
+                "P2P-bound httpGet fallback failed for $url: ${e.message}"
+            )
             false
         }
     }
@@ -4203,7 +6209,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // We want a network whose sockets route to the Wi‑Fi Direct group even when a VPN is active.
         // Wi‑Fi Direct networks still show up as TRANSPORT_WIFI; the VPN itself shows up as TRANSPORT_VPN.
         return try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
             val prefixHints = listOfNotNull(
                 ipv4Prefix24(downloadBleIp),
@@ -4224,30 +6230,49 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 val addrs = lp?.linkAddresses?.mapNotNull { it.address.hostAddress } ?: emptyList()
 
                 val matchesHint = prefixHints.any { p -> addrs.any { it.startsWith(p) } }
-                val looksLikeP2p = ifName.contains("p2p", ignoreCase = true) ||
-                    ifName.contains("wfd", ignoreCase = true) ||
-                    addrs.any { it.startsWith("192.168.49.") } ||
-                    matchesHint
+                val looksLikeP2p = ifName.contains(
+                    "p2p",
+                    ignoreCase = true
+                ) || ifName.contains(
+                    "wfd",
+                    ignoreCase = true
+                ) || addrs.any { it.startsWith("192.168.49.") } || matchesHint
 
                 if (looksLikeP2p) {
-                    Log.i("DataDownload", "Selected P2P/WFD network candidate: if=$ifName addrs=$addrs (matchesHint=$matchesHint)")
+                    Log.i(
+                        "DataDownload",
+                        "Selected P2P/WFD network candidate: if=$ifName addrs=$addrs (matchesHint=$matchesHint)"
+                    )
                     p2pCandidate = n
                     // Strong match -> return early.
-                    if (ifName.contains("p2p", ignoreCase = true) || ifName.contains("wfd", ignoreCase = true) || matchesHint) {
+                    if (ifName.contains(
+                            "p2p",
+                            ignoreCase = true
+                        ) || ifName.contains(
+                            "wfd",
+                            ignoreCase = true
+                        ) || matchesHint
+                    ) {
                         return n
                     }
                 }
 
                 // Keep a Wi‑Fi fallback so VPN doesn't steal routing if we fail to detect P2P.
                 if (fallbackWifi == null) {
-                    Log.i("DataDownload", "Keeping Wi‑Fi fallback network: if=$ifName addrs=$addrs")
+                    Log.i(
+                        "DataDownload",
+                        "Keeping Wi‑Fi fallback network: if=$ifName addrs=$addrs"
+                    )
                     fallbackWifi = n
                 }
             }
 
             p2pCandidate ?: fallbackWifi
         } catch (e: Exception) {
-            Log.w("DataDownload", "Failed to locate P2P network: ${e.message}")
+            Log.w(
+                "DataDownload",
+                "Failed to locate P2P network: ${e.message}"
+            )
             null
         }
     }
@@ -4259,28 +6284,40 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // When a VPN is active, Android blocks bindProcessToNetwork (EPERM).
         // We skip it and rely on per-socket binding via socket.bind(p2pLocalAddress) instead.
         if (isVpnActive()) {
-            Log.i("DataDownload", "VPN active — skipping bindProcessToNetwork, will bind sockets to P2P local address")
+            Log.i(
+                "DataDownload",
+                "VPN active — skipping bindProcessToNetwork, will bind sockets to P2P local address"
+            )
             return
         }
 
         try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             val ok = cm.bindProcessToNetwork(network)
             if (ok) {
                 boundNetwork = network
-                Log.i("DataDownload", "Bound process to P2P network")
+                Log.i(
+                    "DataDownload",
+                    "Bound process to P2P network"
+                )
             } else {
-                Log.w("DataDownload", "bindProcessToNetwork returned false")
+                Log.w(
+                    "DataDownload",
+                    "bindProcessToNetwork returned false"
+                )
             }
         } catch (e: Exception) {
-            Log.w("DataDownload", "bindProcessToNetwork failed: ${e.message}")
+            Log.w(
+                "DataDownload",
+                "bindProcessToNetwork failed: ${e.message}"
+            )
         }
     }
 
     private fun unbindProcessFromNetwork() {
         if (boundNetwork == null) return
         try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             cm.bindProcessToNetwork(null)
         } catch (_: Exception) {
             // ignore
@@ -4291,24 +6328,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun isVpnActive(): Boolean {
         return try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             cm.allNetworks.any { n ->
                 cm.getNetworkCapabilities(n)
                     ?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
             }
-        } catch (_: Exception) { false }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /** Return the P2P network's first IPv4 local address (e.g. "192.168.49.1"). */
     private fun p2pLocalAddress(): InetAddress? {
         val network = downloadP2pNetwork ?: return null
         return try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             val lp = cm.getLinkProperties(network)
-            lp?.linkAddresses
-                ?.mapNotNull { it.address }
+            lp?.linkAddresses?.mapNotNull { it.address }
                 ?.firstOrNull { it is java.net.Inet4Address }
-        } catch (_: Exception) { null }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun maybeResetP2pAfterError255(source: String) {
@@ -4317,16 +6357,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         // Only attempt P2P resets when we're actually in (or attempting) a download session.
         // Otherwise these resets can interfere with normal camera/recording usage.
-        val sessionActive = downloadInProgress || downloadAttemptJob?.isActive == true || downloadP2pConnected
+        val sessionActive =
+            downloadInProgress || downloadAttemptJob?.isActive == true || downloadP2pConnected
         if (!sessionActive) {
-            Log.i("DataDownload", "Ignoring error=255 reset (source=$source) outside download session")
+            Log.i(
+                "DataDownload",
+                "Ignoring error=255 reset (source=$source) outside download session"
+            )
             return
         }
 
         // On some devices (notably Samsung), sending the reset command while we are actively
         // trying to talk to the glasses can drop the P2P link and kill the HTTP session.
         if (downloadInProgress || (downloadAttemptJob?.isActive == true && haveDeviceIp)) {
-            Log.i("DataDownload", "Suppressing resetDeviceP2p on error=255 (source=$source) during active download/resolve")
+            Log.i(
+                "DataDownload",
+                "Suppressing resetDeviceP2p on error=255 (source=$source) during active download/resolve"
+            )
             return
         }
 
@@ -4334,17 +6381,25 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
         lastP2pResetAtMs = now
-        WifiP2pManagerSingleton.getInstance(this).resetDeviceP2p()
+        WifiP2pManagerSingleton.getInstance(this)
+            .resetDeviceP2p()
     }
 
     inner class MyDeviceNotifyListener : GlassesDeviceNotifyListener() {
 
         @RequiresApi(Build.VERSION_CODES.O)
-        override fun parseData(cmdType: Int, response: GlassesDeviceNotifyRsp) {
+        override fun parseData(
+            cmdType: Int,
+            response: GlassesDeviceNotifyRsp
+        ) {
             Log.i(
                 "DeviceNotify",
-                "cmdType=$cmdType, loadData=${response.loadData.joinToString(separator = ",") { it.toInt().toString() }}"
-            )
+                "cmdType=$cmdType, loadData=${
+                    response.loadData.joinToString(separator = ",") {
+                        it.toInt()
+                            .toString()
+                    }
+                }")
             when (response.loadData[6].toInt()) {
                 //Glasses battery report
                 0x05 -> {
@@ -4352,16 +6407,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     val battery = response.loadData[7].toInt()
                     //Is it charging
                     val changing = response.loadData[8].toInt()
-                    handleBatteryReport(battery, changing == 1)
+                    handleBatteryReport(
+                        battery,
+                        changing == 1
+                    )
                 }
                 //Glasses pass quick recognition / AI Photo
                 0x02 -> {
-                    Log.i("DeviceNotify", "AI Photo Button Pressed")
+                    Log.i(
+                        "DeviceNotify",
+                        "AI Photo Button Pressed"
+                    )
                     if (isAiHijackEnabled) {
                         runOnUiThread {
                             val unsupportedReason = imageQueryUnsupportedReasonForCurrentSelection()
                             if (unsupportedReason != null) {
-                                Toast.makeText(this@MainActivity, unsupportedReason, Toast.LENGTH_SHORT).show()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    unsupportedReason,
+                                    Toast.LENGTH_SHORT
+                                )
+                                    .show()
                                 speak(unsupportedReason)
                                 return@runOnUiThread
                             }
@@ -4379,7 +6445,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 //Glasses activate microphone / AI button
                 0x03 -> {
                     if (response.loadData[7].toInt() == 1) {
-                        Log.i("DeviceNotify", "AI Button Pressed - Hijacking to Phone Assistant")
+                        Log.i(
+                            "DeviceNotify",
+                            "AI Button Pressed - Hijacking to Phone Assistant"
+                        )
                         if (isAiHijackEnabled) {
                             triggerAssistantVoiceQuery()
                         } else {
@@ -4389,7 +6458,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                                     this@MainActivity,
                                     "Glasses microphone activated (Original Path)",
                                     Toast.LENGTH_SHORT
-                                ).show()
+                                )
+                                    .show()
                             }
                         }
                     }
@@ -4397,9 +6467,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 //ota upgrade
                 0x04 -> {
                     try {
-                        val download = response.loadData[7].toInt()
-                        val soc = response.loadData[8].toInt()
-                        val nor = response.loadData[9].toInt()
+                        response.loadData[7].toInt()
+                        response.loadData[8].toInt()
+                        response.loadData[9].toInt()
                         //download firmware download progress soc download progress nor upgrade progress
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -4461,18 +6531,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                             this@MainActivity,
                             "Volume changed (mode=$mode)",
                             Toast.LENGTH_SHORT
-                        ).show()
+                        )
+                            .show()
                     }
 
                 }
                 // Glasses report WiFi IP for data download
                 0x08 -> {
                     if (response.loadData.size >= 11) {
-                        val ip = "${ByteUtil.byteToInt(response.loadData[7])}." +
-                                "${ByteUtil.byteToInt(response.loadData[8])}." +
-                                "${ByteUtil.byteToInt(response.loadData[9])}." +
-                                "${ByteUtil.byteToInt(response.loadData[10])}"
-                        Log.i("DeviceNotify", "BLE reported WiFi IP: $ip")
+                        val ip =
+                            "${ByteUtil.byteToInt(response.loadData[7])}." + "${ByteUtil.byteToInt(response.loadData[8])}." + "${ByteUtil.byteToInt(response.loadData[9])}." + "${ByteUtil.byteToInt(response.loadData[10])}"
+                        Log.i(
+                            "DeviceNotify",
+                            "BLE reported WiFi IP: $ip"
+                        )
                         onDownloadBleIp(ip)
                     } else {
                         Log.w(
@@ -4485,7 +6557,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 0x09 -> {
                     val raw = response.loadData.getOrNull(7) ?: 0
                     val errorCode = ByteUtil.byteToInt(raw)
-                    Log.e("DeviceNotify", "P2P/WiFi error from device: $errorCode (raw=$raw)")
+                    Log.e(
+                        "DeviceNotify",
+                        "P2P/WiFi error from device: $errorCode (raw=$raw)"
+                    )
                     if (errorCode == 255) {
                         // Mirror the official app: ask the glasses/phone P2P
                         // layer to reset, but do NOT treat this as a fatal

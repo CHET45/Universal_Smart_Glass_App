@@ -15,6 +15,8 @@ import com.fersaiyan.cyanbridge.devices.DeviceClassifier
 import com.fersaiyan.cyanbridge.devices.DeviceProfile
 import com.fersaiyan.cyanbridge.devices.DeviceProfileStore
 import com.fersaiyan.cyanbridge.devices.ScannedDevice
+import com.fersaiyan.cyanbridge.protocol.AppGlassesProtocolManager
+import com.fersaiyan.cyanbridge.protocol.GlassesDevice
 import com.hjq.permissions.OnPermissionCallback
 import com.hjq.permissions.XXPermissions
 import com.oudmon.ble.base.bluetooth.BleOperateManager
@@ -22,6 +24,9 @@ import com.oudmon.ble.base.scan.BleScannerHelper
 import com.oudmon.ble.base.scan.ScanRecord
 import com.oudmon.ble.base.scan.ScanWrapperCallback
 import com.xiasuhuei321.loadingdialog.view.LoadingDialog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.greenrobot.eventbus.EventBus
 import org.greenrobot.eventbus.Subscribe
 import org.greenrobot.eventbus.ThreadMode
@@ -29,6 +34,7 @@ import org.greenrobot.eventbus.ThreadMode
 class DeviceBindActivity : BaseActivity() {
     private lateinit var binding: ActivityDeviceBindBinding
     private lateinit var adapter: DeviceListAdapter
+    private lateinit var glassesProtocolManager: AppGlassesProtocolManager
     private var scanSize: Int = 0
     private val runnable = MyRunnable()
 
@@ -41,6 +47,7 @@ class DeviceBindActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityDeviceBindBinding.inflate(layoutInflater)
+        glassesProtocolManager = AppGlassesProtocolManager(this)
         EventBus.getDefault().register(this)
         setContentView(binding.root)
     }
@@ -136,7 +143,28 @@ class DeviceBindActivity : BaseActivity() {
                 )
                 DeviceProfileStore.saveLastSelected(this@DeviceBindActivity, profile)
 
-                BleOperateManager.getInstance().connectDirectly(device.macAddress)
+                val protocol = glassesProtocolManager.currentOrCreate(selected)
+
+                if (protocol == null) {
+                    Log.w(TAG, "No protocol implementation for selected class: $selected")
+                    BleOperateManager.getInstance().connectDirectly(device.macAddress)
+                } else {
+                    val protocolDevice = GlassesDevice(
+                        address = device.macAddress,
+                        name = device.advertisedName,
+                        rssi = device.rssi,
+                        serviceUuids = device.serviceUuids.map { it.uuid.toString() },
+                        protocolHint = protocol.id,
+                    )
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        runCatching {
+                            protocol.connect(protocolDevice)
+                        }.onFailure { error ->
+                            Log.e(TAG, "Protocol connect failed", error)
+                        }
+                    }
+                }
 
                 loadingDialog = LoadingDialog(this@DeviceBindActivity)
                 loadingDialog.setLoadingText(getString(R.string.text_22)).show()
@@ -217,6 +245,7 @@ class DeviceBindActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        glassesProtocolManager.close()
         EventBus.getDefault().unregister(this)
     }
 
