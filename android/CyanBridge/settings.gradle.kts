@@ -10,7 +10,7 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        mavenLocal()
+//        mavenLocal()
         google()
         mavenCentral()
         jcenter()
@@ -29,3 +29,4 @@ val heycyanCoreDir = file("../../heycyan-core")
 if (heycyanCoreDir.exists()) {
     includeBuild(heycyanCoreDir)
 }
+include(":glasses-protocol")
