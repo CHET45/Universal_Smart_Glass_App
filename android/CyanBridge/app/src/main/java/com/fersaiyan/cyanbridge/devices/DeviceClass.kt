@@ -9,6 +9,7 @@ import com.fersaiyan.cyanbridge.R
 enum class DeviceClass {
     HEY_CYAN,
     EYEVUE_S2,
+    HSC_H5_15,
     META_RAYBAN,
     GENERIC_AUDIO,
     UNKNOWN;
@@ -17,6 +18,7 @@ enum class DeviceClass {
         // Keep internal enum as HEY_CYAN, but avoid showing vendor name in the UI.
         HEY_CYAN -> "Camera+Audio glasses"
         EYEVUE_S2 -> "Eyevue/S2 glasses"
+        HSC_H5_15 -> "H5-15 / HSC glasses"
         META_RAYBAN -> "Meta Rayban"
         GENERIC_AUDIO -> "Audio-only glasses"
         UNKNOWN -> "Unknown"
@@ -26,6 +28,7 @@ enum class DeviceClass {
     fun iconRes(): Int = when (this) {
         HEY_CYAN -> R.drawable.ic_device_heycyan
         EYEVUE_S2 -> R.drawable.ic_device_heycyan
+        HSC_H5_15 -> R.drawable.ic_device_heycyan
         META_RAYBAN -> R.drawable.ic_device_meta
         GENERIC_AUDIO -> R.drawable.ic_device_generic_audio
         UNKNOWN -> R.drawable.ic_device_unknown

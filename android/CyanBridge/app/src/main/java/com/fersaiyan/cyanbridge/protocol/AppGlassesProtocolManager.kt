@@ -4,6 +4,7 @@ import android.app.Activity
 import com.fersaiyan.cyanbridge.devices.DeviceClass
 import com.fersaiyan.cyanbridge.protocol.eyevues2.EyevueS2GlassesProtocolProvider
 import com.fersaiyan.cyanbridge.protocol.heycyan.HeyCyanGlassesProtocolProvider
+import com.fersaiyan.cyanbridge.protocol.hsc.HscH515GlassesProtocolProvider
 
 class AppGlassesProtocolManager(
     activity: Activity,
@@ -12,6 +13,7 @@ class AppGlassesProtocolManager(
         providers = listOf(
             HeyCyanGlassesProtocolProvider(activity),
             EyevueS2GlassesProtocolProvider(activity),
+            HscH515GlassesProtocolProvider(activity),
         ),
     )
 
@@ -47,6 +49,7 @@ class AppGlassesProtocolManager(
                 null -> GlassesProtocolId.HEY_CYAN
                 DeviceClass.HEY_CYAN -> GlassesProtocolId.HEY_CYAN
                 DeviceClass.EYEVUE_S2 -> GlassesProtocolId.S100
+                DeviceClass.HSC_H5_15 -> GlassesProtocolId.HSC_H5_15
 
                 // Пока для этих типов нет provider-а.
                 DeviceClass.META_RAYBAN,

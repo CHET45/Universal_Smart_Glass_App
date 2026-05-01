@@ -24,6 +24,8 @@ class DeviceListAdapter(
         DeviceClass.META_RAYBAN,
         DeviceClass.GENERIC_AUDIO,
         DeviceClass.HEY_CYAN,
+        DeviceClass.EYEVUE_S2,
+        DeviceClass.HSC_H5_15,
     )
 
     override fun convert(holder: BaseViewHolder, item: ScannedDevice) {

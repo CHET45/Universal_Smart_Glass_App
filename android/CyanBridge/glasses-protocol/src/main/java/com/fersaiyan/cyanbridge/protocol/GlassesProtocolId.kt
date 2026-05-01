@@ -7,4 +7,5 @@ package com.fersaiyan.cyanbridge.protocol
 enum class GlassesProtocolId {
     HEY_CYAN,
     S100,
+    HSC_H5_15
 }

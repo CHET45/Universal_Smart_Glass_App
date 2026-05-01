@@ -4,26 +4,34 @@ import android.os.ParcelUuid
 
 /**
  * Chapter 3 heuristics:
- * - Classify by advertised name (primary)
- * - Optionally use service UUIDs if available.
+ * - Classify by advertised name when it exists.
+ * - Also classify by service UUID, because HSC/H5-15 can be identified without a useful BLE name.
  */
 object DeviceClassifier {
+
+    private const val EYEVUE_S2_SERVICE_UUID = "0000aa12-0000-1000-8000-00805f9b34fb"
+    private const val HSC_H5_15_SERVICE_UUID = "01000100-0000-2000-8000-009078563412"
 
     fun guessDeviceClass(
         advertisedName: String?,
         serviceUuids: List<ParcelUuid> = emptyList()
     ): DeviceClass {
         val name = advertisedName?.trim().orEmpty()
-        if (name.isEmpty()) return DeviceClass.UNKNOWN
-
         val lower = name.lowercase()
 
-        if (
-            lower.contains("eyevue") ||
-            lower.contains("lensiq") ||
-            lower.contains("s2") ||
-            serviceUuids.any { it.uuid.toString().equals("0000aa12-0000-1000-8000-00805F9B34FB", ignoreCase = true) }
-        ) {
+        if (serviceUuids.any { it.uuid.toString().equals(HSC_H5_15_SERVICE_UUID, ignoreCase = true) }) {
+            return DeviceClass.HSC_H5_15
+        }
+
+        if (serviceUuids.any { it.uuid.toString().equals(EYEVUE_S2_SERVICE_UUID, ignoreCase = true) }) {
+            return DeviceClass.EYEVUE_S2
+        }
+
+        if (lower.contains("hsc") || lower.contains("h5") || lower.contains("h15") || lower.contains("hy15") || lower.contains("h5-15")) {
+            return DeviceClass.HSC_H5_15
+        }
+
+        if (lower.contains("eyevue") || lower.contains("lensiq") || lower.contains("s2")) {
             return DeviceClass.EYEVUE_S2
         }
 
@@ -57,11 +65,6 @@ object DeviceClassifier {
             lower.contains("buds")
         ) {
             return DeviceClass.GENERIC_AUDIO
-        }
-
-        // Service UUID heuristics placeholder (extend when known).
-        if (serviceUuids.isNotEmpty()) {
-            // TODO: Add known UUID-based detection when available.
         }
 
         return DeviceClass.UNKNOWN

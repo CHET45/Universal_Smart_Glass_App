@@ -561,11 +561,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val profile = DeviceProfileStore.loadLastSelected(this)
         val protocol = currentGlassesProtocolOrToast() ?: return null
 
-        if (profile?.selectedClass == DeviceClass.EYEVUE_S2) {
+        if (profile?.selectedClass == DeviceClass.EYEVUE_S2 || profile?.selectedClass == DeviceClass.HSC_H5_15) {
             if (profile.macAddress.isBlank()) {
                 Toast.makeText(
                     this,
-                    "No saved Eyevue/S2 address",
+                    "No saved protocol glasses address",
                     Toast.LENGTH_SHORT
                 )
                     .show()
@@ -662,7 +662,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return when (selectedClass) {
             null,
             DeviceClass.HEY_CYAN -> BleOperateManager.getInstance().isConnected || state is GlassesConnectionState.Connected
-            DeviceClass.EYEVUE_S2 -> state is GlassesConnectionState.Connected
+            DeviceClass.EYEVUE_S2,
+            DeviceClass.HSC_H5_15 -> state is GlassesConnectionState.Connected
             DeviceClass.META_RAYBAN,
             DeviceClass.GENERIC_AUDIO,
             DeviceClass.UNKNOWN -> state is GlassesConnectionState.Connected
@@ -3244,7 +3245,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun updateConnectionStatus(connected: Boolean) {
         val profile = DeviceProfileStore.loadLastSelected(this)
-        val deviceName = if (profile?.selectedClass == DeviceClass.EYEVUE_S2) {
+        val deviceName = if (profile?.selectedClass == DeviceClass.EYEVUE_S2 || profile?.selectedClass == DeviceClass.HSC_H5_15) {
             profile.advertisedName
         } else {
             DeviceManager.getInstance().deviceName
@@ -3606,7 +3607,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun requestBatteryStatus(showToast: Boolean) {
         val selectedClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass
 
-        if (selectedClass == DeviceClass.EYEVUE_S2) {
+        if (selectedClass == DeviceClass.EYEVUE_S2 || selectedClass == DeviceClass.HSC_H5_15) {
             if (showToast) {
                 pendingBatteryToast = true
                 Toast.makeText(
@@ -3642,7 +3643,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         pendingBatteryToast = false
                     }
                 }.onFailure { error ->
-                    Log.w("BatteryCallback", "Eyevue/S2 battery request failed", error)
+                    Log.w("BatteryCallback", "Protocol battery request failed", error)
                     if (pendingBatteryToast) {
                         Toast.makeText(
                             this@MainActivity,

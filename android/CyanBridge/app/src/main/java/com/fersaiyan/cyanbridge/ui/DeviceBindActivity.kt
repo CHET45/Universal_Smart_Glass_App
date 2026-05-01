@@ -137,6 +137,7 @@ class DeviceBindActivity : BaseActivity() {
             DeviceClass.GENERIC_AUDIO,
             DeviceClass.HEY_CYAN,
             DeviceClass.EYEVUE_S2,
+            DeviceClass.HSC_H5_15,
         )
         val labels = classes.map { it.displayName() }
             .toTypedArray()
@@ -243,6 +244,7 @@ class DeviceBindActivity : BaseActivity() {
     ) {
         val sanitizedName = name?.trim()
             ?.takeIf { it.isNotEmpty() }
+        val srUuids = scanRecord?.serviceUuids.orEmpty()
         val existingIndex = deviceList.indexOfFirst {
             it.macAddress.equals(
                 mac,
@@ -272,12 +274,10 @@ class DeviceBindActivity : BaseActivity() {
             adapter.notifyItemChanged(existingIndex)
             return
         }
-
-        if (sanitizedName == null) {
+        if (sanitizedName == null && DeviceClassifier.guessDeviceClass(null, srUuids) == DeviceClass.UNKNOWN) {
             return
         }
 
-        val srUuids = scanRecord?.serviceUuids.orEmpty()
         val newDevice = ScannedDevice(
             macAddress = mac,
             advertisedName = sanitizedName,
