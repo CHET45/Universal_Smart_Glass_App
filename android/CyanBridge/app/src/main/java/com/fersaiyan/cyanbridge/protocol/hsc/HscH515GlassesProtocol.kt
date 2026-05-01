@@ -64,11 +64,21 @@ class HscH515GlassesProtocol(
         GlassesCapability.AUDIO_RECORDING,
         GlassesCapability.MEDIA_COUNT,
     )
+    private val writeLock = Any()
+    private val writeQueue = ArrayDeque<ByteArray>()
+    private var writeInProgress = false
 
-    private val _connectionState = MutableStateFlow<GlassesConnectionState>(GlassesConnectionState.Idle)
+    private var writeWatchdog: Runnable? = null
+    private val writeWatchdogDelayMs = 700L
+
+    private val _connectionState =
+        MutableStateFlow<GlassesConnectionState>(GlassesConnectionState.Idle)
     override val connectionState: StateFlow<GlassesConnectionState> = _connectionState
 
-    private val _events = MutableSharedFlow<GlassesEvent>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<GlassesEvent>(
+        replay = 16,
+        extraBufferCapacity = 64,
+    )
     override val events: Flow<GlassesEvent> = _events
 
     private val bluetoothManager: BluetoothManager by lazy {
@@ -98,11 +108,28 @@ class HscH515GlassesProtocol(
     private var cachedHardware: String? = null
     private var cachedProductInfo: HscH515PacketCodec.ProductInfo? = null
     private var cachedSupportFeatures: Map<String, Boolean>? = null
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun finishCurrentWriteAndDrain(reason: String) {
+        writeWatchdog?.let { mainHandler.removeCallbacks(it) }
+        writeWatchdog = null
 
+        synchronized(writeLock) {
+            writeInProgress = false
+        }
+
+        Log.d(TAG, "TX complete/drain: $reason")
+
+        mainHandler.post {
+            drainWriteQueue()
+        }
+    }
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     override fun scan(filter: GlassesScanFilter): Flow<GlassesDevice> = callbackFlow {
         if (!hasBleScanPermission()) {
-            val error = GlassesProtocolError("MISSING_PERMISSION", "Missing BLE scan permission")
+            val error = GlassesProtocolError(
+                "MISSING_PERMISSION",
+                "Missing BLE scan permission"
+            )
             _events.tryEmit(GlassesEvent.Error(error))
             close(SecurityException(error.message))
             return@callbackFlow
@@ -111,7 +138,10 @@ class HscH515GlassesProtocol(
         val adapter = bluetoothManager.adapter
         val scanner = adapter?.bluetoothLeScanner
         if (scanner == null) {
-            val error = GlassesProtocolError("NO_BLE_SCANNER", "Bluetooth LE scanner is unavailable")
+            val error = GlassesProtocolError(
+                "NO_BLE_SCANNER",
+                "Bluetooth LE scanner is unavailable"
+            )
             _events.tryEmit(GlassesEvent.Error(error))
             close(IllegalStateException(error.message))
             return@callbackFlow
@@ -120,16 +150,30 @@ class HscH515GlassesProtocol(
         setState(GlassesConnectionState.Scanning)
 
         val callback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
+            override fun onScanResult(
+                callbackType: Int,
+                result: ScanResult
+            ) {
                 val device = result.device ?: return
-                val serviceUuids = result.scanRecord?.serviceUuids?.map { it.uuid.toString() }.orEmpty()
-                val glassesDevice = device.toGlassesDevice(result.rssi, serviceUuids) ?: return
-                if (!matchesFilter(glassesDevice, filter)) return
+                val serviceUuids = result.scanRecord?.serviceUuids?.map { it.uuid.toString() }
+                    .orEmpty()
+                val glassesDevice = device.toGlassesDevice(
+                    result.rssi,
+                    serviceUuids
+                ) ?: return
+                if (!matchesFilter(
+                        glassesDevice,
+                        filter
+                    )
+                ) return
                 trySend(glassesDevice)
             }
 
             override fun onScanFailed(errorCode: Int) {
-                val error = GlassesProtocolError("SCAN_FAILED", "HSC/H5-15 BLE scan failed: $errorCode")
+                val error = GlassesProtocolError(
+                    "SCAN_FAILED",
+                    "HSC/H5-15 BLE scan failed: $errorCode"
+                )
                 _events.tryEmit(GlassesEvent.Error(error))
                 setState(GlassesConnectionState.Failed(error))
                 close(IllegalStateException(error.message))
@@ -141,13 +185,21 @@ class HscH515GlassesProtocol(
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
-        runCatching { scanner.startScan(filters, settings, callback) }
-            .onFailure { error ->
-                val protocolError = error.toProtocolError("SCAN_START_FAILED", "Failed to start HSC/H5-15 scan")
-                _events.tryEmit(GlassesEvent.Error(protocolError))
-                setState(GlassesConnectionState.Failed(protocolError))
-                close(error)
-            }
+        runCatching {
+            scanner.startScan(
+                filters,
+                settings,
+                callback
+            )
+        }.onFailure { error ->
+            val protocolError = error.toProtocolError(
+                "SCAN_START_FAILED",
+                "Failed to start HSC/H5-15 scan"
+            )
+            _events.tryEmit(GlassesEvent.Error(protocolError))
+            setState(GlassesConnectionState.Failed(protocolError))
+            close(error)
+        }
 
         val timeoutJob = launch {
             delay(filter.timeoutMillis)
@@ -167,6 +219,13 @@ class HscH515GlassesProtocol(
     override suspend fun connect(device: GlassesDevice) {
         if (!hasBleConnectPermission()) throw SecurityException("Missing BLE connect permission")
 
+        // Android BLE keeps a lot of state inside BluetoothGatt. After status=62/133 or
+        // a timeout, reusing the previous object often gives a fake "connected" state
+        // with no working protocol traffic. Always start from a closed GATT.
+        forceCloseGatt()
+        clearGattState(keepGattReference = false)
+        delay(CONNECT_RETRY_SETTLE_MS)
+
         lastDevice = device.copy(protocolHint = id)
         cachedDeviceName = device.name
         cachedModel = null
@@ -181,7 +240,8 @@ class HscH515GlassesProtocol(
         frameDecoder.clear()
         setState(GlassesConnectionState.Connecting(lastDevice ?: device))
 
-        val adapter = bluetoothManager.adapter ?: throw IllegalStateException("Bluetooth adapter is unavailable")
+        val adapter = bluetoothManager.adapter
+            ?: throw IllegalStateException("Bluetooth adapter is unavailable")
         val remoteDevice = adapter.getRemoteDevice(device.address)
         val deferred = CompletableDeferred<Unit>()
         connectDeferred = deferred
@@ -198,58 +258,124 @@ class HscH515GlassesProtocol(
             throw IllegalStateException("connectGatt returned null for ${device.address}")
         }
 
-        withTimeout(CONNECT_TIMEOUT_MS) { deferred.await() }
+        try {
+            withTimeout(CONNECT_TIMEOUT_MS) { deferred.await() }
+        } catch (error: Throwable) {
+            val protocolError = error.toProtocolError(
+                "CONNECT_TIMEOUT_OR_FAILED",
+                "HSC/H5-15 connect timed out or failed"
+            )
+            Log.w(TAG, protocolError.message, error)
+            forceCloseGatt()
+            clearGattState(keepGattReference = false)
+            setState(GlassesConnectionState.Failed(protocolError))
+            throw error
+        }
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override suspend fun disconnect() {
         setState(GlassesConnectionState.Disconnecting)
-        runCatching { gatt?.disconnect() }
-        runCatching { gatt?.close() }
-        clearGattState()
+        forceCloseGatt()
+        clearGattState(keepGattReference = false)
         setState(GlassesConnectionState.Disconnected("disconnect requested"))
     }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
 
     override suspend fun syncTime(): GlassesCommandResult = sendCommand(
         commandName = "syncTime",
         bytes = HscH515PacketCodec.timeRequest(sequence.next()),
     )
 
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override suspend fun requestBattery(): Result<GlassesBattery> =
         withTimeoutOrNull(COMMAND_TIMEOUT_MS) {
             val deferred = CompletableDeferred<GlassesBattery>()
             pendingBattery = deferred
-            val sent = write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_BATTERY, sequence.next()))
+            val sent = write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_GET_BATTERY,
+                    sequence.next()
+                )
+            )
             if (!sent) return@withTimeoutOrNull Result.failure(IllegalStateException("Battery command was not written"))
             Result.success(deferred.await())
         } ?: Result.failure(IllegalStateException("requestBattery timed out"))
 
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override suspend fun requestDeviceInfo(): Result<GlassesDeviceInfo> =
         withTimeoutOrNull(COMMAND_TIMEOUT_MS) {
             val deferred = CompletableDeferred<GlassesDeviceInfo>()
             pendingDeviceInfo = deferred
-            write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_DEVICE_NAME, sequence.next()))
-            write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_MODEL, sequence.next()))
-            write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_VERSION, sequence.next()))
-            write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_HARDWARE, sequence.next()))
-            write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_PRODUCT_INFO, sequence.next()))
-            write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_SUPPORT_FEATURES, sequence.next()))
+            write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_DEVICE_NAME,
+                    sequence.next()
+                )
+            )
+            write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_MODEL,
+                    sequence.next()
+                )
+            )
+            write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_VERSION,
+                    sequence.next()
+                )
+            )
+            write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_HARDWARE,
+                    sequence.next()
+                )
+            )
+            write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_PRODUCT_INFO,
+                    sequence.next()
+                )
+            )
+            write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_SUPPORT_FEATURES,
+                    sequence.next()
+                )
+            )
             Result.success(deferred.await())
         } ?: Result.failure(IllegalStateException("requestDeviceInfo timed out"))
 
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override suspend fun requestMediaCounts(): Result<GlassesMediaCounts> =
         withTimeoutOrNull(COMMAND_TIMEOUT_MS) {
             val deferred = CompletableDeferred<GlassesMediaCounts>()
             pendingMediaCounts = deferred
-            val sent = write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_FILE_COUNT, sequence.next()))
+            val sent = write(
+                HscH515PacketCodec.request(
+                    HscH515PacketCodec.CMD_GET_FILE_COUNT,
+                    sequence.next()
+                )
+            )
             if (!sent) return@withTimeoutOrNull Result.failure(IllegalStateException("Media count command was not written"))
             Result.success(deferred.await())
         } ?: Result.failure(IllegalStateException("requestMediaCounts timed out"))
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+
     override suspend fun takePhoto(aiTransfer: Boolean): GlassesCommandResult = sendCommand(
         commandName = "takePhoto",
-        bytes = HscH515PacketCodec.deviceControlRequest(sequence.next(), DEVICE_CONTROL_TAKE_PHOTO),
+        bytes = HscH515PacketCodec.deviceControlRequest(
+            sequence.next(),
+            DEVICE_CONTROL_TAKE_PHOTO
+        ),
     )
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
 
     override suspend fun setVideoRecording(enabled: Boolean): GlassesCommandResult = sendCommand(
         commandName = if (enabled) "startVideoRecording" else "stopVideoRecording",
@@ -259,9 +385,14 @@ class HscH515GlassesProtocol(
         ),
     )
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+
     override suspend fun setAudioRecording(enabled: Boolean): GlassesCommandResult = sendCommand(
         commandName = if (enabled) "startAudioRecording" else "stopAudioRecording",
-        bytes = HscH515PacketCodec.localAudioControlRequest(sequence.next(), enabled),
+        bytes = HscH515PacketCodec.localAudioControlRequest(
+            sequence.next(),
+            enabled
+        ),
     )
 
     override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = flowOf(
@@ -275,55 +406,105 @@ class HscH515GlassesProtocol(
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun close() {
-        runCatching { gatt?.disconnect() }
-        runCatching { gatt?.close() }
-        clearGattState()
+        forceCloseGatt()
+        clearGattState(keepGattReference = false)
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+        override fun onConnectionStateChange(
+            gatt: BluetoothGatt,
+            status: Int,
+            newState: Int
+        ) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                val error = GlassesProtocolError("GATT_STATUS_$status", "HSC/H5-15 GATT status error: $status")
+                val deferred = connectDeferred
+                val error = GlassesProtocolError(
+                    "GATT_STATUS_$status",
+                    "HSC/H5-15 GATT status error: $status"
+                )
+
+                Log.w(TAG, "GATT state change failed: status=$status newState=$newState")
+
+                runCatching { gatt.disconnect() }
+                runCatching { gatt.close() }
+                clearGattState(keepGattReference = false)
+
                 _events.tryEmit(GlassesEvent.Error(error))
                 setState(GlassesConnectionState.Failed(error))
-                connectDeferred?.completeExceptionally(IllegalStateException(error.message))
+                deferred?.completeExceptionally(IllegalStateException(error.message))
                 return
             }
 
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    Log.i(TAG, "GATT STATE_CONNECTED: ${gatt.device?.address}")
+                    Log.i(
+                        TAG,
+                        "GATT STATE_CONNECTED: ${gatt.device?.address}"
+                    )
                     startServiceDiscovery(gatt)
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    connectDeferred?.completeExceptionally(
-                        IllegalStateException("HSC/H5-15 disconnected before GATT protocol was ready")
-                    )
-                    setState(GlassesConnectionState.Disconnected("gatt disconnected"))
+                    val deferred = connectDeferred
+                    val wasConnected = markedConnected
+
+                    runCatching { gatt.close() }
                     clearGattState(keepGattReference = false)
+                    setState(GlassesConnectionState.Disconnected("gatt disconnected"))
+
+                    if (!wasConnected) {
+                        deferred?.completeExceptionally(
+                            IllegalStateException("HSC/H5-15 disconnected before GATT protocol was ready")
+                        )
+                    }
                 }
             }
         }
 
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            Log.i(TAG, "onServicesDiscovered status=$status services=${gatt.services?.map { it.uuid }}")
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                val error = GlassesProtocolError("SERVICE_DISCOVERY_FAILED", "HSC/H5-15 service discovery failed: $status")
-                _events.tryEmit(GlassesEvent.Error(error))
-                setState(GlassesConnectionState.Failed(error))
-                connectDeferred?.completeExceptionally(IllegalStateException(error.message))
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            if (characteristic.uuid != HscH515PacketCodec.WRITE_UUID) {
                 return
             }
 
+            Log.d(
+                TAG,
+                "onCharacteristicWrite status=$status uuid=${characteristic.uuid}"
+            )
+
+            finishCurrentWriteAndDrain("onCharacteristicWrite status=$status")
+        }
+
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        override fun onServicesDiscovered(
+            gatt: BluetoothGatt,
+            status: Int
+        ) {
+            Log.i(
+                TAG,
+                "onServicesDiscovered status=$status services=${gatt.services?.map { it.uuid }}"
+            )
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                failProtocolReady(
+                    "SERVICE_DISCOVERY_FAILED",
+                    "HSC/H5-15 service discovery failed: $status"
+                )
+                return
+            }
+
+            logGattTree(gatt)
+
             val service = gatt.getService(HscH515PacketCodec.SERVICE_UUID)
             if (service == null) {
-                val error = GlassesProtocolError("SERVICE_NOT_FOUND", "HSC/H5-15 service not found")
-                _events.tryEmit(GlassesEvent.Error(error))
-                setState(GlassesConnectionState.Failed(error))
-                connectDeferred?.completeExceptionally(IllegalStateException(error.message))
+                failProtocolReady(
+                    "SERVICE_NOT_FOUND",
+                    "HSC/H5-15 service not found"
+                )
                 return
             }
 
@@ -331,14 +512,18 @@ class HscH515GlassesProtocol(
             writeCharacteristic = service.getCharacteristic(HscH515PacketCodec.WRITE_UUID)
 
             if (readCharacteristic == null || writeCharacteristic == null) {
-                val error = GlassesProtocolError("CHARACTERISTICS_NOT_FOUND", "HSC/H5-15 read/write characteristics not found")
-                _events.tryEmit(GlassesEvent.Error(error))
-                setState(GlassesConnectionState.Failed(error))
-                connectDeferred?.completeExceptionally(IllegalStateException(error.message))
+                failProtocolReady(
+                    "CHARACTERISTICS_NOT_FOUND",
+                    "HSC/H5-15 read/write characteristics not found"
+                )
                 return
             }
 
-            if (!enableNotify(gatt, readCharacteristic!!)) {
+            if (!enableNotify(
+                    gatt,
+                    readCharacteristic!!
+                )
+            ) {
                 failProtocolReady(
                     "ENABLE_NOTIFY_FAILED",
                     "Failed to enable HSC/H5-15 read notifications"
@@ -364,9 +549,14 @@ class HscH515GlassesProtocol(
             }
         }
 
-        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            @Suppress("DEPRECATION")
-            onCharacteristicBytes(characteristic.uuid.toString(), characteristic.value ?: return)
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic
+        ) {
+            @Suppress("DEPRECATION") onCharacteristicBytes(
+                characteristic.uuid.toString(),
+                characteristic.value ?: return
+            )
         }
 
         override fun onCharacteristicChanged(
@@ -374,7 +564,10 @@ class HscH515GlassesProtocol(
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            onCharacteristicBytes(characteristic.uuid.toString(), value)
+            onCharacteristicBytes(
+                characteristic.uuid.toString(),
+                value
+            )
         }
     }
 
@@ -404,7 +597,10 @@ class HscH515GlassesProtocol(
                     false
                 }
 
-                Log.i(TAG, "discoverServices attempt=$serviceDiscoveryAttempts started=$started")
+                Log.i(
+                    TAG,
+                    "discoverServices attempt=$serviceDiscoveryAttempts started=$started"
+                )
 
                 if (started) {
                     serviceDiscoveryStarted = true
@@ -412,7 +608,10 @@ class HscH515GlassesProtocol(
                 }
 
                 if (serviceDiscoveryAttempts < SERVICE_DISCOVERY_MAX_ATTEMPTS) {
-                    startServiceDiscovery(gatt, SERVICE_DISCOVERY_RETRY_DELAY_MS)
+                    startServiceDiscovery(
+                        gatt,
+                        SERVICE_DISCOVERY_RETRY_DELAY_MS
+                    )
                 } else {
                     failProtocolReady(
                         "SERVICE_DISCOVERY_START_FAILED",
@@ -428,31 +627,57 @@ class HscH515GlassesProtocol(
     private fun completeBleLinkConnected() {
         if (markedConnected) return
         markedConnected = true
-        val device = lastDevice ?: GlassesDevice(address = "", protocolHint = id)
+        val device = lastDevice ?: GlassesDevice(
+            address = "",
+            protocolHint = id
+        )
         setState(GlassesConnectionState.Connected(device))
         connectDeferred?.complete(Unit)
+        connectDeferred = null
     }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
 
     private fun markConnected() {
         completeBleLinkConnected()
         scheduleInitialQueriesIfReady()
     }
 
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun scheduleInitialQueriesIfReady() {
         if (initialQueriesScheduled) return
         if (writeCharacteristic == null) {
-            Log.w(TAG, "Initial queries skipped: write characteristic is not ready yet")
+            Log.w(
+                TAG,
+                "Initial queries skipped: write characteristic is not ready yet"
+            )
             return
         }
         initialQueriesScheduled = true
 
         listOf(
             HscH515PacketCodec.timeRequest(sequence.next()),
-            HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_BATTERY, sequence.next()),
-            HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_FILE_COUNT, sequence.next()),
-            HscH515PacketCodec.request(HscH515PacketCodec.CMD_DEVICE_NAME, sequence.next()),
-            HscH515PacketCodec.request(HscH515PacketCodec.CMD_VERSION, sequence.next()),
-            HscH515PacketCodec.request(HscH515PacketCodec.CMD_SUPPORT_FEATURES, sequence.next()),
+            HscH515PacketCodec.request(
+                HscH515PacketCodec.CMD_GET_BATTERY,
+                sequence.next()
+            ),
+            HscH515PacketCodec.request(
+                HscH515PacketCodec.CMD_GET_FILE_COUNT,
+                sequence.next()
+            ),
+            HscH515PacketCodec.request(
+                HscH515PacketCodec.CMD_DEVICE_NAME,
+                sequence.next()
+            ),
+            HscH515PacketCodec.request(
+                HscH515PacketCodec.CMD_VERSION,
+                sequence.next()
+            ),
+            HscH515PacketCodec.request(
+                HscH515PacketCodec.CMD_SUPPORT_FEATURES,
+                sequence.next()
+            ),
         ).forEachIndexed { index, bytes ->
             mainHandler.postDelayed(
                 {
@@ -463,20 +688,41 @@ class HscH515GlassesProtocol(
         }
     }
 
-    private fun onCharacteristicBytes(uuid: String, bytes: ByteArray) {
+    private fun onCharacteristicBytes(
+        uuid: String,
+        bytes: ByteArray
+    ) {
+        Log.d(TAG, "RX $uuid: ${HscH515PacketCodec.toHex(bytes)}")
         _events.tryEmit(GlassesEvent.RawPacket(bytes))
-        if (!uuid.equals(HscH515PacketCodec.READ_UUID.toString(), ignoreCase = true)) return
+        if (!uuid.equals(
+                HscH515PacketCodec.READ_UUID.toString(),
+                ignoreCase = true
+            )
+        ) return
 
         val packets = frameDecoder.append(bytes)
         if (packets.isEmpty()) {
-            Log.d(TAG, "Buffered HSC/H5-15 chunk: ${HscH515PacketCodec.toHex(bytes)}")
+            Log.d(
+                TAG,
+                "Buffered HSC/H5-15 chunk: ${HscH515PacketCodec.toHex(bytes)}"
+            )
         }
         packets.forEach(::handlePacket)
     }
 
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun handlePacket(packet: HscH515PacketCodec.Packet) {
+        Log.d(
+            TAG,
+            "RX packet cmd=0x${packet.commandId.toString(16)} type=${packet.type} seq=${packet.sequence} len=${packet.payload.size} crc=${packet.crcValid}"
+        )
+
         if (!packet.crcValid) {
-            Log.w(TAG, "Ignoring packet with bad CRC: cmd=0x${packet.commandId.toString(16)}")
+            Log.w(
+                TAG,
+                "Ignoring packet with bad CRC: cmd=0x${packet.commandId.toString(16)}"
+            )
             return
         }
 
@@ -485,17 +731,18 @@ class HscH515GlassesProtocol(
         }
 
         when (packet.commandId) {
-            HscH515PacketCodec.CMD_GET_BATTERY,
-            HscH515PacketCodec.CMD_BATTERY_NOTIFY -> {
+            HscH515PacketCodec.CMD_GET_BATTERY, HscH515PacketCodec.CMD_BATTERY_NOTIFY -> {
                 val parsed = HscH515PacketCodec.parseBattery(packet.payload) ?: return
-                val battery = GlassesBattery(parsed.first, parsed.second)
+                val battery = GlassesBattery(
+                    parsed.first,
+                    parsed.second
+                )
                 pendingBattery?.complete(battery)
                 pendingBattery = null
                 _events.tryEmit(GlassesEvent.BatteryChanged(battery))
             }
 
-            HscH515PacketCodec.CMD_GET_FILE_COUNT,
-            HscH515PacketCodec.CMD_FILE_COUNT_NOTIFY -> {
+            HscH515PacketCodec.CMD_GET_FILE_COUNT, HscH515PacketCodec.CMD_FILE_COUNT_NOTIFY -> {
                 val count = HscH515PacketCodec.parseFileCount(packet.payload) ?: return
                 val counts = GlassesMediaCounts(photos = count)
                 pendingMediaCounts?.complete(counts)
@@ -534,16 +781,29 @@ class HscH515GlassesProtocol(
             }
 
             HscH515PacketCodec.CMD_VIDEO_STATE_NOTIFY -> {
-                HscH515PacketCodec.parseVideoState(packet.payload)?.let { enabled ->
-                    val button = if (enabled) GlassesEvent.Button.VIDEO else GlassesEvent.Button.UNKNOWN
-                    _events.tryEmit(GlassesEvent.ButtonPressed(button, packet.commandId))
-                }
+                HscH515PacketCodec.parseVideoState(packet.payload)
+                    ?.let { enabled ->
+                        val button =
+                            if (enabled) GlassesEvent.Button.VIDEO else GlassesEvent.Button.UNKNOWN
+                        _events.tryEmit(
+                            GlassesEvent.ButtonPressed(
+                                button,
+                                packet.commandId
+                            )
+                        )
+                    }
             }
 
             HscH515PacketCodec.CMD_LOCAL_AUDIO_STATE_NOTIFY -> {
-                HscH515PacketCodec.parseAudioState(packet.payload)?.let { enabled ->
-                    if (enabled) _events.tryEmit(GlassesEvent.ButtonPressed(GlassesEvent.Button.AUDIO, packet.commandId))
-                }
+                HscH515PacketCodec.parseAudioState(packet.payload)
+                    ?.let { enabled ->
+                        if (enabled) _events.tryEmit(
+                            GlassesEvent.ButtonPressed(
+                                GlassesEvent.Button.AUDIO,
+                                packet.commandId
+                            )
+                        )
+                    }
             }
         }
     }
@@ -561,17 +821,49 @@ class HscH515GlassesProtocol(
             bluetoothFirmwareVersion = cachedFirmware,
             wifiFirmwareVersion = cachedFirmware,
             raw = linkedMapOf<String, String>().apply {
-                cachedDeviceName?.let { put("deviceName", it) }
-                cachedModel?.let { put("model", it) }
-                cachedFirmware?.let { put("firmware", it) }
-                cachedHardware?.let { put("hardware", it) }
+                cachedDeviceName?.let {
+                    put(
+                        "deviceName",
+                        it
+                    )
+                }
+                cachedModel?.let {
+                    put(
+                        "model",
+                        it
+                    )
+                }
+                cachedFirmware?.let {
+                    put(
+                        "firmware",
+                        it
+                    )
+                }
+                cachedHardware?.let {
+                    put(
+                        "hardware",
+                        it
+                    )
+                }
                 productInfo?.let {
-                    put("customerId", it.customerId.toString())
-                    put("productId", it.productId.toString())
-                    put("color", it.color.toString())
+                    put(
+                        "customerId",
+                        it.customerId.toString()
+                    )
+                    put(
+                        "productId",
+                        it.productId.toString()
+                    )
+                    put(
+                        "color",
+                        it.color.toString()
+                    )
                 }
                 cachedSupportFeatures?.forEach { (name, supported) ->
-                    put("feature.$name", supported.toString())
+                    put(
+                        "feature.$name",
+                        supported.toString()
+                    )
                 }
             },
         )
@@ -580,78 +872,222 @@ class HscH515GlassesProtocol(
         _events.tryEmit(GlassesEvent.DeviceInfoChanged(info))
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun failProtocolReady(
         code: String,
         message: String,
         cause: Throwable? = null,
     ) {
-        val error = GlassesProtocolError(code, message, cause)
+        val deferred = connectDeferred
+        val error = GlassesProtocolError(
+            code,
+            message,
+            cause
+        )
+
+        Log.w(TAG, "$code: $message", cause)
+
+        forceCloseGatt()
+        clearGattState(keepGattReference = false)
+
         _events.tryEmit(GlassesEvent.Error(error))
         setState(GlassesConnectionState.Failed(error))
-        connectDeferred?.completeExceptionally(
-            IllegalStateException(message, cause)
+        deferred?.completeExceptionally(
+            IllegalStateException(
+                message,
+                cause
+            )
         )
     }
 
-    private suspend fun sendCommand(commandName: String, bytes: ByteArray): GlassesCommandResult {
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private suspend fun sendCommand(
+        commandName: String,
+        bytes: ByteArray
+    ): GlassesCommandResult {
         return if (write(bytes)) {
             GlassesCommandResult.Accepted
         } else {
             GlassesCommandResult.Rejected(
-                GlassesProtocolError("WRITE_FAILED", "$commandName write failed for HSC/H5-15")
+                GlassesProtocolError(
+                    "WRITE_FAILED",
+                    "$commandName write failed for HSC/H5-15"
+                )
             )
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun write(bytes: ByteArray): Boolean {
         if (!hasBleConnectPermission()) return false
-        val activeGatt = gatt ?: return false
-        val characteristic = writeCharacteristic ?: return false
+        if (gatt == null || writeCharacteristic == null) return false
 
-        return try {
-            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        Log.d(TAG, "TX enqueue: ${HscH515PacketCodec.toHex(bytes)}")
+
+        synchronized(writeLock) {
+            writeQueue.addLast(bytes)
+        }
+
+        mainHandler.post {
+            drainWriteQueue()
+        }
+
+        return true
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun drainWriteQueue() {
+        if (!hasBleConnectPermission()) return
+
+        val activeGatt = gatt ?: return
+        val characteristic = writeCharacteristic ?: return
+
+        val bytes = synchronized(writeLock) {
+            if (writeInProgress) return
+            if (writeQueue.isEmpty()) return
+            val next = writeQueue.removeFirst()
+            writeInProgress = true
+            next
+        }
+
+        Log.d(TAG, "TX write: ${HscH515PacketCodec.toHex(bytes)}")
+
+        val started = try {
+            val props = characteristic.properties
+            val canWrite = (props and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+            val canWriteNoResponse =
+                (props and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+
+            val writeType = when {
+                canWrite -> BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                canWriteNoResponse -> BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                else -> {
+                    Log.e(TAG, "WRITE characteristic has no write property: props=$props")
+                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                }
+            }
+
+            characteristic.writeType = writeType
+
+            Log.d(TAG, "TX writeType=$writeType props=$props")
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 activeGatt.writeCharacteristic(
                     characteristic,
                     bytes,
-                    BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                    writeType,
                 ) == BluetoothStatusCodes.SUCCESS
             } else {
                 @Suppress("DEPRECATION") characteristic.value = bytes
+
                 @Suppress("DEPRECATION") activeGatt.writeCharacteristic(characteristic)
             }
-        } catch (_: SecurityException) {
+        } catch (error: Throwable) {
+            Log.w(
+                TAG,
+                "GATT write start failed",
+                error
+            )
             false
+        }
+        if (started) {
+            val watchdog = Runnable {
+                Log.w(TAG, "TX watchdog fired; advancing write queue without onCharacteristicWrite")
+                finishCurrentWriteAndDrain("watchdog")
+            }
+
+            writeWatchdog = watchdog
+            mainHandler.postDelayed(
+                watchdog,
+                writeWatchdogDelayMs
+            )
+        }
+        if (!started) {
+            synchronized(writeLock) {
+                writeInProgress = false
+                writeQueue.addFirst(bytes)
+            }
+
+            mainHandler.postDelayed(
+                { drainWriteQueue() },
+                WRITE_RETRY_DELAY_MS
+            )
         }
     }
 
+
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun enableNotify(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic): Boolean {
+    private fun enableNotify(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic
+    ): Boolean {
         if (!hasBleConnectPermission()) return false
-        val localEnabled = gatt.setCharacteristicNotification(characteristic, true)
+        val localEnabled = gatt.setCharacteristicNotification(
+            characteristic,
+            true
+        )
         if (!localEnabled) return false
 
         val descriptor = characteristic.getDescriptor(HscH515PacketCodec.CCCD_UUID) ?: return false
-        val enableValue = if ((characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
-            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        } else {
-            BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-        }
+        val enableValue =
+            if ((characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
+                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            } else {
+                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+            }
 
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(descriptor, enableValue) == BluetoothStatusCodes.SUCCESS
+            gatt.writeDescriptor(
+                descriptor,
+                enableValue
+            ) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION") descriptor.value = enableValue
             @Suppress("DEPRECATION") gatt.writeDescriptor(descriptor)
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun forceCloseGatt() {
+        writeWatchdog?.let { mainHandler.removeCallbacks(it) }
+        writeWatchdog = null
+
+        val activeGatt = gatt
+        if (activeGatt != null) {
+            runCatching { activeGatt.disconnect() }
+            runCatching { activeGatt.close() }
+        }
+    }
+
+    private fun logGattTree(gatt: BluetoothGatt) {
+        val services = gatt.services.orEmpty()
+        if (services.isEmpty()) {
+            Log.w(TAG, "GATT tree is empty")
+            return
+        }
+
+        services.forEach { service ->
+            Log.i(TAG, "GATT service=${service.uuid}")
+            service.characteristics.orEmpty().forEach { characteristic ->
+                Log.i(
+                    TAG,
+                    "  characteristic=${characteristic.uuid} props=${characteristic.properties} descriptors=${characteristic.descriptors?.map { it.uuid }}"
+                )
+            }
+        }
+    }
+
+
     private fun setState(state: GlassesConnectionState) {
         _connectionState.value = state
         _events.tryEmit(GlassesEvent.ConnectionChanged(state))
     }
 
-    private fun BluetoothDevice.toGlassesDevice(rssi: Int?, serviceUuids: List<String>): GlassesDevice? {
+    private fun BluetoothDevice.toGlassesDevice(
+        rssi: Int?,
+        serviceUuids: List<String>
+    ): GlassesDevice? {
         val macAddress = this.address ?: return null
         val safeName = try {
             this.name
@@ -667,39 +1103,51 @@ class HscH515GlassesProtocol(
         )
     }
 
-    private fun matchesFilter(device: GlassesDevice, filter: GlassesScanFilter): Boolean {
+    private fun matchesFilter(
+        device: GlassesDevice,
+        filter: GlassesScanFilter
+    ): Boolean {
         if (filter.protocolId != null && filter.protocolId != id) return false
-        val actual = device.serviceUuids.map { it.lowercase() }.toSet()
-        val hasHscService = HscH515PacketCodec.SERVICE_UUID.toString().lowercase() in actual
+        val actual = device.serviceUuids.map { it.lowercase() }
+            .toSet()
+        val hasHscService = HscH515PacketCodec.SERVICE_UUID.toString()
+            .lowercase() in actual
         if (hasHscService) return true
 
-        val lowerName = device.name?.lowercase().orEmpty()
-        return lowerName.contains("hsc") ||
-            lowerName.contains("h5") ||
-            lowerName.contains("h15") ||
-            lowerName.contains("hy15") ||
-            lowerName.contains("h5-15")
+        val lowerName = device.name?.lowercase()
+            .orEmpty()
+        return lowerName.contains("hsc") || lowerName.contains("h5") || lowerName.contains("h15") || lowerName.contains("hy15") || lowerName.contains("h5-15")
     }
 
     private fun hasBleScanPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         } else {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         }
     }
 
     private fun hasBleConnectPermission(): Boolean {
-        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S || ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
-    private fun Throwable.toProtocolError(code: String, fallbackMessage: String): GlassesProtocolError =
-        GlassesProtocolError(
-            code = code,
-            message = message ?: fallbackMessage,
-            cause = this,
-        )
+    private fun Throwable.toProtocolError(
+        code: String,
+        fallbackMessage: String
+    ): GlassesProtocolError = GlassesProtocolError(
+        code = code,
+        message = message ?: fallbackMessage,
+        cause = this,
+    )
 
     private fun clearGattState(keepGattReference: Boolean = true) {
         if (!keepGattReference) gatt = null
@@ -714,6 +1162,12 @@ class HscH515GlassesProtocol(
         writeCharacteristic = null
         readCharacteristic = null
         frameDecoder.clear()
+        writeWatchdog?.let { mainHandler.removeCallbacks(it) }
+        writeWatchdog = null
+        synchronized(writeLock) {
+            writeQueue.clear()
+            writeInProgress = false
+        }
     }
 
     companion object {
@@ -722,6 +1176,8 @@ class HscH515GlassesProtocol(
         private const val COMMAND_TIMEOUT_MS = 5_000L
         private const val SERVICE_DISCOVERY_MAX_ATTEMPTS = 8
         private const val SERVICE_DISCOVERY_RETRY_DELAY_MS = 500L
+        private const val CONNECT_RETRY_SETTLE_MS = 700L
+        private const val WRITE_RETRY_DELAY_MS = 150L
 
         private const val DEVICE_CONTROL_TAKE_PHOTO = 8
         private const val DEVICE_CONTROL_START_VIDEO = 9

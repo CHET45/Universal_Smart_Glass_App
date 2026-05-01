@@ -613,8 +613,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val profile = DeviceProfileStore.loadLastSelected(this)
         val protocol = glassesProtocolManager.currentOrCreate(profile?.selectedClass)
+        val isConnected = isProtocolStateConnected(
+            profile?.selectedClass,
+            protocol?.connectionState?.value
+        )
 
-        updateConnectionStatus(isProtocolStateConnected(profile?.selectedClass, protocol?.connectionState?.value))
+        updateConnectionStatus(isConnected)
+
+        if (
+            isConnected &&
+            profile?.selectedClass == DeviceClass.HSC_H5_15 &&
+            protocol != null
+        ) {
+            refreshProtocolBatteryOnce(protocol)
+        }
 
         if (protocol == null) {
             return
@@ -647,7 +659,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
     }
+    private var protocolBatteryRefreshJob: Job? = null
 
+    private fun refreshProtocolBatteryOnce(protocol: GlassesProtocol) {
+        if (protocolBatteryRefreshJob?.isActive == true) return
+
+        protocolBatteryRefreshJob = CoroutineScope(Dispatchers.Main).launch {
+            delay(500)
+
+            protocol.requestBattery()
+                .onSuccess { battery ->
+                    updateBatteryText(battery.percent)
+                }
+                .onFailure { error ->
+                    Log.w(
+                        "GlassesProtocol",
+                        "Battery refresh failed: ${error.message}",
+                        error
+                    )
+                }
+        }
+    }
     private fun unbindCurrentProtocolUi() {
         protocolConnectionStateJob?.cancel()
         protocolConnectionStateJob = null
@@ -827,12 +859,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.btnMeetingBannerStop,
             binding.btnTransferStop,
         ) {
-            // Safety: stop glasses audio recording before most actions.
-            // Users often press camera/video/etc while audio is running.
+            // Legacy HeyCyan/Oudmon safety behavior: stop glasses audio before most actions.
+            // Do NOT do this for HSC/H5-15. For HSC this sends a real 0x0E04 command,
+            // so Battery/Photo/Video/Version/Time clicks first send "stop local audio" and can
+            // block or obscure the actual command being tested.
+            val selectedClassForClick = DeviceProfileStore.loadLastSelected(this@MainActivity)?.selectedClass
+            val isHscH515 = selectedClassForClick == DeviceClass.HSC_H5_15
             val shouldStopGlassesAudio =
-                this != binding.btnScan && this != binding.btnConnect && this != binding.btnTransferStop
+                !isHscH515 &&
+                        this != binding.btnScan &&
+                        this != binding.btnConnect &&
+                        this != binding.btnTransferStop &&
+                        this != binding.btnRecord
+
             if (shouldStopGlassesAudio) {
                 controlAudioRecording(false)
+
                 // If auto audio capture is enabled, give the user a short window to operate other controls.
                 if (AutoAudioCapturePrefs.isEnabled(this@MainActivity) && this != binding.btnRecord) {
                     AutoAudioCapturePrefs.pauseForMs(
@@ -1173,6 +1215,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnVolume -> {
+                    val selectedClassForVolume = DeviceProfileStore.loadLastSelected(this@MainActivity)?.selectedClass
+                    if (selectedClassForVolume == DeviceClass.HSC_H5_15) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Volume is not implemented for HSC/H5-15 protocol",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        return@setOnClickListener
+                    }
+
                     Toast.makeText(
                         this@MainActivity,
                         "Requesting volume info…",
