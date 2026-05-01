@@ -68,6 +68,7 @@ import com.fersaiyan.cyanbridge.media.autocapture.AutoAudioCapturePrefs
 import com.fersaiyan.cyanbridge.media.autocapture.GlassesSyncedAudioIngestor
 import com.fersaiyan.cyanbridge.memoryvault.MemoryPolicyService
 import com.fersaiyan.cyanbridge.protocol.AppGlassesProtocolManager
+import com.fersaiyan.cyanbridge.protocol.GlassesAction
 import com.fersaiyan.cyanbridge.protocol.GlassesCommandResult
 import com.fersaiyan.cyanbridge.protocol.GlassesConnectionState
 import com.fersaiyan.cyanbridge.protocol.GlassesDevice
@@ -635,7 +636,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         protocolConnectionStateJob = CoroutineScope(Dispatchers.Main).launch {
             protocol.connectionState.collect { state ->
                 Log.i("GlassesProtocol", "Current protocol state: $state")
-                updateConnectionStatus(isProtocolStateConnected(profile?.selectedClass, state))
+
+                val connected = isProtocolStateConnected(profile?.selectedClass, state)
+                updateConnectionStatus(connected)
+
+                if (
+                    connected &&
+                    profile?.selectedClass == DeviceClass.HSC_H5_15
+                ) {
+                    refreshProtocolBatteryOnce(protocol)
+                }
             }
         }
 
@@ -683,8 +693,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun unbindCurrentProtocolUi() {
         protocolConnectionStateJob?.cancel()
         protocolConnectionStateJob = null
+
         protocolEventsJob?.cancel()
         protocolEventsJob = null
+
+        protocolBatteryRefreshJob?.cancel()
+        protocolBatteryRefreshJob = null
     }
 
     private fun isProtocolStateConnected(
@@ -709,6 +723,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun handleProtocolButtonEvent(event: GlassesEvent.ButtonPressed) {
+        val selectedClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass
+
+        // S100/Eyevue and HSC upload action/status notifications after the app command.
+        // These notifications must not be converted back into button clicks; otherwise
+        // cmd 0x45 "taking photo" causes btnCamera.performClick(), which sends another
+        // photo command and creates a capture loop that rapidly increments media count.
+        if (selectedClass != DeviceClass.HEY_CYAN) {
+            Log.i(
+                "GlassesProtocol",
+                "Ignoring protocol action notification for $selectedClass: ${event.button}"
+            )
+            return
+        }
+
+        // Legacy HeyCyan/Oudmon path: keep the old behaviour for device button events.
         when (event.button) {
             GlassesEvent.Button.PHOTO,
             GlassesEvent.Button.AI -> binding.btnCamera.performClick()
@@ -745,6 +774,40 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     .show()
             }
         }
+    }
+
+    private suspend fun prepareProtocolAction(
+        protocol: GlassesProtocol,
+        action: GlassesAction,
+    ): Boolean {
+        if (!protocol.supportsAction(action)) {
+            Toast.makeText(
+                this,
+                "${action.name.lowercase().replace('_', ' ')} is not supported for selected glasses",
+                Toast.LENGTH_SHORT,
+            ).show()
+            return false
+        }
+
+        val shouldPauseAutoAudio = protocol.shouldStopAudioBeforeAction(action)
+        val result = protocol.beforeAction(action)
+
+        if (result is GlassesCommandResult.Rejected) {
+            showCommandResult(
+                "Prepare ${action.name.lowercase().replace('_', ' ')}",
+                result,
+            )
+            return false
+        }
+
+        if (shouldPauseAutoAudio && AutoAudioCapturePrefs.isEnabled(this@MainActivity)) {
+            AutoAudioCapturePrefs.pauseForMs(
+                this@MainActivity,
+                90_000,
+            )
+        }
+
+        return true
     }
 
     private fun setupBottomNavigation() {
@@ -859,31 +922,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.btnMeetingBannerStop,
             binding.btnTransferStop,
         ) {
-            // Legacy HeyCyan/Oudmon safety behavior: stop glasses audio before most actions.
-            // Do NOT do this for HSC/H5-15. For HSC this sends a real 0x0E04 command,
-            // so Battery/Photo/Video/Version/Time clicks first send "stop local audio" and can
-            // block or obscure the actual command being tested.
-            val selectedClassForClick = DeviceProfileStore.loadLastSelected(this@MainActivity)?.selectedClass
-            val isHscH515 = selectedClassForClick == DeviceClass.HSC_H5_15
-            val shouldStopGlassesAudio =
-                !isHscH515 &&
-                        this != binding.btnScan &&
-                        this != binding.btnConnect &&
-                        this != binding.btnTransferStop &&
-                        this != binding.btnRecord
-
-            if (shouldStopGlassesAudio) {
-                controlAudioRecording(false)
-
-                // If auto audio capture is enabled, give the user a short window to operate other controls.
-                if (AutoAudioCapturePrefs.isEnabled(this@MainActivity) && this != binding.btnRecord) {
-                    AutoAudioCapturePrefs.pauseForMs(
-                        this@MainActivity,
-                        90_000
-                    )
-                }
-            }
-
             when (this) {
                 binding.btnToggleAdvanced -> {
                     val container = binding.layoutAdvancedContainer
@@ -1067,6 +1105,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
 
                     CoroutineScope(Dispatchers.Main).launch {
+                        if (!prepareProtocolAction(protocol, GlassesAction.TIME_SYNC)) return@launch
                         val result = protocol.syncTime()
                         showCommandResult(
                             "Sync time",
@@ -1086,6 +1125,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
 
                     CoroutineScope(Dispatchers.Main).launch {
+                        if (!prepareProtocolAction(protocol, GlassesAction.DEVICE_INFO)) return@launch
                         val result = protocol.requestDeviceInfo()
 
                         result.onSuccess { info ->
@@ -1122,6 +1162,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
 
                     CoroutineScope(Dispatchers.Main).launch {
+                        if (!prepareProtocolAction(protocol, GlassesAction.PHOTO)) return@launch
                         val result = protocol.takePhoto(aiTransfer = false)
                         showCommandResult(
                             "Take photo",
@@ -1181,6 +1222,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
 
                     CoroutineScope(Dispatchers.Main).launch {
+                        if (!prepareProtocolAction(protocol, GlassesAction.BATTERY)) return@launch
                         val result = protocol.requestBattery()
 
                         result.onSuccess { battery ->
@@ -1215,25 +1257,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnVolume -> {
-                    val selectedClassForVolume = DeviceProfileStore.loadLastSelected(this@MainActivity)?.selectedClass
-                    if (selectedClassForVolume == DeviceClass.HSC_H5_15) {
+                    val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
+
+                    CoroutineScope(Dispatchers.Main).launch {
+                        if (!prepareProtocolAction(protocol, GlassesAction.VOLUME)) return@launch
+
                         Toast.makeText(
                             this@MainActivity,
-                            "Volume is not implemented for HSC/H5-15 protocol",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                        return@setOnClickListener
-                    }
-
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Requesting volume info…",
-                        Toast.LENGTH_SHORT
-                    )
-                        .show()
-                    //Read volume control and show values
-                    LargeDataHandler.getInstance()
-                        .getVolumeControl { _, response ->
+                            "Requesting volume info…",
+                            Toast.LENGTH_SHORT
+                        )
+                            .show()
+                        // Legacy HeyCyan/Oudmon volume API. Unsupported protocols are blocked by supportsAction().
+                        LargeDataHandler.getInstance()
+                            .getVolumeControl { _, response ->
                             if (response != null) {
                                 val msg = """
                                 Music: ${response.currVolumeMusic}/${response.maxVolumeMusic}
@@ -1267,6 +1304,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                                 }
                             }
                         }
+                    }
                 }
 
                 binding.btnMediaCount -> {
@@ -1280,6 +1318,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
 
                     CoroutineScope(Dispatchers.Main).launch {
+                        if (!prepareProtocolAction(protocol, GlassesAction.MEDIA_COUNT)) return@launch
                         val result = protocol.requestMediaCounts()
 
                         result.onSuccess { counts ->
@@ -1668,6 +1707,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         CoroutineScope(Dispatchers.Main).launch {
+            val action = if (start) GlassesAction.VIDEO_START else GlassesAction.VIDEO_STOP
+            if (!prepareProtocolAction(protocol, action)) {
+                if (start) {
+                    GlassesMediaPrefs.setVideoRecording(
+                        this@MainActivity,
+                        false
+                    )
+                    AutoAudioCapturePrefs.setPausedForVideo(
+                        this@MainActivity,
+                        false
+                    )
+                }
+                return@launch
+            }
+
             when (val result = protocol.setVideoRecording(start)) {
                 GlassesCommandResult.Accepted -> {
                     GlassesMediaPrefs.setVideoRecording(
@@ -1711,6 +1765,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val protocol = currentGlassesProtocolOrToast() ?: return
 
         CoroutineScope(Dispatchers.Main).launch {
+            val action = if (start) GlassesAction.AUDIO_START else GlassesAction.AUDIO_STOP
+            if (!protocol.supportsAction(action)) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "${action.name.lowercase().replace('_', ' ')} is not supported for selected glasses",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                return@launch
+            }
+
             when (val result = protocol.setAudioRecording(start)) {
                 GlassesCommandResult.Accepted -> {
                     Log.i(

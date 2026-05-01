@@ -20,6 +20,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
+import com.fersaiyan.cyanbridge.protocol.GlassesAction
 import com.fersaiyan.cyanbridge.protocol.GlassesBattery
 import com.fersaiyan.cyanbridge.protocol.GlassesCapability
 import com.fersaiyan.cyanbridge.protocol.GlassesCommandResult
@@ -64,6 +65,21 @@ class HscH515GlassesProtocol(
         GlassesCapability.AUDIO_RECORDING,
         GlassesCapability.MEDIA_COUNT,
     )
+
+    override suspend fun beforeAction(action: GlassesAction): GlassesCommandResult {
+        // HSC/H5-15 must not receive the legacy "stop audio" command before unrelated actions.
+        // MainActivity calls this hook before Battery/Photo/Video/Version/Time; for HSC it is a no-op.
+        return GlassesCommandResult.Accepted
+    }
+
+    override fun shouldStopAudioBeforeAction(action: GlassesAction): Boolean = false
+
+    override fun supportsAction(action: GlassesAction): Boolean {
+        return when (action) {
+            GlassesAction.VOLUME -> false
+            else -> true
+        }
+    }
     private val writeLock = Any()
     private val writeQueue = ArrayDeque<ByteArray>()
     private var writeInProgress = false
