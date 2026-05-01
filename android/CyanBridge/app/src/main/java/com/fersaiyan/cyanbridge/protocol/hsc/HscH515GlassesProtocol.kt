@@ -76,6 +76,7 @@ class HscH515GlassesProtocol(
     }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val sequence = HscH515PacketCodec.SequenceGenerator()
+    private val frameDecoder = HscH515PacketCodec.FrameDecoder()
 
     private var gatt: BluetoothGatt? = null
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
@@ -93,7 +94,8 @@ class HscH515GlassesProtocol(
     private var cachedModel: String? = null
     private var cachedFirmware: String? = null
     private var cachedHardware: String? = null
-    private var cachedProductInfo: String? = null
+    private var cachedProductInfo: HscH515PacketCodec.ProductInfo? = null
+    private var cachedSupportFeatures: Map<String, Boolean>? = null
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     override fun scan(filter: GlassesScanFilter): Flow<GlassesDevice> = callbackFlow {
@@ -165,8 +167,14 @@ class HscH515GlassesProtocol(
 
         lastDevice = device.copy(protocolHint = id)
         cachedDeviceName = device.name
+        cachedModel = null
+        cachedFirmware = null
+        cachedHardware = null
+        cachedProductInfo = null
+        cachedSupportFeatures = null
         markedConnected = false
         initialQueriesScheduled = false
+        frameDecoder.clear()
         setState(GlassesConnectionState.Connecting(lastDevice ?: device))
 
         val adapter = bluetoothManager.adapter ?: throw IllegalStateException("Bluetooth adapter is unavailable")
@@ -221,6 +229,7 @@ class HscH515GlassesProtocol(
             write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_VERSION, sequence.next()))
             write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_HARDWARE, sequence.next()))
             write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_PRODUCT_INFO, sequence.next()))
+            write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_SUPPORT_FEATURES, sequence.next()))
             Result.success(deferred.await())
         } ?: Result.failure(IllegalStateException("requestDeviceInfo timed out"))
 
@@ -281,14 +290,9 @@ class HscH515GlassesProtocol(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT STATE_CONNECTED: ${gatt.device?.address}")
-
-                    // Treat the BLE link itself as connected so the pairing screen can finish.
-                    // Services/characteristics are still discovered immediately after this.
                     completeBleLinkConnected()
-
                     runCatching { gatt.requestMtu(247) }
                         .onFailure { Log.w(TAG, "requestMtu failed", it) }
-
                     mainHandler.postDelayed(
                         {
                             runCatching { gatt.discoverServices() }
@@ -368,7 +372,6 @@ class HscH515GlassesProtocol(
     private fun completeBleLinkConnected() {
         if (markedConnected) return
         markedConnected = true
-
         val device = lastDevice ?: GlassesDevice(address = "", protocolHint = id)
         setState(GlassesConnectionState.Connected(device))
         connectDeferred?.complete(Unit)
@@ -387,26 +390,35 @@ class HscH515GlassesProtocol(
         }
         initialQueriesScheduled = true
 
-        mainHandler.postDelayed(
-            {
-                if (_connectionState.value is GlassesConnectionState.Connected) {
-                    write(HscH515PacketCodec.timeRequest(sequence.next()))
-                    write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_BATTERY, sequence.next()))
-                    write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_FILE_COUNT, sequence.next()))
-                    write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_DEVICE_NAME, sequence.next()))
-                    write(HscH515PacketCodec.request(HscH515PacketCodec.CMD_VERSION, sequence.next()))
-                }
-            },
-            500L,
-        )
+        listOf(
+            HscH515PacketCodec.timeRequest(sequence.next()),
+            HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_BATTERY, sequence.next()),
+            HscH515PacketCodec.request(HscH515PacketCodec.CMD_GET_FILE_COUNT, sequence.next()),
+            HscH515PacketCodec.request(HscH515PacketCodec.CMD_DEVICE_NAME, sequence.next()),
+            HscH515PacketCodec.request(HscH515PacketCodec.CMD_VERSION, sequence.next()),
+            HscH515PacketCodec.request(HscH515PacketCodec.CMD_SUPPORT_FEATURES, sequence.next()),
+        ).forEachIndexed { index, bytes ->
+            mainHandler.postDelayed(
+                {
+                    if (_connectionState.value is GlassesConnectionState.Connected) write(bytes)
+                },
+                500L + index * 120L,
+            )
+        }
     }
 
     private fun onCharacteristicBytes(uuid: String, bytes: ByteArray) {
         _events.tryEmit(GlassesEvent.RawPacket(bytes))
-
         if (!uuid.equals(HscH515PacketCodec.READ_UUID.toString(), ignoreCase = true)) return
-        val packet = HscH515PacketCodec.decodeFrame(bytes) ?: return
 
+        val packets = frameDecoder.append(bytes)
+        if (packets.isEmpty()) {
+            Log.d(TAG, "Buffered HSC/H5-15 chunk: ${HscH515PacketCodec.toHex(bytes)}")
+        }
+        packets.forEach(::handlePacket)
+    }
+
+    private fun handlePacket(packet: HscH515PacketCodec.Packet) {
         if (!packet.crcValid) {
             Log.w(TAG, "Ignoring packet with bad CRC: cmd=0x${packet.commandId.toString(16)}")
             return
@@ -422,6 +434,7 @@ class HscH515GlassesProtocol(
                 val parsed = HscH515PacketCodec.parseBattery(packet.payload) ?: return
                 val battery = GlassesBattery(parsed.first, parsed.second)
                 pendingBattery?.complete(battery)
+                pendingBattery = null
                 _events.tryEmit(GlassesEvent.BatteryChanged(battery))
             }
 
@@ -430,11 +443,17 @@ class HscH515GlassesProtocol(
                 val count = HscH515PacketCodec.parseFileCount(packet.payload) ?: return
                 val counts = GlassesMediaCounts(photos = count)
                 pendingMediaCounts?.complete(counts)
+                pendingMediaCounts = null
                 _events.tryEmit(GlassesEvent.MediaCountsChanged(counts))
             }
 
             HscH515PacketCodec.CMD_PRODUCT_INFO -> {
-                cachedProductInfo = HscH515PacketCodec.parseStringPayload(packet.payload)
+                cachedProductInfo = HscH515PacketCodec.parseProductInfo(packet.payload)
+                completePendingDeviceInfoIfPossible(force = false)
+            }
+
+            HscH515PacketCodec.CMD_SUPPORT_FEATURES -> {
+                cachedSupportFeatures = HscH515PacketCodec.parseSupportFeatures(packet.payload)
                 completePendingDeviceInfoIfPossible(force = false)
             }
 
@@ -475,10 +494,11 @@ class HscH515GlassesProtocol(
 
     private fun completePendingDeviceInfoIfPossible(force: Boolean) {
         val pending = pendingDeviceInfo ?: return
-        if (!force && cachedDeviceName == null && cachedModel == null && cachedFirmware == null && cachedHardware == null) {
+        if (!force && cachedDeviceName == null && cachedModel == null && cachedFirmware == null && cachedHardware == null && cachedProductInfo == null && cachedSupportFeatures == null) {
             return
         }
 
+        val productInfo = cachedProductInfo
         val info = GlassesDeviceInfo(
             hardwareVersion = cachedHardware,
             firmwareVersion = cachedFirmware,
@@ -489,10 +509,18 @@ class HscH515GlassesProtocol(
                 cachedModel?.let { put("model", it) }
                 cachedFirmware?.let { put("firmware", it) }
                 cachedHardware?.let { put("hardware", it) }
-                cachedProductInfo?.let { put("productInfo", it) }
+                productInfo?.let {
+                    put("customerId", it.customerId.toString())
+                    put("productId", it.productId.toString())
+                    put("color", it.color.toString())
+                }
+                cachedSupportFeatures?.forEach { (name, supported) ->
+                    put("feature.$name", supported.toString())
+                }
             },
         )
         pending.complete(info)
+        pendingDeviceInfo = null
         _events.tryEmit(GlassesEvent.DeviceInfoChanged(info))
     }
 
@@ -612,6 +640,7 @@ class HscH515GlassesProtocol(
         pendingMediaCounts = null
         writeCharacteristic = null
         readCharacteristic = null
+        frameDecoder.clear()
     }
 
     companion object {
