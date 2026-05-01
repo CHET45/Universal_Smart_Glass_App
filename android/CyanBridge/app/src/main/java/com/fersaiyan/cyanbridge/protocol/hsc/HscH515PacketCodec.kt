@@ -44,6 +44,8 @@ object HscH515PacketCodec {
     const val CMD_LOCAL_AUDIO_STATE_NOTIFY: Int = 0x0E05
 
     private const val FRAME_MAGIC: Int = 0xA5
+    private const val MIN_COMMAND_DATA_LENGTH: Int = 6
+    private const val MAX_COMMAND_DATA_LENGTH: Int = 4096
     private val UTF8: Charset = Charsets.UTF_8
 
     data class Packet(
@@ -54,6 +56,58 @@ object HscH515PacketCodec {
         val crcValid: Boolean,
         val raw: ByteArray,
     )
+
+    data class ProductInfo(
+        val customerId: Int,
+        val productId: Int,
+        val color: Int,
+    )
+
+    /**
+     * BLE notifications are not guaranteed to map 1:1 to protocol frames. This decoder
+     * uses the outer A5 + length envelope to assemble fragmented frames and split merged frames.
+     */
+    class FrameDecoder {
+        private var buffer: ByteArray = ByteArray(0)
+
+        fun append(chunk: ByteArray): List<Packet> {
+            if (chunk.isEmpty()) return emptyList()
+
+            buffer += chunk
+            val packets = mutableListOf<Packet>()
+
+            while (buffer.isNotEmpty()) {
+                val magicIndex = buffer.indexOfFirst { (it.toInt() and 0xFF) == FRAME_MAGIC }
+                if (magicIndex < 0) {
+                    buffer = ByteArray(0)
+                    break
+                }
+                if (magicIndex > 0) {
+                    buffer = buffer.copyOfRange(magicIndex, buffer.size)
+                }
+                if (buffer.size < 3) break
+
+                val dataLength = readLe16(buffer, 1)
+                if (dataLength < MIN_COMMAND_DATA_LENGTH || dataLength > MAX_COMMAND_DATA_LENGTH) {
+                    buffer = buffer.copyOfRange(1, buffer.size)
+                    continue
+                }
+
+                val frameSize = 1 + 2 + dataLength + 2
+                if (buffer.size < frameSize) break
+
+                val frame = buffer.copyOfRange(0, frameSize)
+                decodeFrame(frame)?.let(packets::add)
+                buffer = buffer.copyOfRange(frameSize, buffer.size)
+            }
+
+            return packets
+        }
+
+        fun clear() {
+            buffer = ByteArray(0)
+        }
+    }
 
     class SequenceGenerator {
         private var nextSequence: Int = 0
@@ -128,7 +182,7 @@ object HscH515PacketCodec {
 
         val dataLength = readLe16(raw, 1)
         val expectedSize = 1 + 2 + dataLength + 2
-        if (raw.size < expectedSize || dataLength < 6) return null
+        if (raw.size < expectedSize || dataLength < MIN_COMMAND_DATA_LENGTH) return null
 
         val dataStart = 3
         val dataEnd = dataStart + dataLength
@@ -167,13 +221,44 @@ object HscH515PacketCodec {
 
         val first = candidates.firstOrNull() ?: return null
         val percent = (first and 0x7F).coerceIn(0, 100)
-        val charging = if ((first and 0x80) != 0) true else false
+        val charging = (first and 0x80) != 0
         return percent to charging
     }
 
     fun parseFileCount(payload: ByteArray): Int? {
         if (payload.size < 2) return null
         return readLe16(payload, 0)
+    }
+
+    fun parseProductInfo(payload: ByteArray): ProductInfo? {
+        if (payload.size < 5) return null
+        return ProductInfo(
+            customerId = readLe16(payload, 0),
+            productId = readLe16(payload, 2),
+            color = payload[4].toInt() and 0xFF,
+        )
+    }
+
+    fun parseSupportFeatures(payload: ByteArray): Map<String, Boolean> {
+        val names = listOf(
+            "noiseCancellation",
+            "wearDetection",
+            "gameMode",
+            "eq",
+            "buttonSettings",
+            "findDevice",
+            "aiConversation",
+            "wifiGlasses",
+            "bleAudio",
+            "otaUpgrade",
+            "deviceControl",
+            "localAudioRecording",
+            "voiceWakeup",
+        )
+
+        return names.mapIndexedNotNull { index, name ->
+            payload.getOrNull(index)?.let { name to ((it.toInt() and 0xFF) == 1) }
+        }.toMap()
     }
 
     fun parseStringPayload(payload: ByteArray): String? {
@@ -200,6 +285,10 @@ object HscH515PacketCodec {
     }
 
     fun parseAudioState(payload: ByteArray): Boolean? = parseVideoState(payload)
+
+    fun toHex(bytes: ByteArray): String = bytes.joinToString(separator = " ") { byte ->
+        (byte.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()
+    }
 
     private fun frame(
         commandId: Int,
