@@ -1,16 +1,22 @@
 package com.fersaiyan.cyanbridge.protocol.hsc
 
 import java.nio.charset.Charset
+import java.util.TimeZone
 import java.util.UUID
 
 /**
- * HSC / H5-15 BLE packet codec based on communication protocol v2.0.15.
+ * HSC / H5-15 BLE packet codec based on communication protocol v2.0.15 and the
+ * vendor HY15 app implementation.
  *
  * Outer BLE frame:
  *   A5 | dataLength LE16 | commandData | crc16 LE16
  *
  * commandData:
  *   commandId LE16 | type | seq | payloadLength LE16 | payload
+ *
+ * Important vendor-app compatibility detail: the CRC16 is calculated over the
+ * whole frame prefix before the CRC field (A5 + dataLength + commandData), not
+ * only commandData. The CRC16 initial value is 0x0000.
  */
 object HscH515PacketCodec {
     val SERVICE_UUID: UUID = UUID.fromString("01000100-0000-2000-8000-009078563412")
@@ -151,10 +157,11 @@ object HscH515PacketCodec {
 
     fun timeRequest(sequence: Int): ByteArray {
         val unixSeconds = (System.currentTimeMillis() / 1000L).toInt()
+        val utcOffsetSeconds = TimeZone.getDefault().rawOffset / 1000
         return request(
             CMD_SET_TIME,
             sequence,
-            le32(unixSeconds),
+            le32(unixSeconds) + le32(utcOffsetSeconds),
         )
     }
 
@@ -188,7 +195,7 @@ object HscH515PacketCodec {
         val dataEnd = dataStart + dataLength
         val data = raw.copyOfRange(dataStart, dataEnd)
         val expectedCrc = readLe16(raw, dataEnd)
-        val actualCrc = crc16(data)
+        val actualCrc = crc16(raw.copyOfRange(0, dataEnd))
         val crcValid = expectedCrc == actualCrc
 
         val commandId = readLe16(data, 0)
@@ -304,12 +311,12 @@ object HscH515PacketCodec {
         writeLe16(data, 4, payload.size)
         payload.copyInto(data, 6)
 
-        val crc = crc16(data)
         return ByteArray(1 + 2 + dataLength + 2).also { out ->
             out[0] = FRAME_MAGIC.toByte()
             writeLe16(out, 1, dataLength)
             data.copyInto(out, 3)
-            writeLe16(out, 3 + dataLength, crc)
+            val crcOffset = 3 + dataLength
+            writeLe16(out, crcOffset, crc16(out.copyOfRange(0, crcOffset)))
         }
     }
 
@@ -338,7 +345,7 @@ object HscH515PacketCodec {
     }
 
     private fun crc16(data: ByteArray): Int {
-        var crc = 0xFFFF
+        var crc = 0x0000
         for (raw in data) {
             crc = crc xor (raw.toInt() and 0xFF)
             repeat(8) {
