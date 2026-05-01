@@ -18,6 +18,15 @@ object DeviceClassifier {
 
         val lower = name.lowercase()
 
+        if (
+            lower.contains("eyevue") ||
+            lower.contains("lensiq") ||
+            lower.contains("s2") ||
+            serviceUuids.any { it.uuid.toString().equals("0000aa12-0000-1000-8000-00805F9B34FB", ignoreCase = true) }
+        ) {
+            return DeviceClass.EYEVUE_S2
+        }
+
         // HeyCyan-class heuristics (already used elsewhere in the app).
         if (
             lower.contains("heycyan") ||
@@ -51,7 +60,6 @@ object DeviceClassifier {
         }
 
         // Service UUID heuristics placeholder (extend when known).
-        // Keeping this in place satisfies the Chapter 3 architecture requirement.
         if (serviceUuids.isNotEmpty()) {
             // TODO: Add known UUID-based detection when available.
         }

@@ -1,13 +1,17 @@
 package com.fersaiyan.cyanbridge.ui
 
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.ScanResult
 import android.content.Intent
-import android.os.*
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.widget.Toast
+import androidx.annotation.RequiresPermission
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.fersaiyan.cyanbridge.R
 import com.fersaiyan.cyanbridge.databinding.ActivityDeviceBindBinding
 import com.fersaiyan.cyanbridge.devices.DeviceClass
@@ -17,6 +21,7 @@ import com.fersaiyan.cyanbridge.devices.DeviceProfileStore
 import com.fersaiyan.cyanbridge.devices.ScannedDevice
 import com.fersaiyan.cyanbridge.protocol.AppGlassesProtocolManager
 import com.fersaiyan.cyanbridge.protocol.GlassesDevice
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.hjq.permissions.OnPermissionCallback
 import com.hjq.permissions.XXPermissions
 import com.oudmon.ble.base.bluetooth.BleOperateManager
@@ -43,24 +48,32 @@ class DeviceBindActivity : BaseActivity() {
 
     private val deviceList = mutableListOf<ScannedDevice>()
     private val bleScanCallback: BleCallback = BleCallback()
+    private var preserveProtocolAfterSuccessfulConnect = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityDeviceBindBinding.inflate(layoutInflater)
         glassesProtocolManager = AppGlassesProtocolManager(this)
-        EventBus.getDefault().register(this)
+        EventBus.getDefault()
+            .register(this)
         setContentView(binding.root)
     }
 
     override fun onResume() {
         super.onResume()
-        requestLocationPermission(this, PermissionCallback())
+        requestLocationPermission(
+            this,
+            PermissionCallback()
+        )
         binding.startScan.performClick()
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onMessageEvent(messageEvent: BluetoothEvent) {
-        Log.i(TAG, "onMessageEvent: " + messageEvent.connect)
+        Log.i(
+            TAG,
+            "onMessageEvent: " + messageEvent.connect
+        )
         if (messageEvent.connect) {
             if (::loadingDialog.isInitialized) {
                 loadingDialog.close()
@@ -69,10 +82,14 @@ class DeviceBindActivity : BaseActivity() {
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun setupViews() {
         super.setupViews()
 
-        adapter = DeviceListAdapter(this, deviceList)
+        adapter = DeviceListAdapter(
+            this,
+            deviceList
+        )
         binding.run {
             deviceRcv.layoutManager = LinearLayoutManager(this@DeviceBindActivity)
             deviceRcv.adapter = adapter
@@ -82,8 +99,6 @@ class DeviceBindActivity : BaseActivity() {
 
         adapter.setOnItemClickListener { _, _, position ->
             val device = deviceList.getOrNull(position) ?: return@setOnItemClickListener
-
-            // Always force an explicit device-type confirmation before connecting.
             showDeviceTypePickerAndConnect(device)
         }
 
@@ -91,15 +106,27 @@ class DeviceBindActivity : BaseActivity() {
             deviceList.clear()
             adapter.notifyDataSetChanged()
 
-            BleScannerHelper.getInstance().reSetCallback()
+            BleScannerHelper.getInstance()
+                .reSetCallback()
             if (!BluetoothUtils.isEnabledBluetooth(this@DeviceBindActivity)) {
                 val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                activity!!.startActivityForResult(intent, 300)
+                startActivityForResult(
+                    intent,
+                    300
+                )
             } else {
                 scanSize = 0
-                BleScannerHelper.getInstance().scanDevice(this@DeviceBindActivity, null, bleScanCallback)
+                BleScannerHelper.getInstance()
+                    .scanDevice(
+                        this@DeviceBindActivity,
+                        null,
+                        bleScanCallback
+                    )
                 myHandler.removeCallbacks(runnable)
-                myHandler.postDelayed(runnable, 15 * 1000)
+                myHandler.postDelayed(
+                    runnable,
+                    15 * 1000
+                )
             }
         }
     }
@@ -109,29 +136,34 @@ class DeviceBindActivity : BaseActivity() {
             DeviceClass.META_RAYBAN,
             DeviceClass.GENERIC_AUDIO,
             DeviceClass.HEY_CYAN,
+            DeviceClass.EYEVUE_S2,
         )
-        val labels = classes.map { it.displayName() }.toTypedArray()
+        val labels = classes.map { it.displayName() }
+            .toTypedArray()
 
-        var selectedIndex = classes.indexOf(device.detectedClass).coerceAtLeast(0)
+        var selectedIndex = classes.indexOf(device.detectedClass)
+            .coerceAtLeast(0)
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle("Select glasses type")
-            .setSingleChoiceItems(labels, selectedIndex) { _, which ->
+        MaterialAlertDialogBuilder(this).setTitle("Select glasses type")
+            .setSingleChoiceItems(
+                labels,
+                selectedIndex
+            ) { _, which ->
                 selectedIndex = which
             }
             .setPositiveButton("Connect") { dialog, _ ->
                 dialog.dismiss()
 
-                // Stop scan timer and scanning to avoid extra UI churn while connecting.
                 myHandler.removeCallbacks(runnable)
-                BleScannerHelper.getInstance().stopScan(this@DeviceBindActivity)
+                BleScannerHelper.getInstance()
+                    .stopScan(this@DeviceBindActivity)
 
                 val selected = classes.getOrNull(selectedIndex) ?: device.detectedClass
 
-                // User explicitly initiated pairing/reconnect.
-                AutoPairManager.setAutoReconnectSuppressed(false, reason = "user_manual_pair")
-
-                // Force a user-confirmed selection (even if it matches detected).
+                AutoPairManager.setAutoReconnectSuppressed(
+                    false,
+                    reason = "user_manual_pair"
+                )
                 device.userSelectedClass = selected
 
                 val profile = DeviceProfile(
@@ -141,13 +173,24 @@ class DeviceBindActivity : BaseActivity() {
                     selectedClass = selected,
                     userOverridden = true,
                 )
-                DeviceProfileStore.saveLastSelected(this@DeviceBindActivity, profile)
+                DeviceProfileStore.saveLastSelected(
+                    this@DeviceBindActivity,
+                    profile
+                )
 
                 val protocol = glassesProtocolManager.currentOrCreate(selected)
 
+                loadingDialog = LoadingDialog(this@DeviceBindActivity)
+                loadingDialog.setLoadingText(getString(R.string.text_22))
+                    .show()
+
                 if (protocol == null) {
-                    Log.w(TAG, "No protocol implementation for selected class: $selected")
-                    BleOperateManager.getInstance().connectDirectly(device.macAddress)
+                    Log.w(
+                        TAG,
+                        "No protocol implementation for selected class: $selected"
+                    )
+                    BleOperateManager.getInstance()
+                        .connectDirectly(device.macAddress)
                 } else {
                     val protocolDevice = GlassesDevice(
                         address = device.macAddress,
@@ -160,14 +203,31 @@ class DeviceBindActivity : BaseActivity() {
                     CoroutineScope(Dispatchers.Main).launch {
                         runCatching {
                             protocol.connect(protocolDevice)
-                        }.onFailure { error ->
-                            Log.e(TAG, "Protocol connect failed", error)
+                        }.onSuccess {
+                            preserveProtocolAfterSuccessfulConnect = true
+                            if (::loadingDialog.isInitialized) {
+                                loadingDialog.close()
+                            }
+                            finish()
                         }
+                            .onFailure { error ->
+                                Log.e(
+                                    TAG,
+                                    "Protocol connect failed",
+                                    error
+                                )
+                                if (::loadingDialog.isInitialized) {
+                                    loadingDialog.close()
+                                }
+                                Toast.makeText(
+                                    this@DeviceBindActivity,
+                                    "Connect failed: ${error.message ?: error.javaClass.simpleName}",
+                                    Toast.LENGTH_LONG,
+                                )
+                                    .show()
+                            }
                     }
                 }
-
-                loadingDialog = LoadingDialog(this@DeviceBindActivity)
-                loadingDialog.setLoadingText(getString(R.string.text_22)).show()
             }
             .setNegativeButton(android.R.string.cancel) { dialog, _ ->
                 dialog.dismiss()
@@ -181,14 +241,19 @@ class DeviceBindActivity : BaseActivity() {
         rssi: Int,
         scanRecord: ScanRecord? = null
     ) {
-        val sanitizedName = name?.trim()?.takeIf { it.isNotEmpty() }
-        val existingIndex = deviceList.indexOfFirst { it.macAddress.equals(mac, ignoreCase = true) }
+        val sanitizedName = name?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val existingIndex = deviceList.indexOfFirst {
+            it.macAddress.equals(
+                mac,
+                ignoreCase = true
+            )
+        }
 
         if (existingIndex >= 0) {
             val existing = deviceList[existingIndex]
             existing.rssi = rssi
 
-            // Update name if we got a better one.
             if (existing.advertisedName.isNullOrBlank() && sanitizedName != null) {
                 existing.advertisedName = sanitizedName
             }
@@ -198,17 +263,16 @@ class DeviceBindActivity : BaseActivity() {
                 existing.serviceUuids = uuids
             }
 
-            // Recompute detection if not overridden.
-            val newDetected = DeviceClassifier.guessDeviceClass(existing.advertisedName, existing.serviceUuids)
+            val newDetected = DeviceClassifier.guessDeviceClass(
+                existing.advertisedName,
+                existing.serviceUuids
+            )
             existing.setDetectedClass(newDetected)
 
-            // Do NOT reorder the list during scanning.
-            // Reordering causes the UI to "jump" and users can accidentally tap the wrong item.
             adapter.notifyItemChanged(existingIndex)
             return
         }
 
-        // Ignore unnamed devices to keep the pairing list focused and readable.
         if (sanitizedName == null) {
             return
         }
@@ -221,43 +285,61 @@ class DeviceBindActivity : BaseActivity() {
             serviceUuids = srUuids
         )
 
-        // Apply any previously saved per-device override.
-        val savedOverride = DeviceProfileStore.getUserOverrideForMac(this, mac)
+        val savedOverride = DeviceProfileStore.getUserOverrideForMac(
+            this,
+            mac
+        )
         if (savedOverride != null && savedOverride != newDevice.detectedClass) {
             newDevice.userSelectedClass = savedOverride
         }
 
         scanSize++
-        // Append new devices to keep existing item positions stable while the scan is running.
         deviceList.add(newDevice)
         adapter.notifyItemInserted(deviceList.size - 1)
 
         if (scanSize > 30) {
-            BleScannerHelper.getInstance().stopScan(this@DeviceBindActivity)
+            BleScannerHelper.getInstance()
+                .stopScan(this@DeviceBindActivity)
         }
     }
 
     inner class MyRunnable : Runnable {
         override fun run() {
-            BleScannerHelper.getInstance().stopScan(this@DeviceBindActivity)
+            BleScannerHelper.getInstance()
+                .stopScan(this@DeviceBindActivity)
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        glassesProtocolManager.close()
-        EventBus.getDefault().unregister(this)
+        if (!preserveProtocolAfterSuccessfulConnect) {
+            glassesProtocolManager.close()
+        }
+        EventBus.getDefault()
+            .unregister(this)
     }
 
     inner class PermissionCallback : OnPermissionCallback {
-        override fun onGranted(permissions: MutableList<String>, all: Boolean) {
+        override fun onGranted(
+            permissions: MutableList<String>,
+            all: Boolean
+        ) {
             // Permissions handled at app level; scan is started in onResume.
         }
 
-        override fun onDenied(permissions: MutableList<String>, never: Boolean) {
-            super.onDenied(permissions, never)
+        override fun onDenied(
+            permissions: MutableList<String>,
+            never: Boolean
+        ) {
+            super.onDenied(
+                permissions,
+                never
+            )
             if (never) {
-                XXPermissions.startPermissionActivity(this@DeviceBindActivity, permissions)
+                XXPermissions.startPermissionActivity(
+                    this@DeviceBindActivity,
+                    permissions
+                )
             }
         }
     }
@@ -266,7 +348,11 @@ class DeviceBindActivity : BaseActivity() {
         override fun onStart() {}
         override fun onStop() {}
 
-        override fun onLeScan(device: BluetoothDevice?, rssi: Int, scanRecord: ByteArray?) {
+        override fun onLeScan(
+            device: BluetoothDevice?,
+            rssi: Int,
+            scanRecord: ByteArray?
+        ) {
             val addr = device?.address ?: return
 
             val name = try {
@@ -275,14 +361,24 @@ class DeviceBindActivity : BaseActivity() {
                 null
             }
 
-            upsertDevice(addr, name, rssi)
+            upsertDevice(
+                addr,
+                name,
+                rssi
+            )
         }
 
         override fun onScanFailed(errorCode: Int) {
-            Log.w(TAG, "Scan failed: $errorCode")
+            Log.w(
+                TAG,
+                "Scan failed: $errorCode"
+            )
         }
 
-        override fun onParsedData(device: BluetoothDevice?, scanRecord: ScanRecord?) {
+        override fun onParsedData(
+            device: BluetoothDevice?,
+            scanRecord: ScanRecord?
+        ) {
             val addr = device?.address ?: return
             val name = try {
                 scanRecord?.deviceName ?: device.name
@@ -290,9 +386,18 @@ class DeviceBindActivity : BaseActivity() {
                 scanRecord?.deviceName
             }
 
-            // RSSI is not available here; keep existing RSSI if any.
-            val rssi = deviceList.firstOrNull { it.macAddress.equals(addr, true) }?.rssi ?: 0
-            upsertDevice(addr, name, rssi, scanRecord)
+            val rssi = deviceList.firstOrNull {
+                it.macAddress.equals(
+                    addr,
+                    true
+                )
+            }?.rssi ?: 0
+            upsertDevice(
+                addr,
+                name,
+                rssi,
+                scanRecord
+            )
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>?) {

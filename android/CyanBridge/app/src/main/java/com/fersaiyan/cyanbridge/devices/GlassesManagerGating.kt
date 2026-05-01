@@ -1,11 +1,11 @@
 package com.fersaiyan.cyanbridge.devices
 
 /**
- * Chapter 4: Glasses Manager baseline capability gating.
+ * Capability gating for the Glasses Manager screen.
  *
- * The MVP rule is intentionally simple:
- * - HEY_CYAN: show the expanded "extras" panel and status placeholders (battery/storage).
- * - Other classes: show meeting capture only (plus basic connection/pairing UI).
+ * Eyevue/S2 uses the same visible manager controls as the HeyCyan-class glasses,
+ * but the commands are routed through the GlassesProtocol abstraction instead of
+ * the legacy Oudmon/HeyCyan SDK connection state.
  */
 object GlassesManagerGating {
 
@@ -31,7 +31,7 @@ object GlassesManagerGating {
 
     fun visibleActions(deviceClass: DeviceClass): Set<Action> {
         val base = linkedSetOf(Action.MEETING_CAPTURE)
-        if (deviceClass == DeviceClass.HEY_CYAN) {
+        if (deviceClass == DeviceClass.HEY_CYAN || deviceClass == DeviceClass.EYEVUE_S2) {
             base.add(Action.HEY_CYAN_EXTRAS)
             base.add(Action.STATUS_BATTERY)
             base.add(Action.STATUS_STORAGE)

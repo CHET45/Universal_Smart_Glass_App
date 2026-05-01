@@ -47,6 +47,7 @@ import com.fersaiyan.cyanbridge.audio.MeetingCapturePrefs
 import com.fersaiyan.cyanbridge.audio.MeetingCaptureService
 import com.fersaiyan.cyanbridge.chat.ChatStore
 import com.fersaiyan.cyanbridge.databinding.AcitivytMainBinding
+import com.fersaiyan.cyanbridge.devices.DeviceClass
 import com.fersaiyan.cyanbridge.devices.DeviceProfileStore
 import com.fersaiyan.cyanbridge.devices.GlassesManagerGating
 import com.fersaiyan.cyanbridge.localagent.LocalAgentController
@@ -68,7 +69,10 @@ import com.fersaiyan.cyanbridge.media.autocapture.GlassesSyncedAudioIngestor
 import com.fersaiyan.cyanbridge.memoryvault.MemoryPolicyService
 import com.fersaiyan.cyanbridge.protocol.AppGlassesProtocolManager
 import com.fersaiyan.cyanbridge.protocol.GlassesCommandResult
+import com.fersaiyan.cyanbridge.protocol.GlassesConnectionState
 import com.fersaiyan.cyanbridge.protocol.GlassesDevice
+import com.fersaiyan.cyanbridge.protocol.GlassesEvent
+import com.fersaiyan.cyanbridge.protocol.GlassesProtocol
 import com.fersaiyan.cyanbridge.ui.AutoPairManager
 import com.fersaiyan.cyanbridge.ui.BatteryOptimizationGuideActivity
 import com.fersaiyan.cyanbridge.ui.BluetoothEvent
@@ -103,6 +107,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
@@ -282,6 +287,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private val batteryPollIntervalMs = 60_000L
     private var pendingBatteryToast = false
     private var batteryCallbackRegistered = false
+    private var protocolConnectionStateJob: Job? = null
+    private var protocolEventsJob: Job? = null
 
     // Chapter 5: meeting capture UI + state
     private val meetingTimerOptions: List<Pair<Long?, String>> = listOf(
@@ -363,7 +370,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             EventBus.getDefault()
                 .register(this)
         }
-        updateConnectionStatus(BleOperateManager.getInstance().isConnected)
+        bindCurrentProtocolUi()
         registerMeetingCaptureReceiver()
         syncMeetingCaptureUiFromPrefs()
 
@@ -382,6 +389,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onStop() {
         super.onStop()
         stopBatteryPolling()
+        unbindCurrentProtocolUi()
         unregisterMeetingCaptureReceiver()
 
         if (agentReceiverRegistered) {
@@ -527,7 +535,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     }
 
-    private fun currentGlassesProtocolOrToast(): com.fersaiyan.cyanbridge.protocol.GlassesProtocol? {
+    private fun currentGlassesProtocolOrNull(): GlassesProtocol? {
+        val selectedClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass
+        return glassesProtocolManager.currentOrCreate(selectedClass)
+    }
+
+    private fun currentGlassesProtocolOrToast(): GlassesProtocol? {
         val selectedClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass
         val protocol = glassesProtocolManager.currentOrCreate(selectedClass)
 
@@ -545,6 +558,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun currentGlassesDevice(): GlassesDevice? {
+        val profile = DeviceProfileStore.loadLastSelected(this)
+        val protocol = currentGlassesProtocolOrToast() ?: return null
+
+        if (profile?.selectedClass == DeviceClass.EYEVUE_S2) {
+            if (profile.macAddress.isBlank()) {
+                Toast.makeText(
+                    this,
+                    "No saved Eyevue/S2 address",
+                    Toast.LENGTH_SHORT
+                )
+                    .show()
+                return null
+            }
+
+            return GlassesDevice(
+                address = profile.macAddress,
+                name = profile.advertisedName,
+                protocolHint = protocol.id,
+            )
+        }
+
         val address = try {
             DeviceManager.getInstance().deviceAddress
         } catch (_: Throwable) {
@@ -567,13 +601,90 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             null
         }
 
-        val protocol = currentGlassesProtocolOrToast() ?: return null
-
         return GlassesDevice(
             address = address,
             name = name,
             protocolHint = protocol.id,
         )
+    }
+
+    private fun bindCurrentProtocolUi() {
+        unbindCurrentProtocolUi()
+
+        val profile = DeviceProfileStore.loadLastSelected(this)
+        val protocol = glassesProtocolManager.currentOrCreate(profile?.selectedClass)
+
+        updateConnectionStatus(isProtocolStateConnected(profile?.selectedClass, protocol?.connectionState?.value))
+
+        if (protocol == null) {
+            return
+        }
+
+        protocolConnectionStateJob = CoroutineScope(Dispatchers.Main).launch {
+            protocol.connectionState.collect { state ->
+                Log.i("GlassesProtocol", "Current protocol state: $state")
+                updateConnectionStatus(isProtocolStateConnected(profile?.selectedClass, state))
+            }
+        }
+
+        protocolEventsJob = CoroutineScope(Dispatchers.Main).launch {
+            protocol.events.collect { event ->
+                when (event) {
+                    is GlassesEvent.BatteryChanged -> updateBatteryText(event.battery.percent)
+                    is GlassesEvent.MediaCountsChanged -> {
+                        binding.storageText.text = "${event.counts.total} files"
+                    }
+                    is GlassesEvent.ButtonPressed -> handleProtocolButtonEvent(event)
+                    is GlassesEvent.ConnectionChanged -> {
+                        updateConnectionStatus(isProtocolStateConnected(profile?.selectedClass, event.state))
+                    }
+                    is GlassesEvent.Error -> {
+                        Log.w("GlassesProtocol", "Protocol error: ${event.error.code}: ${event.error.message}")
+                    }
+                    is GlassesEvent.DeviceInfoChanged,
+                    is GlassesEvent.RawPacket -> Unit
+                }
+            }
+        }
+    }
+
+    private fun unbindCurrentProtocolUi() {
+        protocolConnectionStateJob?.cancel()
+        protocolConnectionStateJob = null
+        protocolEventsJob?.cancel()
+        protocolEventsJob = null
+    }
+
+    private fun isProtocolStateConnected(
+        selectedClass: DeviceClass?,
+        state: GlassesConnectionState?,
+    ): Boolean {
+        return when (selectedClass) {
+            null,
+            DeviceClass.HEY_CYAN -> BleOperateManager.getInstance().isConnected || state is GlassesConnectionState.Connected
+            DeviceClass.EYEVUE_S2 -> state is GlassesConnectionState.Connected
+            DeviceClass.META_RAYBAN,
+            DeviceClass.GENERIC_AUDIO,
+            DeviceClass.UNKNOWN -> state is GlassesConnectionState.Connected
+        }
+    }
+
+    private fun currentProtocolIsConnected(): Boolean {
+        val profile = DeviceProfileStore.loadLastSelected(this)
+        val protocol = glassesProtocolManager.currentOrCreate(profile?.selectedClass)
+        return isProtocolStateConnected(profile?.selectedClass, protocol?.connectionState?.value)
+    }
+
+    private fun handleProtocolButtonEvent(event: GlassesEvent.ButtonPressed) {
+        when (event.button) {
+            GlassesEvent.Button.PHOTO,
+            GlassesEvent.Button.AI -> binding.btnCamera.performClick()
+            GlassesEvent.Button.VIDEO -> binding.btnVideo.performClick()
+            GlassesEvent.Button.AUDIO -> binding.btnRecord.performClick()
+            GlassesEvent.Button.VOLUME_UP,
+            GlassesEvent.Button.VOLUME_DOWN,
+            GlassesEvent.Button.UNKNOWN -> Unit
+        }
     }
 
     private fun showCommandResult(
@@ -1597,7 +1708,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
         batteryPollJob = CoroutineScope(Dispatchers.Main).launch {
             while (isActive) {
-                if (BleOperateManager.getInstance().isConnected) {
+                if (currentProtocolIsConnected()) {
                     requestBatteryStatus(showToast = false)
                 } else {
                     updateBatteryText(null)
@@ -2210,7 +2321,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         triggerCapture: Boolean,
         sourceTag: String
     ) {
-        if (!BleOperateManager.getInstance().isConnected) {
+        if (!currentProtocolIsConnected()) {
             runOnUiThread {
                 Toast.makeText(
                     this@MainActivity,
@@ -3132,7 +3243,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
 
     private fun updateConnectionStatus(connected: Boolean) {
-        val deviceName = DeviceManager.getInstance().deviceName
+        val profile = DeviceProfileStore.loadLastSelected(this)
+        val deviceName = if (profile?.selectedClass == DeviceClass.EYEVUE_S2) {
+            profile.advertisedName
+        } else {
+            DeviceManager.getInstance().deviceName
+        }
+
         val status = if (connected) {
             if (!deviceName.isNullOrBlank()) {
                 "Connected - $deviceName"
@@ -3487,6 +3604,59 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun requestBatteryStatus(showToast: Boolean) {
+        val selectedClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass
+
+        if (selectedClass == DeviceClass.EYEVUE_S2) {
+            if (showToast) {
+                pendingBatteryToast = true
+                Toast.makeText(
+                    this@MainActivity,
+                    "Requesting battery level…",
+                    Toast.LENGTH_SHORT
+                )
+                    .show()
+            }
+
+            val protocol = currentGlassesProtocolOrNull()
+            if (protocol == null) {
+                pendingBatteryToast = false
+                return
+            }
+
+            CoroutineScope(Dispatchers.Main).launch {
+                val result = protocol.requestBattery()
+                result.onSuccess { battery ->
+                    updateBatteryText(battery.percent)
+                    if (pendingBatteryToast) {
+                        val chargingText = when (battery.charging) {
+                            true -> "charging"
+                            false -> "not charging"
+                            null -> "charging unknown"
+                        }
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Battery: ${battery.percent}% ($chargingText)",
+                            Toast.LENGTH_LONG,
+                        )
+                            .show()
+                        pendingBatteryToast = false
+                    }
+                }.onFailure { error ->
+                    Log.w("BatteryCallback", "Eyevue/S2 battery request failed", error)
+                    if (pendingBatteryToast) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Failed to get battery: ${error.message ?: error.javaClass.simpleName}",
+                            Toast.LENGTH_LONG,
+                        )
+                            .show()
+                        pendingBatteryToast = false
+                    }
+                }
+            }
+            return
+        }
+
         if (showToast) {
             pendingBatteryToast = true
             Toast.makeText(
