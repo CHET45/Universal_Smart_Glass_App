@@ -16,12 +16,17 @@ class EyevueS2GlassesProtocolProvider(
         if (device.protocolHint == id) return true
 
         val hasKnownService = device.serviceUuids.any {
-            it.equals(EyevueS2PacketCodec.SERVICE_UUID.toString(), ignoreCase = true)
+            it.equals(
+                EyevueS2PacketCodec.SERVICE_UUID.toString(),
+                ignoreCase = true
+            )
         }
         if (hasKnownService) return true
 
-        val name = device.name?.trim().orEmpty().lowercase()
-        return name.contains("eyevue") || name.contains("s2") || name.contains("lensiq")
+        val lower = device.name?.trim()
+            .orEmpty()
+            .lowercase()
+        return lower.contains("eyevue") || lower.contains("eye") || lower.contains("vue") || lower.contains("s100") || lower.contains("lensiq") || lower.contains("s2")
     }
 
     override fun create(): GlassesProtocol = getShared(activity.applicationContext)

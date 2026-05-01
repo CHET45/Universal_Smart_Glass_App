@@ -17,7 +17,6 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.util.Log
 import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
@@ -89,6 +88,8 @@ class EyevueS2GlassesProtocol(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var markedConnected = false
     private var initialQueriesScheduled = false
+    private var serviceDiscoveryStarted = false
+    private var serviceDiscoveryAttempts = 0
 
     private var connectDeferred: CompletableDeferred<Unit>? = null
     private var pendingBattery: CompletableDeferred<GlassesBattery>? = null
@@ -152,11 +153,9 @@ class EyevueS2GlassesProtocol(
             }
         }
 
-        val filters = listOf(
-            ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(EyevueS2PacketCodec.SERVICE_UUID))
-                .build()
-        )
+        // Do not hard-filter by aa12. Some S100/Eyevue units do not include
+        // the primary service UUID in advertising; matchesFilter() still applies.
+        val filters = emptyList<ScanFilter>()
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
@@ -168,14 +167,14 @@ class EyevueS2GlassesProtocol(
                 callback
             )
         }.onFailure { error ->
-                val protocolError = error.toProtocolError(
-                    "SCAN_START_FAILED",
-                    "Failed to start Eyevue S2 scan"
-                )
-                _events.tryEmit(GlassesEvent.Error(protocolError))
-                setState(GlassesConnectionState.Failed(protocolError))
-                close(error)
-            }
+            val protocolError = error.toProtocolError(
+                "SCAN_START_FAILED",
+                "Failed to start Eyevue S2 scan"
+            )
+            _events.tryEmit(GlassesEvent.Error(protocolError))
+            setState(GlassesConnectionState.Failed(protocolError))
+            close(error)
+        }
 
         val timeoutJob = launch {
             delay(filter.timeoutMillis)
@@ -198,6 +197,8 @@ class EyevueS2GlassesProtocol(
         lastDevice = device.copy(protocolHint = id)
         markedConnected = false
         initialQueriesScheduled = false
+        serviceDiscoveryStarted = false
+        serviceDiscoveryAttempts = 0
         setState(GlassesConnectionState.Connecting(lastDevice ?: device))
 
         val adapter = bluetoothManager.adapter
@@ -232,6 +233,8 @@ class EyevueS2GlassesProtocol(
         gatt = null
         markedConnected = false
         initialQueriesScheduled = false
+        serviceDiscoveryStarted = false
+        serviceDiscoveryAttempts = 0
         writeCharacteristic = null
         cmdNotifyCharacteristic = null
         photoNotifyCharacteristic = null
@@ -323,7 +326,6 @@ class EyevueS2GlassesProtocol(
                 message = "Eyevue S2 media download needs the Wi-Fi/P2P HTTP layer from the source pack: 192.168.49.207 file-list/download/delete endpoints.",
             )
         )
-
     )
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -333,10 +335,15 @@ class EyevueS2GlassesProtocol(
         gatt = null
         markedConnected = false
         initialQueriesScheduled = false
+        serviceDiscoveryStarted = false
+        serviceDiscoveryAttempts = 0
         connectDeferred = null
         pendingBattery = null
         pendingDeviceInfo = null
         pendingMediaCounts = null
+        writeCharacteristic = null
+        cmdNotifyCharacteristic = null
+        photoNotifyCharacteristic = null
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -360,49 +367,14 @@ class EyevueS2GlassesProtocol(
 
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    Log.i(
-                        TAG,
-                        "GATT STATE_CONNECTED: ${gatt.device?.address}"
-                    )
-
-                    // Do not block the pairing screen on service discovery. Some ESP32/NimBLE
-                    // peripherals report the central connection immediately, but Android can delay
-                    // or miss onServicesDiscovered(). For the UI, the BLE link itself is enough.
-                    completeBleLinkConnected()
-
-                    runCatching { gatt.requestMtu(247) }.onFailure {
-                            Log.w(
-                                TAG,
-                                "requestMtu failed",
-                                it
-                            )
-                        }
-
-                    mainHandler.postDelayed(
-                        {
-                            runCatching { gatt.discoverServices() }.onFailure { error ->
-                                    Log.e(
-                                        TAG,
-                                        "discoverServices failed",
-                                        error
-                                    )
-                                    _events.tryEmit(
-                                        GlassesEvent.Error(
-                                            GlassesProtocolError(
-                                                "SERVICE_DISCOVERY_START_FAILED",
-                                                error.message
-                                                    ?: "Eyevue S2 service discovery did not start",
-                                                error,
-                                            )
-                                        )
-                                    )
-                                }
-                        },
-                        250L
-                    )
+                    Log.i(TAG, "GATT STATE_CONNECTED: ${gatt.device?.address}")
+                    startServiceDiscovery(gatt)
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    connectDeferred?.completeExceptionally(
+                        IllegalStateException("Eyevue S2 disconnected before GATT protocol was ready")
+                    )
                     setState(GlassesConnectionState.Disconnected("gatt disconnected"))
                 }
             }
@@ -456,19 +428,15 @@ class EyevueS2GlassesProtocol(
                 return
             }
 
-            // From this point the GATT link is usable for commands. Do not depend on the
-            // legacy HeyCyan EventBus here; Eyevue/S100 is a direct GATT protocol.
-            enableNotify(
-                gatt,
-                cmdNotifyCharacteristic!!
-            )
-            photoNotifyCharacteristic?.let {
-                enableNotify(
-                    gatt,
-                    it
+            // From this point the GATT link can become usable, but connect() must
+            // complete only after the command notification CCCD write succeeds.
+            if (!enableNotify(gatt, cmdNotifyCharacteristic!!)) {
+                failProtocolReady(
+                    "ENABLE_NOTIFY_FAILED",
+                    "Failed to enable Eyevue S2 command notifications"
                 )
+                return
             }
-            markConnected()
         }
 
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -477,27 +445,33 @@ class EyevueS2GlassesProtocol(
             descriptor: BluetoothGattDescriptor,
             status: Int
         ) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.w(
-                    TAG,
-                    "Descriptor write failed: $status"
-                )
-            }
+            val uuid = descriptor.characteristic.uuid
 
-            if (descriptor.characteristic.uuid == EyevueS2PacketCodec.CMD_NOTIFY_UUID) {
+            if (uuid == EyevueS2PacketCodec.CMD_NOTIFY_UUID) {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    failProtocolReady(
+                        "DESCRIPTOR_WRITE_FAILED",
+                        "Eyevue S2 command descriptor write failed: $status"
+                    )
+                    return
+                }
+
                 val photo = photoNotifyCharacteristic
                 if (photo != null) {
-                    enableNotify(
-                        gatt,
-                        photo
-                    )
+                    if (!enableNotify(gatt, photo)) {
+                        Log.w(TAG, "Failed to enable optional Eyevue S2 photo notifications")
+                        markConnected()
+                    }
                 } else {
                     markConnected()
                 }
                 return
             }
 
-            if (descriptor.characteristic.uuid == EyevueS2PacketCodec.PHOTO_NOTIFY_UUID) {
+            if (uuid == EyevueS2PacketCodec.PHOTO_NOTIFY_UUID) {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    Log.w(TAG, "Optional Eyevue S2 photo descriptor write failed: $status")
+                }
                 markConnected()
             }
         }
@@ -522,6 +496,53 @@ class EyevueS2GlassesProtocol(
                 value
             )
         }
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun startServiceDiscovery(
+        gatt: BluetoothGatt,
+        delayMillis: Long = 250L,
+    ) {
+        mainHandler.postDelayed(
+            {
+                if (!hasBleConnectPermission()) {
+                    failProtocolReady(
+                        "MISSING_PERMISSION",
+                        "Missing BLE connect permission during Eyevue S2 service discovery"
+                    )
+                    return@postDelayed
+                }
+
+                if (serviceDiscoveryStarted) return@postDelayed
+
+                serviceDiscoveryAttempts += 1
+                var failure: Throwable? = null
+                val started = try {
+                    gatt.discoverServices()
+                } catch (error: Throwable) {
+                    failure = error
+                    false
+                }
+
+                Log.i(TAG, "discoverServices attempt=$serviceDiscoveryAttempts started=$started")
+
+                if (started) {
+                    serviceDiscoveryStarted = true
+                    return@postDelayed
+                }
+
+                if (serviceDiscoveryAttempts < SERVICE_DISCOVERY_MAX_ATTEMPTS) {
+                    startServiceDiscovery(gatt, SERVICE_DISCOVERY_RETRY_DELAY_MS)
+                } else {
+                    failProtocolReady(
+                        "SERVICE_DISCOVERY_START_FAILED",
+                        failure?.message ?: "Eyevue S2 service discovery did not start",
+                        failure,
+                    )
+                }
+            },
+            delayMillis,
+        )
     }
 
     private fun completeBleLinkConnected() {
@@ -599,6 +620,7 @@ class EyevueS2GlassesProtocol(
                     parsed.second
                 )
                 pendingBattery?.complete(battery)
+                pendingBattery = null
                 _events.tryEmit(GlassesEvent.BatteryChanged(battery))
             }
 
@@ -609,6 +631,7 @@ class EyevueS2GlassesProtocol(
                     parsed.second
                 )
                 pendingBattery?.complete(battery)
+                pendingBattery = null
                 _events.tryEmit(GlassesEvent.BatteryChanged(battery))
             }
 
@@ -626,6 +649,7 @@ class EyevueS2GlassesProtocol(
                     ),
                 )
                 pendingDeviceInfo?.complete(info)
+                pendingDeviceInfo = null
                 _events.tryEmit(GlassesEvent.DeviceInfoChanged(info))
             }
 
@@ -633,6 +657,7 @@ class EyevueS2GlassesProtocol(
                 val count = EyevueS2PacketCodec.parseThumbnailCount(packet.payload) ?: return
                 val counts = GlassesMediaCounts(photos = count)
                 pendingMediaCounts?.complete(counts)
+                pendingMediaCounts = null
                 _events.tryEmit(GlassesEvent.MediaCountsChanged(counts))
             }
 
@@ -649,45 +674,48 @@ class EyevueS2GlassesProtocol(
     }
 
     private fun handleActionSync(payload: ByteArray) {
-        if (payload.getOrNull(0)
-                ?.toInt() == 1
-        ) _events.tryEmit(
+        if (payload.getOrNull(0)?.toInt() == 1) _events.tryEmit(
             GlassesEvent.ButtonPressed(
                 GlassesEvent.Button.PHOTO,
                 EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
             )
         )
-        if (payload.getOrNull(1)
-                ?.toInt() == 1
-        ) _events.tryEmit(
+        if (payload.getOrNull(1)?.toInt() == 1) _events.tryEmit(
             GlassesEvent.ButtonPressed(
                 GlassesEvent.Button.AUDIO,
                 EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
             )
         )
-        if (payload.getOrNull(2)
-                ?.toInt() == 1
-        ) _events.tryEmit(
+        if (payload.getOrNull(2)?.toInt() == 1) _events.tryEmit(
             GlassesEvent.ButtonPressed(
                 GlassesEvent.Button.VIDEO,
                 EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
             )
         )
-        if (payload.getOrNull(3)
-                ?.toInt() == 1
-        ) _events.tryEmit(
+        if (payload.getOrNull(3)?.toInt() == 1) _events.tryEmit(
             GlassesEvent.ButtonPressed(
                 GlassesEvent.Button.VOLUME_UP,
                 EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
             )
         )
-        if (payload.getOrNull(4)
-                ?.toInt() == 1
-        ) _events.tryEmit(
+        if (payload.getOrNull(4)?.toInt() == 1) _events.tryEmit(
             GlassesEvent.ButtonPressed(
                 GlassesEvent.Button.VOLUME_DOWN,
                 EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
             )
+        )
+    }
+
+    private fun failProtocolReady(
+        code: String,
+        message: String,
+        cause: Throwable? = null,
+    ) {
+        val error = GlassesProtocolError(code, message, cause)
+        _events.tryEmit(GlassesEvent.Error(error))
+        setState(GlassesConnectionState.Failed(error))
+        connectDeferred?.completeExceptionally(
+            IllegalStateException(message, cause)
         )
     }
 
@@ -733,19 +761,21 @@ class EyevueS2GlassesProtocol(
     private fun enableNotify(
         gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic
-    ) {
-        if (!hasBleConnectPermission()) return
-        gatt.setCharacteristicNotification(
+    ): Boolean {
+        if (!hasBleConnectPermission()) return false
+        val localEnabled = gatt.setCharacteristicNotification(
             characteristic,
             true
         )
-        val descriptor = characteristic.getDescriptor(EyevueS2PacketCodec.CCCD_UUID) ?: return
+        if (!localEnabled) return false
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val descriptor = characteristic.getDescriptor(EyevueS2PacketCodec.CCCD_UUID) ?: return false
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             gatt.writeDescriptor(
                 descriptor,
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            )
+            ) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION") descriptor.value =
                 BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
@@ -827,5 +857,7 @@ class EyevueS2GlassesProtocol(
         private const val TAG = "EyevueS2Protocol"
         private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val COMMAND_TIMEOUT_MS = 5_000L
+        private const val SERVICE_DISCOVERY_MAX_ATTEMPTS = 8
+        private const val SERVICE_DISCOVERY_RETRY_DELAY_MS = 500L
     }
 }

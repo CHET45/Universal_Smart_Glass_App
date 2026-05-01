@@ -10,8 +10,13 @@ class ScannedDevice(
     var advertisedName: String?,
     var rssi: Int,
     var serviceUuids: List<ParcelUuid> = emptyList(),
+    var rawScanRecord: ByteArray = ByteArray(0),
 ) {
-    var detectedClass: DeviceClass = DeviceClassifier.guessDeviceClass(advertisedName, serviceUuids)
+    var detectedClass: DeviceClass = DeviceClassifier.guessDeviceClass(
+        advertisedName,
+        serviceUuids,
+        rawScanRecord,
+    )
         private set
 
     /**

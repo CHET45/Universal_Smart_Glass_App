@@ -84,6 +84,8 @@ class HscH515GlassesProtocol(
     private var lastDevice: GlassesDevice? = null
     private var markedConnected = false
     private var initialQueriesScheduled = false
+    private var serviceDiscoveryStarted = false
+    private var serviceDiscoveryAttempts = 0
 
     private var connectDeferred: CompletableDeferred<Unit>? = null
     private var pendingBattery: CompletableDeferred<GlassesBattery>? = null
@@ -174,6 +176,8 @@ class HscH515GlassesProtocol(
         cachedSupportFeatures = null
         markedConnected = false
         initialQueriesScheduled = false
+        serviceDiscoveryStarted = false
+        serviceDiscoveryAttempts = 0
         frameDecoder.clear()
         setState(GlassesConnectionState.Connecting(lastDevice ?: device))
 
@@ -290,30 +294,13 @@ class HscH515GlassesProtocol(
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     Log.i(TAG, "GATT STATE_CONNECTED: ${gatt.device?.address}")
-                    completeBleLinkConnected()
-                    runCatching { gatt.requestMtu(247) }
-                        .onFailure { Log.w(TAG, "requestMtu failed", it) }
-                    mainHandler.postDelayed(
-                        {
-                            runCatching { gatt.discoverServices() }
-                                .onFailure { error ->
-                                    Log.e(TAG, "discoverServices failed", error)
-                                    _events.tryEmit(
-                                        GlassesEvent.Error(
-                                            GlassesProtocolError(
-                                                "SERVICE_DISCOVERY_START_FAILED",
-                                                error.message ?: "HSC/H5-15 service discovery did not start",
-                                                error,
-                                            )
-                                        )
-                                    )
-                                }
-                        },
-                        250L,
-                    )
+                    startServiceDiscovery(gatt)
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    connectDeferred?.completeExceptionally(
+                        IllegalStateException("HSC/H5-15 disconnected before GATT protocol was ready")
+                    )
                     setState(GlassesConnectionState.Disconnected("gatt disconnected"))
                     clearGattState(keepGattReference = false)
                 }
@@ -351,8 +338,30 @@ class HscH515GlassesProtocol(
                 return
             }
 
-            enableNotify(gatt, readCharacteristic!!)
-            markConnected()
+            if (!enableNotify(gatt, readCharacteristic!!)) {
+                failProtocolReady(
+                    "ENABLE_NOTIFY_FAILED",
+                    "Failed to enable HSC/H5-15 read notifications"
+                )
+            }
+        }
+
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int,
+        ) {
+            if (descriptor.characteristic.uuid != HscH515PacketCodec.READ_UUID) return
+
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                markConnected()
+            } else {
+                failProtocolReady(
+                    "DESCRIPTOR_WRITE_FAILED",
+                    "HSC/H5-15 descriptor write failed: $status"
+                )
+            }
         }
 
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
@@ -367,6 +376,53 @@ class HscH515GlassesProtocol(
         ) {
             onCharacteristicBytes(characteristic.uuid.toString(), value)
         }
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun startServiceDiscovery(
+        gatt: BluetoothGatt,
+        delayMillis: Long = 250L,
+    ) {
+        mainHandler.postDelayed(
+            {
+                if (!hasBleConnectPermission()) {
+                    failProtocolReady(
+                        "MISSING_PERMISSION",
+                        "Missing BLE connect permission during HSC/H5-15 service discovery"
+                    )
+                    return@postDelayed
+                }
+
+                if (serviceDiscoveryStarted) return@postDelayed
+
+                serviceDiscoveryAttempts += 1
+                var failure: Throwable? = null
+                val started = try {
+                    gatt.discoverServices()
+                } catch (error: Throwable) {
+                    failure = error
+                    false
+                }
+
+                Log.i(TAG, "discoverServices attempt=$serviceDiscoveryAttempts started=$started")
+
+                if (started) {
+                    serviceDiscoveryStarted = true
+                    return@postDelayed
+                }
+
+                if (serviceDiscoveryAttempts < SERVICE_DISCOVERY_MAX_ATTEMPTS) {
+                    startServiceDiscovery(gatt, SERVICE_DISCOVERY_RETRY_DELAY_MS)
+                } else {
+                    failProtocolReady(
+                        "SERVICE_DISCOVERY_START_FAILED",
+                        failure?.message ?: "HSC/H5-15 service discovery did not start",
+                        failure,
+                    )
+                }
+            },
+            delayMillis,
+        )
     }
 
     private fun completeBleLinkConnected() {
@@ -524,6 +580,19 @@ class HscH515GlassesProtocol(
         _events.tryEmit(GlassesEvent.DeviceInfoChanged(info))
     }
 
+    private fun failProtocolReady(
+        code: String,
+        message: String,
+        cause: Throwable? = null,
+    ) {
+        val error = GlassesProtocolError(code, message, cause)
+        _events.tryEmit(GlassesEvent.Error(error))
+        setState(GlassesConnectionState.Failed(error))
+        connectDeferred?.completeExceptionally(
+            IllegalStateException(message, cause)
+        )
+    }
+
     private suspend fun sendCommand(commandName: String, bytes: ByteArray): GlassesCommandResult {
         return if (write(bytes)) {
             GlassesCommandResult.Accepted
@@ -557,18 +626,20 @@ class HscH515GlassesProtocol(
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-    private fun enableNotify(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-        if (!hasBleConnectPermission()) return
-        gatt.setCharacteristicNotification(characteristic, true)
-        val descriptor = characteristic.getDescriptor(HscH515PacketCodec.CCCD_UUID) ?: return
+    private fun enableNotify(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic): Boolean {
+        if (!hasBleConnectPermission()) return false
+        val localEnabled = gatt.setCharacteristicNotification(characteristic, true)
+        if (!localEnabled) return false
+
+        val descriptor = characteristic.getDescriptor(HscH515PacketCodec.CCCD_UUID) ?: return false
         val enableValue = if ((characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0) {
             BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
         } else {
             BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(descriptor, enableValue)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, enableValue) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION") descriptor.value = enableValue
             @Suppress("DEPRECATION") gatt.writeDescriptor(descriptor)
@@ -634,6 +705,8 @@ class HscH515GlassesProtocol(
         if (!keepGattReference) gatt = null
         markedConnected = false
         initialQueriesScheduled = false
+        serviceDiscoveryStarted = false
+        serviceDiscoveryAttempts = 0
         connectDeferred = null
         pendingBattery = null
         pendingDeviceInfo = null
@@ -647,6 +720,8 @@ class HscH515GlassesProtocol(
         private const val TAG = "HscH515Protocol"
         private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val COMMAND_TIMEOUT_MS = 5_000L
+        private const val SERVICE_DISCOVERY_MAX_ATTEMPTS = 8
+        private const val SERVICE_DISCOVERY_RETRY_DELAY_MS = 500L
 
         private const val DEVICE_CONTROL_TAKE_PHOTO = 8
         private const val DEVICE_CONTROL_START_VIDEO = 9

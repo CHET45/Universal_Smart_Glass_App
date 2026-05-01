@@ -240,10 +240,12 @@ class DeviceBindActivity : BaseActivity() {
         mac: String,
         name: String?,
         rssi: Int,
-        scanRecord: ScanRecord? = null
+        scanRecord: ScanRecord? = null,
+        rawScanRecord: ByteArray? = null,
     ) {
         val sanitizedName = name?.trim()
             ?.takeIf { it.isNotEmpty() }
+        val effectiveRawScanRecord = rawScanRecord?.takeIf { it.isNotEmpty() }
         val srUuids = scanRecord?.serviceUuids.orEmpty()
         val existingIndex = deviceList.indexOfFirst {
             it.macAddress.equals(
@@ -265,16 +267,21 @@ class DeviceBindActivity : BaseActivity() {
                 existing.serviceUuids = uuids
             }
 
+            if (effectiveRawScanRecord != null) {
+                existing.rawScanRecord = effectiveRawScanRecord
+            }
+
             val newDetected = DeviceClassifier.guessDeviceClass(
                 existing.advertisedName,
-                existing.serviceUuids
+                existing.serviceUuids,
+                existing.rawScanRecord,
             )
             existing.setDetectedClass(newDetected)
 
             adapter.notifyItemChanged(existingIndex)
             return
         }
-        if (sanitizedName == null && DeviceClassifier.guessDeviceClass(null, srUuids) == DeviceClass.UNKNOWN) {
+        if (sanitizedName == null && DeviceClassifier.guessDeviceClass(null, srUuids, effectiveRawScanRecord) == DeviceClass.UNKNOWN) {
             return
         }
 
@@ -282,7 +289,8 @@ class DeviceBindActivity : BaseActivity() {
             macAddress = mac,
             advertisedName = sanitizedName,
             rssi = rssi,
-            serviceUuids = srUuids
+            serviceUuids = srUuids,
+            rawScanRecord = effectiveRawScanRecord ?: ByteArray(0),
         )
 
         val savedOverride = DeviceProfileStore.getUserOverrideForMac(
@@ -364,7 +372,8 @@ class DeviceBindActivity : BaseActivity() {
             upsertDevice(
                 addr,
                 name,
-                rssi
+                rssi,
+                rawScanRecord = scanRecord,
             )
         }
 
