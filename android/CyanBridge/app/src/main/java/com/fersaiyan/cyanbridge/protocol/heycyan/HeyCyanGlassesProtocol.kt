@@ -31,7 +31,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -360,14 +359,19 @@ class HeyCyanGlassesProtocol(
             ),
         )
 
-    override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = flowOf(
-        GlassesTransferEvent.Failed(
-            GlassesProtocolError(
-                code = "NOT_MOVED_YET",
-                message = "HeyCyan media download is still implemented in MainActivity Wi-Fi P2P flow. Move that flow here next.",
-            ),
-        ),
-    )
+    override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = callbackFlow {
+        val downloader = HeyCyanWifiMediaDownloader(
+            activity = activity,
+            options = options,
+            emit = { event -> trySend(event).isSuccess },
+        )
+
+        downloader.start()
+
+        awaitClose {
+            downloader.close()
+        }
+    }
 
     override fun close() {
         runCatching {

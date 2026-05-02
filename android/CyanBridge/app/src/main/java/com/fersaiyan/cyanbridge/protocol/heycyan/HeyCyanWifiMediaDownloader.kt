@@ -9,11 +9,7 @@ import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
 import android.os.Environment
 import android.util.Log
-import com.fersaiyan.cyanbridge.protocol.GlassesDevice
-import com.fersaiyan.cyanbridge.protocol.GlassesProtocol
 import com.fersaiyan.cyanbridge.protocol.GlassesProtocolError
-import com.fersaiyan.cyanbridge.protocol.GlassesProtocolId
-import com.fersaiyan.cyanbridge.protocol.GlassesProtocolProvider
 import com.fersaiyan.cyanbridge.protocol.GlassesTransferEvent
 import com.fersaiyan.cyanbridge.protocol.MediaDownloadOptions
 import com.fersaiyan.cyanbridge.ui.bleIpBridge
@@ -25,10 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -41,48 +34,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * HeyCyan/Oudmon protocol wrapper that keeps the existing BLE implementation but moves
- * Wi-Fi Direct media import out of MainActivity and into the protocol boundary.
- */
-class HeyCyanMediaDownloadProtocol(
-    private val activity: Activity,
-    private val delegate: GlassesProtocol = HeyCyanGlassesProtocol(activity),
-) : GlassesProtocol by delegate {
-
-    override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = callbackFlow {
-        val downloader = HeyCyanWifiMediaDownloader(
-            activity = activity,
-            options = options,
-            emit = { event -> trySend(event).isSuccess },
-        )
-
-        downloader.start()
-
-        awaitClose {
-            downloader.close()
-        }
-    }
-
-    override fun close() {
-        delegate.close()
-    }
-}
-
-class HeyCyanMediaDownloadProtocolProvider(
-    private val activity: Activity,
-) : GlassesProtocolProvider {
-
-    private val legacyProvider = HeyCyanGlassesProtocolProvider(activity)
-
-    override val id: GlassesProtocolId = GlassesProtocolId.HEY_CYAN
-
-    override fun supports(device: GlassesDevice): Boolean = legacyProvider.supports(device)
-
-    override fun create(): GlassesProtocol = HeyCyanMediaDownloadProtocol(activity)
-}
-
-private class HeyCyanWifiMediaDownloader(
+internal class HeyCyanWifiMediaDownloader(
     private val activity: Activity,
     private val options: MediaDownloadOptions,
     private val emit: (GlassesTransferEvent) -> Boolean,
