@@ -103,30 +103,55 @@ class DeviceBindActivity : BaseActivity() {
         }
 
         setOnClickListener(binding.startScan) {
-            deviceList.clear()
-            adapter.notifyDataSetChanged()
-
-            BleScannerHelper.getInstance()
-                .reSetCallback()
-            if (!BluetoothUtils.isEnabledBluetooth(this@DeviceBindActivity)) {
-                val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                startActivityForResult(
-                    intent,
-                    300
+            if (!hasBluetooth(this@DeviceBindActivity)) {
+                requestBluetoothPermission(
+                    this@DeviceBindActivity,
+                    object : OnPermissionCallback {
+                        override fun onGranted(permissions: MutableList<String>, all: Boolean) {
+                            if (all) binding.startScan.performClick()
+                        }
+                    }
                 )
-            } else {
-                scanSize = 0
-                BleScannerHelper.getInstance()
-                    .scanDevice(
+                return@setOnClickListener
+            }
+
+            if (!hasLocationPermission(this@DeviceBindActivity)) {
+                requestLocationPermission(
+                    this@DeviceBindActivity,
+                    object : OnPermissionCallback {
+                        override fun onGranted(permissions: MutableList<String>, all: Boolean) {
+                            if (all) binding.startScan.performClick()
+                        }
+                    }
+                )
+                return@setOnClickListener
+            }
+
+            runCatching {
+                deviceList.clear()
+                adapter.notifyDataSetChanged()
+
+                BleScannerHelper.getInstance().reSetCallback()
+
+                if (!BluetoothUtils.isEnabledBluetooth(this@DeviceBindActivity)) {
+                    startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), 300)
+                } else {
+                    scanSize = 0
+                    BleScannerHelper.getInstance().scanDevice(
                         this@DeviceBindActivity,
                         null,
                         bleScanCallback
                     )
-                myHandler.removeCallbacks(runnable)
-                myHandler.postDelayed(
-                    runnable,
-                    15 * 1000
-                )
+                    myHandler.removeCallbacks(runnable)
+                    myHandler.postDelayed(runnable, 15 * 1000)
+                }
+            }.onFailure { error ->
+                Log.e(TAG, "Start BLE scan failed", error)
+                Toast.makeText(
+                    this@DeviceBindActivity,
+                    "Scan failed: ${error.message ?: error.javaClass.simpleName}",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
