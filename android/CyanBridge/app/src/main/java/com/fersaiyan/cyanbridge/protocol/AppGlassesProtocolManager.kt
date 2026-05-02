@@ -3,7 +3,7 @@ package com.fersaiyan.cyanbridge.protocol
 import android.app.Activity
 import com.fersaiyan.cyanbridge.devices.DeviceClass
 import com.fersaiyan.cyanbridge.protocol.eyevues2.EyevueS2GlassesProtocolProvider
-import com.fersaiyan.cyanbridge.protocol.heycyan.HeyCyanMediaDownloadProtocolProvider
+import com.fersaiyan.cyanbridge.protocol.heycyan.HeyCyanGlassesProtocolProvider
 import com.fersaiyan.cyanbridge.protocol.hsc.HscH515GlassesProtocolProvider
 
 class AppGlassesProtocolManager(
@@ -11,7 +11,7 @@ class AppGlassesProtocolManager(
 ) {
     private val registry = GlassesProtocolRegistry(
         providers = listOf(
-            HeyCyanMediaDownloadProtocolProvider(activity),
+            HeyCyanGlassesProtocolProvider(activity),
             EyevueS2GlassesProtocolProvider(activity),
             HscH515GlassesProtocolProvider(activity),
         ),
