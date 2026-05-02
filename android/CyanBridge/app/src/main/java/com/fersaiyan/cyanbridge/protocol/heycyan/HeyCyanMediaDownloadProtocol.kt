@@ -139,8 +139,6 @@ private class HeyCyanWifiMediaDownloader(
         }
 
         scope.launch {
-            // The reference app waits for Wi-Fi Direct broadcasts and retries internally.
-            // Keep an outer timeout so the Flow terminates instead of hanging forever.
             delay(OUTER_TIMEOUT_MS)
             if (!finished.get()) {
                 fail("P2P_DOWNLOAD_TIMEOUT", "Timed out waiting for HeyCyan Wi-Fi media transfer")
@@ -184,7 +182,7 @@ private class HeyCyanWifiMediaDownloader(
                 p2pManager.connectToDevice(candidate)
             }
 
-            override fun onThisDeviceChanged(device: WifiP2pDevice?) = Unit
+            override fun onThisDeviceChanged(device: WifiP2pDevice) = Unit
 
             override fun onConnectRequestSent() = Unit
 
@@ -192,8 +190,8 @@ private class HeyCyanWifiMediaDownloader(
                 Log.w(TAG, "HeyCyan P2P connect request failed: $reason")
             }
 
-            override fun onConnected(info: WifiP2pInfo?) {
-                if (info == null || !info.groupFormed) {
+            override fun onConnected(info: WifiP2pInfo) {
+                if (!info.groupFormed) {
                     Log.w(TAG, "HeyCyan P2P callback received without formed group")
                     return
                 }
@@ -237,7 +235,6 @@ private class HeyCyanWifiMediaDownloader(
                 close()
             } else if (!finished.get()) {
                 startedHttpImport.set(false)
-                // If BLE IP arrives after connection-info, allow one more attempt.
                 delay(1_000)
                 if (hostCandidates.isNotEmpty()) {
                     beginHttpImportOnce("retry_after_empty_result")
@@ -289,9 +286,6 @@ private class HeyCyanWifiMediaDownloader(
         bleIpBridge.ip.value?.let { hostCandidates.add(it) }
         p2pInfo?.groupOwnerAddress?.hostAddress?.let { groupOwnerIp -> hostCandidates.add(groupOwnerIp) }
 
-        // In the vendor-style P2P group the phone can be group owner. In that case
-        // 192.168.49.1 is usually the phone, while glasses are one of the clients.
-        // Probe the client side first when this app is group owner.
         if (p2pInfo?.isGroupOwner == true) {
             for (i in 2..20) hostCandidates.add("192.168.49.$i")
             hostCandidates.add("192.168.49.1")
