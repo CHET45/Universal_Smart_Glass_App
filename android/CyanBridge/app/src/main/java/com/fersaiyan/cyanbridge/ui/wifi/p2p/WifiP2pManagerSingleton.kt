@@ -51,6 +51,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     }
 
     private var receiver: BroadcastReceiver? = null
+    private var receiverRegistered = false
 
     init {
         Log.d(TAG, "WifiP2pManagerSingleton initialized")
@@ -79,6 +80,8 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     }
 
     fun registerReceiver() {
+        if (receiverRegistered) return
+
         receiver = WifiP2pBroadcastReceiver(this)
         // Use compat API to avoid calling the API 33+ registerReceiver overload on older devices.
         ContextCompat.registerReceiver(
@@ -87,13 +90,19 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
             intentFilter,
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        receiverRegistered = true
     }
 
     fun unregisterReceiver() {
+        if (!receiverRegistered) return
+
         try {
             receiver?.let { context.unregisterReceiver(it) }
         } catch (e: Exception) {
             Log.e(TAG, "Error unregistering receiver", e)
+        } finally {
+            receiver = null
+            receiverRegistered = false
         }
     }
 
@@ -173,17 +182,19 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
 
     fun cancelP2pConnection() {
         try {
-            initP2P()
+            connectionState.reset()
+            handler.removeCallbacks(discoveryTimeOut)
+            handler.removeCallbacks(connectTimeOut)
+            discoverPeersStable()
+
             wifiP2pManager.cancelConnect(wifiP2pChannel, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
                     Log.d(TAG, "Cancel connect successful")
-                    handler.removeCallbacks(connectTimeOut)
                     callbacks.forEach { it.cancelConnect() }
                 }
 
                 override fun onFailure(reason: Int) {
                     Log.e(TAG, "Cancel connect failed: $reason")
-                    handler.removeCallbacks(connectTimeOut)
                     callbacks.forEach { it.cancelConnectFail(reason) }
                 }
             })
