@@ -1,5 +1,6 @@
 package com.fersaiyan.cyanbridge.ui
 
+import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -12,10 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Reconnects the HeyCyan BLE control channel to the last bound glasses.
- *
- * The vendor app stores the bound BLE MAC in UserConfig.deviceAddress and reconnects with
- * BleOperateManager.connectDirectly(mac). This app keeps the same behavior in a small
- * Android SharedPreferences store, with DeviceProfileStore as a migration/fallback source.
  */
 object AutoPairManager {
 
@@ -35,9 +32,7 @@ object AutoPairManager {
 
     fun setAutoReconnectSuppressed(suppressed: Boolean, reason: String = "") {
         autoReconnectSuppressed = suppressed
-        if (suppressed) {
-            requestSerial.incrementAndGet()
-        }
+        if (suppressed) requestSerial.incrementAndGet()
         Log.i(TAG, "setAutoReconnectSuppressed=$suppressed reason=$reason")
     }
 
@@ -105,6 +100,7 @@ object AutoPairManager {
             }
 
             try {
+                BluetoothAdapter.getDefaultAdapter()?.cancelDiscovery()
                 DeviceManager.getInstance().deviceAddress = mac
                 Log.i(TAG, "Connecting to $mac reason=$reason attempt=$attempt")
                 BleOperateManager.getInstance().connectDirectly(mac)
@@ -119,13 +115,13 @@ object AutoPairManager {
     }
 
     private fun readReconnectMac(context: Context): String? {
+        val storedMac = HeyCyanDeviceStateStore.getBoundDeviceAddress(context)
+        if (storedMac != null) return storedMac
+
         val managerMac = runCatching { DeviceManager.getInstance().deviceAddress }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
         if (managerMac != null) return managerMac
-
-        val storedMac = HeyCyanDeviceStateStore.getBoundDeviceAddress(context)
-        if (storedMac != null) return storedMac
 
         val lastProfile = DeviceProfileStore.loadLastSelected(context) ?: return null
         if (lastProfile.selectedClass != DeviceClass.HEY_CYAN) return null
