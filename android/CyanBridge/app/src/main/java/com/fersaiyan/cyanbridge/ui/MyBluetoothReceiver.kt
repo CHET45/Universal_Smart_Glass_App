@@ -25,6 +25,7 @@ class MyBluetoothReceiver : QCBluetoothCallbackCloneReceiver() {
             }
             AutoPairManager.onConnected(MyApplication.CONTEXT, device)
         } else {
+            runCatching { BleOperateManager.getInstance().isReady = false }
             EventBus.getDefault().post(BluetoothEvent(false))
             AutoPairManager.onDisconnected(MyApplication.CONTEXT, reason = "connect_status_false")
         }
@@ -32,10 +33,17 @@ class MyBluetoothReceiver : QCBluetoothCallbackCloneReceiver() {
 
     override fun onServiceDiscovered() {
         Log.e("onServiceDiscovered", "---onServiceDiscovered")
-        BleOperateManager.getInstance().isReady = true
-        EventBus.getDefault().post(BluetoothEvent(true))
         bleExecutor.execute {
-            HeyCyanDeviceInitializer.init(MyApplication.CONTEXT)
+            runCatching {
+                HeyCyanDeviceInitializer.init(MyApplication.CONTEXT)
+            }.onFailure {
+                Log.w("onServiceDiscovered", "HeyCyan init failed", it)
+            }
+
+            // Signal app-level readiness only after the archive-style post-discovery init has run.
+            runCatching { BleOperateManager.getInstance().isReady = true }
+            EventBus.getDefault().post(BluetoothEvent(true))
+
             runCatching { BleOperateManager.getInstance().classicBluetoothStartScan() }
                 .onFailure { Log.d("onServiceDiscovered", "classicBluetoothStartScan failed", it) }
         }
