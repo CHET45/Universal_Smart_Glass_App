@@ -13,6 +13,7 @@ enum class GlassesCapability {
     AUDIO_RECORDING,
     VOLUME_CONTROL,
     MEDIA_COUNT,
+    WIFI_AP_DOWNLOAD,
     WIFI_P2P_DOWNLOAD,
     OTA,
 }
