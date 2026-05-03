@@ -45,6 +45,11 @@ internal object EyevueS2PacketCodec {
     const val CMD_QUERY_QUICK_VOLUME_SUPPORT = 0x68
     const val CMD_GET_VOLUME = 0x69
 
+    // Production APK and emulator logs query these during the initial handshake.
+    const val CMD_GET_VOICE_ASSISTANT_STATUS = 0x71
+    const val CMD_SET_VOICE_ASSISTANT_STATUS = 0x72
+    const val CMD_GET_SUPPORT_FEATURES = 0x95
+
     // Present in the real Eyevue application source pack. v11 documents volume adjustment
     // as 0x32, while the production app uses 0x70 for setting and 0x69 for reading levels.
     const val CMD_SET_VOLUME_APP = 0x70
@@ -68,6 +73,45 @@ internal object EyevueS2PacketCodec {
         val payload: ByteArray,
         val raw: ByteArray,
         val crcValid: Boolean,
+    )
+
+    data class ActionSync(
+        val takingPhoto: Boolean,
+        val recordingAudio: Boolean,
+        val recordingVideo: Boolean,
+        val volumeUp: Boolean,
+        val volumeDown: Boolean,
+        val headNod: Boolean,
+        val headShake: Boolean,
+        val musicPlaying: Boolean,
+        val worn: Boolean,
+        val importMode: Boolean,
+    )
+
+    data class SwitchSettings(
+        val ledBrightness: Int?,
+        val recordDurationSeconds: Int?,
+        val wearDetection: Boolean?,
+        val voiceCommand: Boolean?,
+        val sliderGesture: Int?,
+        val landscape: Boolean?,
+        val offlineLanguage: Int?,
+    )
+
+    data class SupportFeatures(
+        val rawMask: Int,
+        val liveStreaming: Boolean,
+        val quickVolume: Boolean,
+        val photoWatermark: Boolean,
+        val wearDetectionDynamic: Boolean,
+        val wearDetection: Boolean,
+        val stabilizationDynamic: Boolean,
+        val stabilization: Boolean,
+        val aiWakeWord: Boolean,
+        val localOfflineVoice: Boolean,
+        val dynamicLanguageSwitch: Boolean,
+        val screenOrientationDynamic: Boolean,
+        val screenOrientation: Boolean,
     )
 
     fun appCommand(command: Int, payload: ByteArray = byteArrayOf()): ByteArray {
@@ -188,6 +232,69 @@ internal object EyevueS2PacketCodec {
         return Triple(payload[0].u8(), payload[1].u8(), payload[2].u8())
     }
 
+    fun parseActionSync(payload: ByteArray): ActionSync = ActionSync(
+        takingPhoto = payload.flagAt(0),
+        recordingAudio = payload.flagAt(1),
+        recordingVideo = payload.flagAt(2),
+        volumeUp = payload.flagAt(3),
+        volumeDown = payload.flagAt(4),
+        headNod = payload.flagAt(5),
+        headShake = payload.flagAt(6),
+        musicPlaying = payload.flagAt(7),
+        worn = payload.flagAt(8),
+        importMode = payload.flagAt(9),
+    )
+
+    fun parseSwitchSettings(payload: ByteArray): SwitchSettings? {
+        if (payload.size < 7) return null
+        val led = payload[0].u8()
+        val duration = if (payload.size >= 3) (payload[1].u8() shl 8) or payload[2].u8() else null
+        return SwitchSettings(
+            ledBrightness = led,
+            recordDurationSeconds = duration,
+            wearDetection = payload.getOrNull(3)?.u8()?.let { it == 0x31 || it == 0x01 },
+            voiceCommand = payload.getOrNull(4)?.u8()?.let { it == 0x31 || it == 0x01 },
+            sliderGesture = payload.getOrNull(5)?.u8(),
+            landscape = payload.getOrNull(6)?.u8()?.let { it == 0x31 || it == 0x01 },
+            offlineLanguage = payload.getOrNull(7)?.u8(),
+        )
+    }
+
+    fun parseSupportFeatures(payload: ByteArray): SupportFeatures? {
+        if (payload.size < 4) return null
+        // Mirrors the production APK's DeviceCapabilityParser byte order.
+        val mask = (payload[3].u8()) or
+            (payload[0].u8() shl 24) or
+            (payload[1].u8() shl 16) or
+            (payload[2].u8() shl 8)
+
+        fun supported(bit: Int): Boolean = ((mask ushr bit) and 0x01) == 1
+
+        return SupportFeatures(
+            rawMask = mask,
+            liveStreaming = supported(0),
+            quickVolume = supported(1),
+            photoWatermark = supported(2),
+            wearDetectionDynamic = supported(3),
+            wearDetection = supported(4),
+            stabilizationDynamic = supported(5),
+            stabilization = supported(6),
+            aiWakeWord = supported(7),
+            localOfflineVoice = supported(8),
+            dynamicLanguageSwitch = supported(9),
+            screenOrientationDynamic = supported(10),
+            screenOrientation = supported(11),
+        )
+    }
+
+    fun parseVoiceAssistantStatus(payload: ByteArray): Pair<Boolean, Boolean>? {
+        if (payload.isEmpty()) return null
+        val value = payload[0].u8()
+        val localOfflineSpeechEnabled = (value and 0x01) == 0
+        val aiWakeUpEnabled = (value and 0x02) == 0
+        return localOfflineSpeechEnabled to aiWakeUpEnabled
+    }
+
     fun parseWifiSsid(payload: ByteArray): String? {
         if (payload.isEmpty()) return null
         val ssid = payload.toString(Charsets.UTF_8).trim { it <= ' ' || it == '\u0000' }
@@ -205,6 +312,8 @@ internal object EyevueS2PacketCodec {
 
     fun keepThumbnailCountAndCloseImportMode(): ByteArray =
         appCommand(CMD_FILE_DOWNLOAD_FINISHED, byteArrayOf(0x30.toByte(), 0x01.toByte()))
+
+    private fun ByteArray.flagAt(index: Int): Boolean = getOrNull(index)?.u8() == 0x01
 
     private fun checksum(command: Int, payload: ByteArray): Int {
         var sum = command and 0xFF

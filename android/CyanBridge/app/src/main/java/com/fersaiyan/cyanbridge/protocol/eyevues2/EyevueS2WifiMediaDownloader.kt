@@ -355,8 +355,8 @@ internal class EyevueS2WifiMediaDownloader(
             val lower = name.lowercase(Locale.US)
             return when {
                 attr == 1 || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") -> GlassesTransferEvent.MediaType.PHOTO
-                attr == 3 || lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".avi") -> GlassesTransferEvent.MediaType.VIDEO
-                lower.endsWith(".wav") || lower.endsWith(".aac") || lower.endsWith(".amr") || lower.endsWith(".opus") || lower.endsWith(".m4a") -> GlassesTransferEvent.MediaType.AUDIO
+                attr == 2 || lower.endsWith(".mp4") || lower.endsWith(".mov") || lower.endsWith(".avi") -> GlassesTransferEvent.MediaType.VIDEO
+                attr == 3 || lower.endsWith(".wav") || lower.endsWith(".aac") || lower.endsWith(".amr") || lower.endsWith(".opus") || lower.endsWith(".m4a") -> GlassesTransferEvent.MediaType.AUDIO
                 else -> GlassesTransferEvent.MediaType.UNKNOWN
             }
         }

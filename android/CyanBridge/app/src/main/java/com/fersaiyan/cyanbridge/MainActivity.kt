@@ -947,10 +947,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // cmd 0x45 "taking photo" causes btnCamera.performClick(), which sends another
         // photo command and creates a capture loop that rapidly increments media count.
         if (selectedClass != DeviceClass.HEY_CYAN) {
-            Log.i(
-                "GlassesProtocol",
-                "Ignoring protocol action notification for $selectedClass: ${event.button}"
-            )
+            if (event.button == GlassesEvent.Button.AI) {
+                Log.i(
+                    "GlassesProtocol",
+                    "Routing $selectedClass AI notification to phone assistant"
+                )
+                if (isAiHijackEnabled) {
+                    triggerAssistantVoiceQuery()
+                }
+            } else {
+                Log.i(
+                    "GlassesProtocol",
+                    "Ignoring protocol action notification for $selectedClass: ${event.button}"
+                )
+            }
             return
         }
 

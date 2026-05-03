@@ -46,6 +46,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
+import java.util.ArrayDeque
 
 class EyevueS2GlassesProtocol(
     private val context: Context,
@@ -90,12 +92,18 @@ class EyevueS2GlassesProtocol(
     private var initialQueriesScheduled = false
     private var serviceDiscoveryStarted = false
     private var serviceDiscoveryAttempts = 0
+    private val writeQueue = ArrayDeque<ByteArray>()
+    private var writeInFlight = false
+    private var voiceUploadBuffer: ByteArrayOutputStream? = null
+    private var voiceUploadPacketCount = 0
+    private var audioRecordingActive: Boolean? = null
 
     private var connectDeferred: CompletableDeferred<Unit>? = null
     private var pendingBattery: CompletableDeferred<GlassesBattery>? = null
     private var pendingDeviceInfo: CompletableDeferred<GlassesDeviceInfo>? = null
     private var pendingMediaCounts: CompletableDeferred<GlassesMediaCounts>? = null
     private var pendingVolume: CompletableDeferred<String>? = null
+    private var pendingActionSync: CompletableDeferred<EyevueS2PacketCodec.ActionSync>? = null
     private var lastWifiSsid: String? = null
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
@@ -205,7 +213,11 @@ class EyevueS2GlassesProtocol(
         pendingDeviceInfo = null
         pendingMediaCounts = null
         pendingVolume = null
+        pendingActionSync = null
+        audioRecordingActive = null
         lastWifiSsid = null
+        resetWriteQueue()
+        resetVoiceUpload()
         setState(GlassesConnectionState.Connecting(lastDevice ?: device))
 
         val adapter = bluetoothManager.adapter
@@ -246,7 +258,11 @@ class EyevueS2GlassesProtocol(
         pendingDeviceInfo = null
         pendingMediaCounts = null
         pendingVolume = null
+        pendingActionSync = null
+        audioRecordingActive = null
         lastWifiSsid = null
+        resetWriteQueue()
+        resetVoiceUpload()
         writeCharacteristic = null
         cmdNotifyCharacteristic = null
         photoNotifyCharacteristic = null
@@ -313,13 +329,71 @@ class EyevueS2GlassesProtocol(
         ),
     )
 
-    override suspend fun setAudioRecording(enabled: Boolean): GlassesCommandResult = sendCommand(
-        commandName = if (enabled) "startAudioRecording" else "stopAudioRecording",
-        bytes = EyevueS2PacketCodec.appCommand(
-            EyevueS2PacketCodec.CMD_AUDIO_RECORD,
-            byteArrayOf((if (enabled) 0x01 else 0x00).toByte()),
-        ),
-    )
+    override suspend fun setAudioRecording(enabled: Boolean): GlassesCommandResult {
+        val targetEnabled = resolveAudioRecordingTarget(enabled)
+        val result = sendCommand(
+            commandName = if (targetEnabled) "startAudioRecording" else "stopAudioRecording",
+            bytes = EyevueS2PacketCodec.appCommand(
+                EyevueS2PacketCodec.CMD_AUDIO_RECORD,
+                byteArrayOf((if (targetEnabled) 0x01 else 0x00).toByte()),
+            ),
+        )
+        if (result == GlassesCommandResult.Accepted) {
+            audioRecordingActive = targetEnabled
+            Log.i(
+                TAG,
+                "Eyevue S2 audio recording command accepted: requested=$enabled target=$targetEnabled"
+            )
+        }
+        return result
+    }
+
+    private suspend fun resolveAudioRecordingTarget(requestedEnabled: Boolean): Boolean {
+        if (!requestedEnabled) return false
+
+        audioRecordingActive?.let { active ->
+            return if (active) {
+                Log.i(TAG, "Eyevue S2 audio is already active; converting repeated start request to stop")
+                false
+            } else {
+                true
+            }
+        }
+
+        val queriedState = queryCurrentActionSyncForAudio()
+        queriedState?.let { sync ->
+            audioRecordingActive = sync.recordingAudio
+            return if (sync.recordingAudio) {
+                Log.i(TAG, "Eyevue S2 state query reports active audio; sending stop instead of duplicate start")
+                false
+            } else {
+                true
+            }
+        }
+
+        // Unknown state: keep the caller's requested start. The local state is set after
+        // the write is accepted, so a second common UI press can still be translated to stop.
+        return true
+    }
+
+    private suspend fun queryCurrentActionSyncForAudio(): EyevueS2PacketCodec.ActionSync? {
+        val deferred = CompletableDeferred<EyevueS2PacketCodec.ActionSync>()
+        pendingActionSync = deferred
+
+        val sent = write(
+            EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_DEVICE_STATE)
+        )
+        if (!sent) {
+            if (pendingActionSync === deferred) pendingActionSync = null
+            return null
+        }
+
+        return withTimeoutOrNull(AUDIO_STATE_QUERY_TIMEOUT_MS) {
+            deferred.await()
+        }.also {
+            if (pendingActionSync === deferred) pendingActionSync = null
+        }
+    }
 
     fun openWifiP2p(): GlassesCommandResult {
         return if (write(
@@ -413,7 +487,11 @@ class EyevueS2GlassesProtocol(
         pendingDeviceInfo = null
         pendingMediaCounts = null
         pendingVolume = null
+        pendingActionSync = null
+        audioRecordingActive = null
         lastWifiSsid = null
+        resetWriteQueue()
+        resetVoiceUpload()
         writeCharacteristic = null
         cmdNotifyCharacteristic = null
         photoNotifyCharacteristic = null
@@ -549,6 +627,25 @@ class EyevueS2GlassesProtocol(
             }
         }
 
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            writeInFlight = false
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                _events.tryEmit(
+                    GlassesEvent.Error(
+                        GlassesProtocolError(
+                            "GATT_WRITE_STATUS_$status",
+                            "Eyevue S2 write completed with status $status"
+                        )
+                    )
+                )
+            }
+            drainWriteQueue()
+        }
+
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
@@ -646,17 +743,23 @@ class EyevueS2GlassesProtocol(
         }
         initialQueriesScheduled = true
 
-        // Official flow queries basic state after connecting. Delay it slightly so it does not
-        // race Android's async CCCD descriptor writes.
+        // Match the observed Eyevue APK handshake and enqueue writes so Android never drops
+        // back-to-back GATT operations. Commands without data in the production APK use no
+        // payload; most query commands use a single 0x00 payload.
         mainHandler.postDelayed(
             {
-                if (_connectionState.value is GlassesConnectionState.Connected) {
-                    write(EyevueS2PacketCodec.timeCommand())
-                    write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_BATTERY))
-                    write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_THUMBNAIL_COUNT))
-                    write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_DEVICE_INFO))
-                    write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_VOLUME))
-                }
+                if (_connectionState.value !is GlassesConnectionState.Connected) return@postDelayed
+
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_BATTERY))
+                write(EyevueS2PacketCodec.appCommand(EyevueS2PacketCodec.CMD_CUSTOMER_PROJECT))
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_DEVICE_INFO))
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_SWITCH_SETTINGS))
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_SUPPORT_FEATURES))
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_DEVICE_STATE))
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_THUMBNAIL_COUNT))
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_VOLUME))
+                write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_VOICE_ASSISTANT_STATUS))
+                write(EyevueS2PacketCodec.timeCommand())
             },
             500L
         )
@@ -735,11 +838,34 @@ class EyevueS2GlassesProtocol(
                 _events.tryEmit(GlassesEvent.MediaCountsChanged(counts))
             }
 
-            EyevueS2PacketCodec.CMD_GET_VOLUME -> {
+            EyevueS2PacketCodec.CMD_GET_VOLUME, EyevueS2PacketCodec.CMD_SET_VOLUME_APP -> {
                 val parsed = EyevueS2PacketCodec.parseVolume(packet.payload) ?: return
                 val summary = "system=${parsed.first}, media=${parsed.second}, call=${parsed.third}"
                 pendingVolume?.complete(summary)
                 pendingVolume = null
+            }
+
+            EyevueS2PacketCodec.CMD_GET_SWITCH_SETTINGS -> {
+                EyevueS2PacketCodec.parseSwitchSettings(packet.payload)?.let { settings ->
+                    Log.i(TAG, "Switch settings: $settings")
+                }
+            }
+
+            EyevueS2PacketCodec.CMD_CUSTOMER_PROJECT -> {
+                val project = packet.payload.toString(Charsets.UTF_8).trim { it <= ' ' || it == '\u0000' }
+                if (project.isNotBlank()) Log.i(TAG, "Project/customer: $project")
+            }
+
+            EyevueS2PacketCodec.CMD_GET_SUPPORT_FEATURES -> {
+                EyevueS2PacketCodec.parseSupportFeatures(packet.payload)?.let { features ->
+                    Log.i(TAG, "Supported features: $features")
+                }
+            }
+
+            EyevueS2PacketCodec.CMD_GET_VOICE_ASSISTANT_STATUS -> {
+                EyevueS2PacketCodec.parseVoiceAssistantStatus(packet.payload)?.let { status ->
+                    Log.i(TAG, "Voice assistant: localOffline=${status.first}, aiWakeUp=${status.second}")
+                }
             }
 
             EyevueS2PacketCodec.UPLOAD_WIFI_NAME -> {
@@ -747,6 +873,12 @@ class EyevueS2GlassesProtocol(
             }
 
             EyevueS2PacketCodec.UPLOAD_ACTION_SYNC -> handleActionSync(packet.payload)
+            EyevueS2PacketCodec.UPLOAD_ISP_WORKING -> handleIspWorking(packet.payload)
+            EyevueS2PacketCodec.UPLOAD_VOICE_START -> handleVoiceUploadStart()
+            EyevueS2PacketCodec.UPLOAD_VOICE_DATA -> handleVoiceUploadData(packet.payload)
+            EyevueS2PacketCodec.UPLOAD_VOICE_END -> handleVoiceUploadEnd()
+            EyevueS2PacketCodec.UPLOAD_ABANDON_VOICE -> resetVoiceUpload()
+            EyevueS2PacketCodec.UPLOAD_CANCEL_AI_ANNOUNCEMENT -> resetVoiceUpload()
             EyevueS2PacketCodec.UPLOAD_HD_IMAGE_FAILED -> _events.tryEmit(
                 GlassesEvent.Error(
                     GlassesProtocolError(
@@ -759,34 +891,78 @@ class EyevueS2GlassesProtocol(
     }
 
     private fun handleActionSync(payload: ByteArray) {
-        if (payload.getOrNull(0)?.toInt() == 1) _events.tryEmit(
+        val sync = EyevueS2PacketCodec.parseActionSync(payload)
+        audioRecordingActive = sync.recordingAudio
+        pendingActionSync?.complete(sync)
+        pendingActionSync = null
+        if (sync.takingPhoto) emitButton(GlassesEvent.Button.PHOTO, EyevueS2PacketCodec.UPLOAD_ACTION_SYNC)
+        if (sync.recordingAudio) emitButton(GlassesEvent.Button.AUDIO, EyevueS2PacketCodec.UPLOAD_ACTION_SYNC)
+        if (sync.recordingVideo) emitButton(GlassesEvent.Button.VIDEO, EyevueS2PacketCodec.UPLOAD_ACTION_SYNC)
+        if (sync.volumeUp) emitButton(GlassesEvent.Button.VOLUME_UP, EyevueS2PacketCodec.UPLOAD_ACTION_SYNC)
+        if (sync.volumeDown) emitButton(GlassesEvent.Button.VOLUME_DOWN, EyevueS2PacketCodec.UPLOAD_ACTION_SYNC)
+        if (sync.headNod || sync.headShake || sync.musicPlaying || sync.importMode) {
+            Log.i(TAG, "Unhandled action sync detail: $sync")
+        }
+    }
+
+    private fun handleIspWorking(payload: ByteArray) {
+        when (payload.firstOrNull()?.toInt()?.and(0xFF)) {
+            0x00 -> emitButton(GlassesEvent.Button.PHOTO, EyevueS2PacketCodec.UPLOAD_ISP_WORKING)
+            0x01 -> emitButton(GlassesEvent.Button.VIDEO, EyevueS2PacketCodec.UPLOAD_ISP_WORKING)
+            0x02 -> {
+                audioRecordingActive = true
+                emitButton(GlassesEvent.Button.AUDIO, EyevueS2PacketCodec.UPLOAD_ISP_WORKING)
+            }
+            0x03 -> Log.i(TAG, "Eyevue S2 ISP import mode is active")
+        }
+    }
+
+    private fun handleVoiceUploadStart() {
+        voiceUploadBuffer = ByteArrayOutputStream()
+        voiceUploadPacketCount = 0
+
+        // Current upper layers use Android SpeechRecognizer instead of consuming PCM frames.
+        // Trigger the assistant immediately, but still keep subsequent 0x46 frames buffered for
+        // diagnostics until 0x99 or 0x49 arrives.
+        emitButton(GlassesEvent.Button.AI, EyevueS2PacketCodec.UPLOAD_VOICE_START)
+    }
+
+    private fun handleVoiceUploadData(payload: ByteArray) {
+        if (voiceUploadBuffer == null) {
+            voiceUploadBuffer = ByteArrayOutputStream()
+            voiceUploadPacketCount = 0
+        }
+        voiceUploadPacketCount += 1
+
+        if (payload.isNotEmpty() && payload.all { it == 0.toByte() }) {
+            Log.w(TAG, "Eyevue S2 voice frame is silent/zeroed: bytes=${payload.size}")
+        }
+
+        val buffer = voiceUploadBuffer ?: return
+        if (buffer.size() + payload.size <= MAX_VOICE_UPLOAD_BYTES) {
+            buffer.write(payload)
+        } else {
+            Log.w(TAG, "Eyevue S2 voice upload exceeded $MAX_VOICE_UPLOAD_BYTES bytes; dropping buffered PCM")
+            resetVoiceUpload()
+        }
+    }
+
+    private fun handleVoiceUploadEnd() {
+        val bytes = voiceUploadBuffer?.size() ?: 0
+        Log.i(TAG, "Eyevue S2 voice upload ended: packets=$voiceUploadPacketCount bytes=$bytes")
+        resetVoiceUpload()
+    }
+
+    private fun resetVoiceUpload() {
+        voiceUploadBuffer = null
+        voiceUploadPacketCount = 0
+    }
+
+    private fun emitButton(button: GlassesEvent.Button, sourceCommand: Int) {
+        _events.tryEmit(
             GlassesEvent.ButtonPressed(
-                GlassesEvent.Button.PHOTO,
-                EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
-            )
-        )
-        if (payload.getOrNull(1)?.toInt() == 1) _events.tryEmit(
-            GlassesEvent.ButtonPressed(
-                GlassesEvent.Button.AUDIO,
-                EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
-            )
-        )
-        if (payload.getOrNull(2)?.toInt() == 1) _events.tryEmit(
-            GlassesEvent.ButtonPressed(
-                GlassesEvent.Button.VIDEO,
-                EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
-            )
-        )
-        if (payload.getOrNull(3)?.toInt() == 1) _events.tryEmit(
-            GlassesEvent.ButtonPressed(
-                GlassesEvent.Button.VOLUME_UP,
-                EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
-            )
-        )
-        if (payload.getOrNull(4)?.toInt() == 1) _events.tryEmit(
-            GlassesEvent.ButtonPressed(
-                GlassesEvent.Button.VOLUME_DOWN,
-                EyevueS2PacketCodec.UPLOAD_ACTION_SYNC
+                button,
+                sourceCommand,
             )
         )
     }
@@ -822,12 +998,40 @@ class EyevueS2GlassesProtocol(
 
     private fun write(bytes: ByteArray): Boolean {
         if (!hasBleConnectPermission()) return false
+        if (gatt == null || writeCharacteristic == null) return false
+
+        writeQueue.addLast(bytes.copyOf())
+        drainWriteQueue()
+        return true
+    }
+
+    private fun drainWriteQueue() {
+        if (writeInFlight) return
+        if (!hasBleConnectPermission()) return
+        val next = if (writeQueue.isEmpty()) return else writeQueue.removeFirst()
+
+        val accepted = writeNow(next)
+        if (!accepted) {
+            writeInFlight = false
+            _events.tryEmit(
+                GlassesEvent.Error(
+                    GlassesProtocolError(
+                        "WRITE_FAILED",
+                        "Eyevue S2 GATT write was rejected before transmission"
+                    )
+                )
+            )
+            if (writeQueue.isNotEmpty()) mainHandler.post { drainWriteQueue() }
+        }
+    }
+
+    private fun writeNow(bytes: ByteArray): Boolean {
         val gatt = gatt ?: return false
         val characteristic = writeCharacteristic ?: return false
 
         return try {
             characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(
                     characteristic,
                     bytes,
@@ -837,9 +1041,16 @@ class EyevueS2GlassesProtocol(
                 @Suppress("DEPRECATION") characteristic.value = bytes
                 @Suppress("DEPRECATION") gatt.writeCharacteristic(characteristic)
             }
+            writeInFlight = started
+            started
         } catch (security: SecurityException) {
             false
         }
+    }
+
+    private fun resetWriteQueue() {
+        writeQueue.clear()
+        writeInFlight = false
     }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -942,6 +1153,8 @@ class EyevueS2GlassesProtocol(
         private const val TAG = "EyevueS2Protocol"
         private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val COMMAND_TIMEOUT_MS = 5_000L
+        private const val MAX_VOICE_UPLOAD_BYTES = 1024 * 1024
+        private const val AUDIO_STATE_QUERY_TIMEOUT_MS = 350L
         private const val SERVICE_DISCOVERY_MAX_ATTEMPTS = 8
         private const val SERVICE_DISCOVERY_RETRY_DELAY_MS = 500L
     }

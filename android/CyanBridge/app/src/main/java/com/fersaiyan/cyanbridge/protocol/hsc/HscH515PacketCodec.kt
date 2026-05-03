@@ -156,12 +156,14 @@ object HscH515PacketCodec {
     )
 
     fun timeRequest(sequence: Int): ByteArray {
-        val unixSeconds = (System.currentTimeMillis() / 1000L).toInt()
-        val utcOffsetSeconds = TimeZone.getDefault().rawOffset / 1000
+        // Vendor protocol expects local time (UTC + timezone offset) as a single 4-byte LE value,
+        // matching the aivox reference app: (currentTimeMillis + timezone.getOffset) / 1000.
+        val nowMs = System.currentTimeMillis()
+        val localSeconds = ((nowMs + TimeZone.getDefault().getOffset(nowMs)) / 1000L).toInt()
         return request(
             CMD_SET_TIME,
             sequence,
-            le32(unixSeconds) + le32(utcOffsetSeconds),
+            le32(localSeconds),
         )
     }
 

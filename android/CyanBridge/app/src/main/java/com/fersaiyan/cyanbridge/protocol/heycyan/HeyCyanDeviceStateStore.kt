@@ -33,6 +33,8 @@ object HeyCyanDeviceStateStore {
     private const val KEY_VOLUME_CONTROL = "volume_control"
     private const val KEY_GLASSES_MODEL = "glasses_model"
     private const val KEY_GLASSES_MODEL_STRING = "glasses_model_string"
+    private const val KEY_CAMERA_8MP = "camera_8mp"
+    private const val KEY_OPEN_EIS = "open_eis"
 
     private fun prefs(context: Context = MyApplication.Companion.CONTEXT) =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -119,6 +121,19 @@ object HeyCyanDeviceStateStore {
     fun saveSupportInt(name: String, value: Int) {
         prefs().edit().putInt("support_$name", value).apply()
     }
+
+    fun saveOpenEis(value: Int) {
+        prefs().edit().putInt(KEY_OPEN_EIS, value).apply()
+    }
+
+    fun getOpenEis(): Int = prefs().getInt(KEY_OPEN_EIS, 0)
+
+    fun saveCamera8Mp(value: Boolean) {
+        prefs().edit().putBoolean(KEY_CAMERA_8MP, value).apply()
+    }
+
+    val isCamera8Mp: Boolean
+        get() = prefs().getBoolean(KEY_CAMERA_8MP, false)
 
     fun saveGlassesModel(model: Int) {
         val hex = "v0x" + model.toString(16).padStart(2, '0').lowercase()

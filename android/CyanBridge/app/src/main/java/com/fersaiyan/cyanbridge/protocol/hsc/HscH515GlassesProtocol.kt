@@ -80,6 +80,11 @@ class HscH515GlassesProtocol(
             else -> true
         }
     }
+    private var isLargeMtu = false
+    private var heartbeatRunnable: Runnable? = null
+    private var awaitingPong = false
+    private var failedPing = 0
+
     private val writeLock = Any()
     private val writeQueue = ArrayDeque<ByteArray>()
     private var writeInProgress = false
@@ -458,7 +463,15 @@ class HscH515GlassesProtocol(
                         TAG,
                         "GATT STATE_CONNECTED: ${gatt.device?.address}"
                     )
-                    startServiceDiscovery(gatt)
+                    // Match aivox reference: request MTU 500 and HIGH connection priority
+                    // first; service discovery starts in onMtuChanged.
+                    gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    val mtuRequested = runCatching { gatt.requestMtu(500) }.getOrDefault(false)
+                    Log.i(TAG, "requestMtu(500) started=$mtuRequested")
+                    if (!mtuRequested) {
+                        // Fall back to the original delayed path if MTU request fails to start.
+                        startServiceDiscovery(gatt)
+                    }
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -476,6 +489,17 @@ class HscH515GlassesProtocol(
                     }
                 }
             }
+        }
+
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            Log.i(TAG, "onMtuChanged mtu=$mtu status=$status")
+            if (status == BluetoothGatt.GATT_SUCCESS && mtu >= 500) {
+                isLargeMtu = true
+                Log.i(TAG, "Large MTU ($mtu) negotiated successfully")
+            }
+            // Proceed to service discovery regardless of MTU outcome (matching aivox behaviour).
+            startServiceDiscovery(gatt)
         }
 
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -657,6 +681,7 @@ class HscH515GlassesProtocol(
     private fun markConnected() {
         completeBleLinkConnected()
         scheduleInitialQueriesIfReady()
+        scheduleHeartbeat()
     }
 
 
@@ -747,6 +772,12 @@ class HscH515GlassesProtocol(
         }
 
         when (packet.commandId) {
+            HscH515PacketCodec.CMD_HEARTBEAT -> {
+                // Pong received from device.
+                awaitingPong = false
+                failedPing = 0
+            }
+
             HscH515PacketCodec.CMD_GET_BATTERY, HscH515PacketCodec.CMD_BATTERY_NOTIFY -> {
                 val parsed = HscH515PacketCodec.parseBattery(packet.payload) ?: return
                 val battery = GlassesBattery(
@@ -1180,10 +1211,49 @@ class HscH515GlassesProtocol(
         frameDecoder.clear()
         writeWatchdog?.let { mainHandler.removeCallbacks(it) }
         writeWatchdog = null
+        isLargeMtu = false
+        awaitingPong = false
+        failedPing = 0
+        stopHeartbeat()
         synchronized(writeLock) {
             writeQueue.clear()
             writeInProgress = false
         }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatRunnable?.let { mainHandler.removeCallbacks(it) }
+        heartbeatRunnable = null
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun scheduleHeartbeat() {
+        stopHeartbeat()
+        val runnable = object : Runnable {
+            @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+            override fun run() {
+                if (_connectionState.value !is GlassesConnectionState.Connected) return
+
+                if (failedPing >= HEARTBEAT_MAX_MISSED) {
+                    Log.w(TAG, "Heartbeat: $failedPing missed pongs — disconnecting")
+                    forceCloseGatt()
+                    clearGattState(keepGattReference = false)
+                    setState(GlassesConnectionState.Disconnected("heartbeat timeout"))
+                    return
+                }
+
+                if (awaitingPong) {
+                    failedPing++
+                    Log.w(TAG, "Heartbeat: missed pong ($failedPing/$HEARTBEAT_MAX_MISSED)")
+                }
+
+                awaitingPong = true
+                write(HscH515PacketCodec.heartbeat(sequence.next()))
+                mainHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
+            }
+        }
+        heartbeatRunnable = runnable
+        mainHandler.postDelayed(runnable, HEARTBEAT_INTERVAL_MS)
     }
 
     companion object {
@@ -1194,6 +1264,8 @@ class HscH515GlassesProtocol(
         private const val SERVICE_DISCOVERY_RETRY_DELAY_MS = 500L
         private const val CONNECT_RETRY_SETTLE_MS = 700L
         private const val WRITE_RETRY_DELAY_MS = 150L
+        private const val HEARTBEAT_INTERVAL_MS = 3_000L
+        private const val HEARTBEAT_MAX_MISSED = 3
 
         private const val DEVICE_CONTROL_TAKE_PHOTO = 8
         private const val DEVICE_CONTROL_START_VIDEO = 9
