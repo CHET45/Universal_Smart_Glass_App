@@ -38,10 +38,18 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     private val callbacks = CopyOnWriteArrayList<WifiP2pCallback>()
 
     private val discoveryTimeoutMs = 16_000L
+    private val reconnectDiscoveryDelayMs = 2_000L
     private val connectTimeoutMs = 5_000L
 
     private val connectionState = WifiP2pConnectionState()
     private val retryState = WifiP2pRetryState(1, 1)
+
+    private val restartDiscoveryAfterDisconnect = Runnable {
+        if (callbacks.isNotEmpty() && !connectionState.isConnected() && !connectionState.isConnecting()) {
+            Log.d(TAG, "Restarting peer discovery after disconnected broadcast")
+            startPeerDiscovery()
+        }
+    }
 
     private val intentFilter = IntentFilter().apply {
         addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
@@ -77,6 +85,9 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
 
     fun removeCallback(callback: WifiP2pCallback) {
         callbacks.remove(callback)
+        if (callbacks.isEmpty()) {
+            handler.removeCallbacks(restartDiscoveryAfterDisconnect)
+        }
     }
 
     fun registerReceiver() {
@@ -103,10 +114,13 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
         } finally {
             receiver = null
             receiverRegistered = false
+            handler.removeCallbacks(restartDiscoveryAfterDisconnect)
         }
     }
 
     fun startPeerDiscovery() {
+        handler.removeCallbacks(discoveryTimeOut)
+        handler.removeCallbacks(restartDiscoveryAfterDisconnect)
         handler.postDelayed(discoveryTimeOut, discoveryTimeoutMs)
         wifiP2pManager.discoverPeers(wifiP2pChannel, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
@@ -119,9 +133,9 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
                 // Mirror vendor behavior: reschedule the internal timeout and stop discovery
                 // so we can retry in a stable way.
                 handler.removeCallbacks(discoveryTimeOut)
-                handler.postDelayed(discoveryTimeOut, 2000L)
                 callbacks.forEach { it.onPeerDiscoveryFailed(reason) }
                 discoverPeersStable()
+                handler.postDelayed(discoveryTimeOut, 2000L)
             }
         })
     }
@@ -141,6 +155,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     fun connectToDevice(device: WifiP2pDevice) {
         // Once we decide to connect, stop peer discovery timeout tracking.
         resetPeerDiscovery()
+        handler.removeCallbacks(restartDiscoveryAfterDisconnect)
 
         if (connectionState.isConnecting()) {
             Log.d(TAG, "P2P is connecting, no connection call back")
@@ -154,6 +169,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
         }
 
         // Arm internal connect timeout (vendor app uses ~5s).
+        handler.removeCallbacks(connectTimeOut)
         handler.postDelayed(connectTimeOut, connectTimeoutMs)
 
         wifiP2pDevice = device
@@ -168,12 +184,14 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
 
         wifiP2pManager.connect(wifiP2pChannel, config, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
+                resetPeerDiscovery()
                 Log.d(TAG, "Connect request sent successfully")
                 callbacks.forEach { it.onConnectRequestSent() }
             }
 
             override fun onFailure(reason: Int) {
                 Log.e(TAG, "Connect request failed: $reason")
+                handler.removeCallbacks(connectTimeOut)
                 connectionState.markConnectRequestFailed()
                 callbacks.forEach { it.onConnectRequestFailed(reason) }
             }
@@ -185,6 +203,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
             connectionState.reset()
             handler.removeCallbacks(discoveryTimeOut)
             handler.removeCallbacks(connectTimeOut)
+            handler.removeCallbacks(restartDiscoveryAfterDisconnect)
             discoverPeersStable()
 
             wifiP2pManager.cancelConnect(wifiP2pChannel, object : WifiP2pManager.ActionListener {
@@ -196,6 +215,16 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
                 override fun onFailure(reason: Int) {
                     Log.e(TAG, "Cancel connect failed: $reason")
                     callbacks.forEach { it.cancelConnectFail(reason) }
+                }
+            })
+
+            wifiP2pManager.removeGroup(wifiP2pChannel, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.d(TAG, "P2P group removed successfully")
+                }
+
+                override fun onFailure(reason: Int) {
+                    Log.d(TAG, "P2P group remove failed: $reason")
                 }
             })
         } catch (e: Exception) {
@@ -224,6 +253,7 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
         connectionState.reset()
         handler.removeCallbacks(discoveryTimeOut)
         handler.removeCallbacks(connectTimeOut)
+        handler.removeCallbacks(restartDiscoveryAfterDisconnect)
     }
 
     fun isConnecting(): Boolean = connectionState.isConnecting()
@@ -320,13 +350,28 @@ class WifiP2pManagerSingleton private constructor(private val context: Context) 
     internal fun onConnectionInfoAvailable(info: WifiP2pInfo) {
         connectionState.markConnectionInfoAvailable(info.groupFormed)
         handler.removeCallbacks(connectTimeOut)
+        handler.removeCallbacks(restartDiscoveryAfterDisconnect)
         callbacks.forEach { it.onConnected(info) }
     }
 
     internal fun onDisconnected() {
+        if (connectionState.isConnecting()) {
+            // Some Android builds, especially MIUI, emit CONNECTION_STATE_CHANGE with
+            // networkInfo.isConnected=false immediately after connect() is accepted.
+            // Treat that as an in-progress state and let connectTimeOut decide whether
+            // the attempt actually failed.
+            Log.d(TAG, "Ignoring disconnected broadcast while P2P connect is pending")
+            return
+        }
+
         connectionState.markDisconnected()
         handler.removeCallbacks(connectTimeOut)
+        resetPeerDiscovery()
+        discoverPeersStable()
         callbacks.forEach { it.onDisconnected() }
+
+        handler.removeCallbacks(restartDiscoveryAfterDisconnect)
+        handler.postDelayed(restartDiscoveryAfterDisconnect, reconnectDiscoveryDelayMs)
     }
 
     // Timeout handlers
