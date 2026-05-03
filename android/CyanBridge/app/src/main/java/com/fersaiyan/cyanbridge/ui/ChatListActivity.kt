@@ -79,7 +79,7 @@ class ChatListActivity : AppCompatActivity() {
         super.onResume()
         // Ensure correct nav highlight when returning via CLEAR_TOP/SINGLE_TOP.
         binding.bottomNavigation.post {
-            binding.bottomNavigation.menu.findItem(R.id.nav_chats).isChecked = true
+            AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_chats)
         }
         refreshList()
     }
@@ -128,39 +128,37 @@ class ChatListActivity : AppCompatActivity() {
     }
 
     private fun setupBottomNavigation() {
-        binding.bottomNavigation.selectedItemId = R.id.nav_chats
+        AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_chats)
         binding.bottomNavigation.setOnItemSelectedListener { item ->
             when (item.itemId) {
-                R.id.nav_chats -> {
-                    binding.bottomNavigation.post {
-                        val last = ChatStore.listNonEmptyThreads().firstOrNull()
-                        val now = System.currentTimeMillis()
-
-                        fun lastUserMessageAtMs(chatId: String): Long? {
-                            val msgs = ChatStore.listMessages(chatId)
-                            return msgs.lastOrNull { it.role == com.fersaiyan.cyanbridge.chat.ChatRole.USER }?.createdAt
-                        }
-
-                        val openChatId = if (last != null) {
-                            val lastUserAt = lastUserMessageAtMs(last.id) ?: 0L
-                            if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
-                        } else null
-
-                        val intent = Intent(this, ChatThreadActivity::class.java)
-                        if (openChatId != null) {
-                            val cfg = DailyFactsReviewThreadStore.load(this@ChatListActivity, openChatId)
-                            intent.putExtra(ChatThreadActivity.EXTRA_CHAT_ID, openChatId)
-                            if (cfg != null) {
-                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_REVIEW, true)
-                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_DATE, cfg.date)
-                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_LOOKBACK_DAYS, cfg.lookbackDays)
-                            }
-                        }
-                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        startActivity(intent)
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_chats -> {
+//                    binding.bottomNavigation.post {
+//                        val last = ChatStore.listNonEmptyThreads().firstOrNull()
+//                        val now = System.currentTimeMillis()
+////                        fun lastUserMessageAtMs(chatId: String): Long? {
+//                            val msgs = ChatStore.listMessages(chatId)
+//                            return msgs.lastOrNull { it.role == com.fersaiyan.cyanbridge.chat.ChatRole.USER }?.createdAt
+//                        }
+////                        val openChatId = if (last != null) {
+//                            val lastUserAt = lastUserMessageAtMs(last.id) ?: 0L
+//                            if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
+//                        } else null
+////                        val intent = Intent(this, ChatThreadActivity::class.java)
+//                        if (openChatId != null) {
+//                            val cfg = DailyFactsReviewThreadStore.load(this@ChatListActivity, openChatId)
+//                            intent.putExtra(ChatThreadActivity.EXTRA_CHAT_ID, openChatId)
+//                            if (cfg != null) {
+//                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_REVIEW, true)
+//                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_DATE, cfg.date)
+//                                intent.putExtra(ChatThreadActivity.EXTRA_DAILY_FACTS_LOOKBACK_DAYS, cfg.lookbackDays)
+//                            }
+//                        }
+//                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        startActivity(intent)
+//                    }
+//                    true
+//                }
                 R.id.nav_glasses -> {
                     binding.bottomNavigation.post {
                         startActivity(Intent(this, MainActivity::class.java).apply {
@@ -177,22 +175,24 @@ class ChatListActivity : AppCompatActivity() {
                     }
                     true
                 }
-                R.id.nav_settings -> {
-                    binding.bottomNavigation.post {
-                        startActivity(Intent(this, SettingsActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
-                    }
-                    true
-                }
-                R.id.nav_community_plugins -> {
-                    binding.bottomNavigation.post {
-                        startActivity(Intent(this, CommunityPluginsActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_settings -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(Intent(this, SettingsActivity::class.java).apply {
+//                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        })
+//                    }
+//                    true
+//                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_community_plugins -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(Intent(this, CommunityPluginsActivity::class.java).apply {
+//                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        })
+//                    }
+//                    true
+//                }
                 else -> false
             }
         }

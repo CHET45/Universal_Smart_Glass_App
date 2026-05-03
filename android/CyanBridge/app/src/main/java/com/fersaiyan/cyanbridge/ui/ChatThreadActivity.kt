@@ -296,7 +296,7 @@ class ChatThreadActivity : AppCompatActivity() {
         super.onResume()
         // Ensure correct nav highlight when returning via CLEAR_TOP/SINGLE_TOP.
         binding.bottomNavigation.post {
-            binding.bottomNavigation.menu.findItem(R.id.nav_chats).isChecked = true
+            AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_chats)
         }
         applyChatAppearance()
         refreshModelBadge("Ready")
@@ -2432,31 +2432,31 @@ class ChatThreadActivity : AppCompatActivity() {
 
     private fun setupBottomNavigation() {
         // This is a detail view, but keep bottom nav consistent.
-        binding.bottomNavigation.selectedItemId = R.id.nav_chats
+        AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_chats)
         binding.bottomNavigation.setOnItemSelectedListener { item ->
             when (item.itemId) {
-                R.id.nav_chats -> {
-                    // If the user's last message is recent (<30 min), keep this chat open.
-                    // Otherwise create a new chat thread.
-                    val cid = chatId
-                    val now = System.currentTimeMillis()
-                    val lastUserAt = if (cid != null) {
-                        ChatStore.listMessages(cid)
-                            .lastOrNull { it.role == ChatRole.USER }
-                            ?.createdAt
-                    } else null
-
-                    if (lastUserAt != null && (now - lastUserAt) < 30 * 60 * 1000) {
-                        true
-                    } else {
-                        binding.bottomNavigation.post {
-                            startActivity(android.content.Intent(this, ChatThreadActivity::class.java).apply {
-                                addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                            })
-                        }
-                        true
-                    }
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_chats -> {
+//                    // If the user's last message is recent (<30 min), keep this chat open.
+//                    // Otherwise create a new chat thread.
+//                    val cid = chatId
+//                    val now = System.currentTimeMillis()
+//                    val lastUserAt = if (cid != null) {
+//                        ChatStore.listMessages(cid)
+//                            .lastOrNull { it.role == ChatRole.USER }
+//                            ?.createdAt
+//                    } else null
+////                    if (lastUserAt != null && (now - lastUserAt) < 30 * 60 * 1000) {
+//                        true
+//                    } else {
+//                        binding.bottomNavigation.post {
+//                            startActivity(android.content.Intent(this, ChatThreadActivity::class.java).apply {
+//                                addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                            })
+//                        }
+//                        true
+//                    }
+//                }
 
                 R.id.nav_glasses -> {
                     binding.bottomNavigation.post {
@@ -2476,23 +2476,25 @@ class ChatThreadActivity : AppCompatActivity() {
                     true
                 }
 
-                R.id.nav_settings -> {
-                    binding.bottomNavigation.post {
-                        startActivity(android.content.Intent(this, SettingsActivity::class.java).apply {
-                            addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_settings -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(android.content.Intent(this, SettingsActivity::class.java).apply {
+//                            addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        })
+//                    }
+//                    true
+//                }
 
-                R.id.nav_community_plugins -> {
-                    binding.bottomNavigation.post {
-                        startActivity(android.content.Intent(this, CommunityPluginsActivity::class.java).apply {
-                            addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_community_plugins -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(android.content.Intent(this, CommunityPluginsActivity::class.java).apply {
+//                            addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        })
+//                    }
+//                    true
+//                }
 
                 else -> false
             }

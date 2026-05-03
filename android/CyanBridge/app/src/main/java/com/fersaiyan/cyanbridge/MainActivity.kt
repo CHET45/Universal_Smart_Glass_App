@@ -75,6 +75,7 @@ import com.fersaiyan.cyanbridge.protocol.GlassesConnectionState
 import com.fersaiyan.cyanbridge.protocol.GlassesDevice
 import com.fersaiyan.cyanbridge.protocol.GlassesEvent
 import com.fersaiyan.cyanbridge.protocol.GlassesProtocol
+import com.fersaiyan.cyanbridge.ui.AppUiPolish
 import com.fersaiyan.cyanbridge.ui.AutoPairManager
 import com.fersaiyan.cyanbridge.ui.BatteryOptimizationGuideActivity
 import com.fersaiyan.cyanbridge.ui.BluetoothEvent
@@ -324,6 +325,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         setContentView(binding.root)
         glassesProtocolManager = AppGlassesProtocolManager(this)
         setupBottomNavigation()
+        AppUiPolish.applyMainScreen(binding)
         initView()
         setupMeetingCaptureUi()
         setupAgentControlsUi()
@@ -513,7 +515,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         // Ensure correct nav highlight when returning via CLEAR_TOP/SINGLE_TOP.
         binding.bottomNavigation.post {
-            binding.bottomNavigation.menu.findItem(R.id.nav_glasses).isChecked = true
+            AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_glasses)
         }
         refreshAiQueryButtonsState()
     }
@@ -1038,41 +1040,39 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun setupBottomNavigation() {
-        binding.bottomNavigation.selectedItemId = R.id.nav_glasses
+        AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_glasses)
         binding.bottomNavigation.setOnItemSelectedListener { item ->
             when (item.itemId) {
                 R.id.nav_glasses -> true
-                R.id.nav_chats -> {
-                    binding.bottomNavigation.post {
-                        val last = ChatStore.listNonEmptyThreads()
-                            .firstOrNull()
-                        val now = System.currentTimeMillis()
-
-                        fun lastUserMessageAtMs(chatId: String): Long? {
-                            val msgs = ChatStore.listMessages(chatId)
-                            return msgs.lastOrNull { it.role == com.fersaiyan.cyanbridge.chat.ChatRole.USER }?.createdAt
-                        }
-
-                        val openChatId = if (last != null) {
-                            val lastUserAt = lastUserMessageAtMs(last.id) ?: 0L
-                            if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
-                        } else null
-
-                        val intent = Intent(
-                            this,
-                            ChatThreadActivity::class.java
-                        )
-                        if (openChatId != null) {
-                            intent.putExtra(
-                                ChatThreadActivity.EXTRA_CHAT_ID,
-                                openChatId
-                            )
-                        }
-                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        startActivity(intent)
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_chats -> {
+//                    binding.bottomNavigation.post {
+//                        val last = ChatStore.listNonEmptyThreads()
+//                            .firstOrNull()
+//                        val now = System.currentTimeMillis()
+////                        fun lastUserMessageAtMs(chatId: String): Long? {
+//                            val msgs = ChatStore.listMessages(chatId)
+//                            return msgs.lastOrNull { it.role == com.fersaiyan.cyanbridge.chat.ChatRole.USER }?.createdAt
+//                        }
+////                        val openChatId = if (last != null) {
+//                            val lastUserAt = lastUserMessageAtMs(last.id) ?: 0L
+//                            if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
+//                        } else null
+////                        val intent = Intent(
+//                            this,
+//                            ChatThreadActivity::class.java
+//                        )
+//                        if (openChatId != null) {
+//                            intent.putExtra(
+//                                ChatThreadActivity.EXTRA_CHAT_ID,
+//                                openChatId
+//                            )
+//                        }
+//                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        startActivity(intent)
+//                    }
+//                    true
+//                }
 
                 R.id.nav_transcriptions_recordings -> {
                     binding.bottomNavigation.post {
@@ -1087,31 +1087,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     true
                 }
 
-                R.id.nav_settings -> {
-                    binding.bottomNavigation.post {
-                        startActivity(
-                            Intent(
-                                this,
-                                SettingsActivity::class.java
-                            ).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                            })
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_settings -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(
+//                            Intent(
+//                                this,
+//                                SettingsActivity::class.java
+//                            ).apply {
+//                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                            })
+//                    }
+//                    true
+//                }
 
-                R.id.nav_community_plugins -> {
-                    binding.bottomNavigation.post {
-                        startActivity(
-                            Intent(
-                                this,
-                                CommunityPluginsActivity::class.java
-                            ).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                            })
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_community_plugins -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(
+//                            Intent(
+//                                this,
+//                                CommunityPluginsActivity::class.java
+//                            ).apply {
+//                                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                            })
+//                    }
+//                    true
+//                }
 
                 else -> false
             }
@@ -1135,14 +1137,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             binding.btnVolume,
             binding.btnMediaCount,
             binding.btnDataDownload,
-            binding.btnOtaInfo,
-            binding.btnPullOtaTest,
+            // Hidden from the simplified main screen: binding.btnOtaInfo,
+            // Hidden from the simplified main screen: binding.btnPullOtaTest,
             binding.btnModeGemini,
             binding.btnModeChatgpt,
             binding.btnModeTasker,
-            binding.btnTestHijackVoice,
-            binding.btnTestHijackImage,
-            binding.btnToggleAdvanced,
+            // Hidden from the simplified main screen: binding.btnTestHijackVoice,
+            // Hidden from the simplified main screen: binding.btnTestHijackImage,
+            // Hidden from the simplified main screen: binding.btnToggleAdvanced,
             // binding.btnNotes,
             binding.btnMeetingStart,
             binding.btnMeetingStop,
@@ -2198,14 +2200,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 "Not now",
                 null
             )
-            .setPositiveButton("Open Plugins") { _, _ ->
-                startActivity(
-                    Intent(
-                        this,
-                        CommunityPluginsActivity::class.java
-                    )
-                )
-            }
+            // Plugins entry is hidden in the simplified UI; keep the screen code,
+            // but do not route users into it from this warning.
+//            .setPositiveButton("Open Plugins") { _, _ ->
+//                startActivity(
+//                    Intent(
+//                        this,
+//                        CommunityPluginsActivity::class.java
+//                    )
+//                )
+//            }
             .show()
 
         return true

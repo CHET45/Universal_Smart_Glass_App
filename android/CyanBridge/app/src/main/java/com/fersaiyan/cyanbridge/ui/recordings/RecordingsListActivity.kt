@@ -28,6 +28,7 @@ import com.fersaiyan.cyanbridge.data.local.entity.CaptureSession
 import com.fersaiyan.cyanbridge.databinding.ActivityRecordingsListBinding
 import com.fersaiyan.cyanbridge.localagent.userfacts.TranscriptCandidateFactsAppender
 import com.fersaiyan.cyanbridge.privacy.PrivacyPrefs
+import com.fersaiyan.cyanbridge.ui.AppUiPolish
 import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
 import com.fersaiyan.cyanbridge.ui.CommunityPluginsActivity
 import com.fersaiyan.cyanbridge.ui.MeetingRecordingBannerController
@@ -120,7 +121,7 @@ class RecordingsListActivity : AppCompatActivity() {
         super.onResume()
         // Ensure correct nav highlight when returning via CLEAR_TOP/SINGLE_TOP.
         binding.bottomNavigation.post {
-            binding.bottomNavigation.menu.findItem(R.id.nav_transcriptions_recordings).isChecked = true
+            AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_transcriptions_recordings)
         }
     }
 
@@ -159,7 +160,7 @@ class RecordingsListActivity : AppCompatActivity() {
     }
 
     private fun setupBottomNavigation() {
-        binding.bottomNavigation.selectedItemId = R.id.nav_transcriptions_recordings
+        AppUiPolish.configureBottomNavigation(binding.bottomNavigation, R.id.nav_transcriptions_recordings)
         binding.bottomNavigation.setOnItemSelectedListener { item ->
             when (item.itemId) {
                 R.id.nav_transcriptions_recordings -> true
@@ -171,46 +172,46 @@ class RecordingsListActivity : AppCompatActivity() {
                     }
                     true
                 }
-                R.id.nav_chats -> {
-                    binding.bottomNavigation.post {
-                        val last = ChatStore.listNonEmptyThreads().firstOrNull()
-                        val now = System.currentTimeMillis()
-
-                        fun lastUserMessageAtMs(chatId: String): Long? {
-                            val msgs = ChatStore.listMessages(chatId)
-                            return msgs.lastOrNull { it.role == com.fersaiyan.cyanbridge.chat.ChatRole.USER }?.createdAt
-                        }
-
-                        val openChatId = if (last != null) {
-                            val lastUserAt = lastUserMessageAtMs(last.id) ?: 0L
-                            if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
-                        } else null
-
-                        val intent = Intent(this, ChatThreadActivity::class.java)
-                        if (openChatId != null) {
-                            intent.putExtra(ChatThreadActivity.EXTRA_CHAT_ID, openChatId)
-                        }
-                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        startActivity(intent)
-                    }
-                    true
-                }
-                R.id.nav_settings -> {
-                    binding.bottomNavigation.post {
-                        startActivity(Intent(this, SettingsActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
-                    }
-                    true
-                }
-                R.id.nav_community_plugins -> {
-                    binding.bottomNavigation.post {
-                        startActivity(Intent(this, CommunityPluginsActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                        })
-                    }
-                    true
-                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_chats -> {
+//                    binding.bottomNavigation.post {
+//                        val last = ChatStore.listNonEmptyThreads().firstOrNull()
+//                        val now = System.currentTimeMillis()
+////                        fun lastUserMessageAtMs(chatId: String): Long? {
+//                            val msgs = ChatStore.listMessages(chatId)
+//                            return msgs.lastOrNull { it.role == com.fersaiyan.cyanbridge.chat.ChatRole.USER }?.createdAt
+//                        }
+////                        val openChatId = if (last != null) {
+//                            val lastUserAt = lastUserMessageAtMs(last.id) ?: 0L
+//                            if (lastUserAt > 0L && (now - lastUserAt) < 30 * 60 * 1000) last.id else null
+//                        } else null
+////                        val intent = Intent(this, ChatThreadActivity::class.java)
+//                        if (openChatId != null) {
+//                            intent.putExtra(ChatThreadActivity.EXTRA_CHAT_ID, openChatId)
+//                        }
+//                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        startActivity(intent)
+//                    }
+//                    true
+//                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_settings -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(Intent(this, SettingsActivity::class.java).apply {
+//                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        })
+//                    }
+//                    true
+//                }
+                // Hidden from bottom navigation for the simplified user-facing UI.
+//                R.id.nav_community_plugins -> {
+//                    binding.bottomNavigation.post {
+//                        startActivity(Intent(this, CommunityPluginsActivity::class.java).apply {
+//                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+//                        })
+//                    }
+//                    true
+//                }
                 else -> false
             }
         }

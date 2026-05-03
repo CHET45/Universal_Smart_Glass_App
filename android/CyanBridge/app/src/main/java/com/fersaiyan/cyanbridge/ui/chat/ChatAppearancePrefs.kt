@@ -1,8 +1,7 @@
 package com.fersaiyan.cyanbridge.ui.chat
 
 import android.content.Context
-import androidx.core.content.ContextCompat
-import com.fersaiyan.cyanbridge.R
+import android.graphics.Color
 
 object ChatAppearancePrefs {
     private const val PREFS = "chat_appearance_prefs"
@@ -13,10 +12,10 @@ object ChatAppearancePrefs {
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun defaultUserBubbleColor(context: Context): Int =
-        ContextCompat.getColor(context, R.color.cyan_accent)
+        Color.parseColor("#4F46E5")
 
     fun defaultAssistantBubbleColor(context: Context): Int =
-        ContextCompat.getColor(context, R.color.card_bg)
+        Color.parseColor("#EEF2FF")
 
     fun getUserBubbleColor(context: Context): Int =
         prefs(context).getInt(KEY_USER_BUBBLE_COLOR, defaultUserBubbleColor(context))
