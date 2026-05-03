@@ -7,10 +7,6 @@ import com.oudmon.ble.base.communication.file.FileHandle
 
 /**
  * Mirrors the official HeyCyan DeviceCmdInit flow after GATT service discovery.
- *
- * The order matters: initEnable -> sync time/info/battery/features -> feature-dependent
- * work-type/gyro/volume sync. These calls warm the Oudmon large-data state before UI commands
- * such as photo, video, media count and P2P transfer are issued.
  */
 object HeyCyanDeviceInitializer {
     private const val TAG = "HeyCyanDeviceInitializer"
@@ -19,15 +15,13 @@ object HeyCyanDeviceInitializer {
         val appContext = context.applicationContext
         val handler = LargeDataHandler.getInstance()
 
+        clearFileCallbacks()
         runCatching { handler.initEnable() }
             .onFailure { Log.w(TAG, "initEnable failed", it) }
 
         syncTime(handler)
         syncDeviceInfo(appContext, handler)
-        syncBattery(appContext, handler)
-        syncFeatureSupport(appContext, handler)
-        syncVolume(appContext, handler)
-        syncMediaCounts(handler)
+        syncDeviceSetting(appContext, handler)
     }
 
     private fun syncTime(handler: LargeDataHandler) {
@@ -52,7 +46,7 @@ object HeyCyanDeviceInitializer {
         }.onFailure { Log.w(TAG, "syncDeviceInfo failed", it) }
     }
 
-    private fun syncBattery(context: Context, handler: LargeDataHandler) {
+    private fun syncDeviceSetting(context: Context, handler: LargeDataHandler) {
         runCatching {
             handler.addBatteryCallBack("device_init") { cmdType, response ->
                 Log.d(TAG, "battery callback cmdType=$cmdType response=$response")
@@ -60,60 +54,37 @@ object HeyCyanDeviceInitializer {
             }
             handler.syncBattery()
         }.onFailure { Log.w(TAG, "syncBattery failed", it) }
-    }
 
-    private fun syncFeatureSupport(context: Context, handler: LargeDataHandler) {
-        val callback: (Int, Any?) -> Unit = { cmdType, response ->
-            Log.d(TAG, "feature support callback cmdType=$cmdType response=$response")
-            HeyCyanDeviceStateStore.saveFeatureSupport(context, response)
-            syncWorkType(handler)
-            syncGyro(handler)
-        }
-
-        val invoked = runCatching {
-            invokeFirstAvailable(handler, FEATURE_SUPPORT_METHOD_NAMES, callback)
-        }.getOrDefault(false)
-
-        if (!invoked) {
-            Log.w(TAG, "No compatible wear/function support method found in LargeDataHandler")
-        }
-    }
-
-    private fun syncVolume(context: Context, handler: LargeDataHandler) {
-        val callback: (Int, Any?) -> Unit = { cmdType, response ->
-            Log.d(TAG, "volume callback cmdType=$cmdType response=$response")
-            HeyCyanDeviceStateStore.saveVolume(context, response)
-        }
-
-        val invoked = runCatching {
-            invokeFirstAvailable(handler, VOLUME_METHOD_NAMES, callback)
-        }.getOrDefault(false)
-
-        if (!invoked) {
-            Log.d(TAG, "No compatible volume sync method found in LargeDataHandler")
-        }
-    }
-
-    private fun syncWorkType(handler: LargeDataHandler) {
         runCatching {
-            handler.glassesControl(byteArrayOf(0x02, 0x09)) { cmdType, response ->
+            handler.wearFunctionSupport { cmdType, response ->
+                Log.d(TAG, "wearFunctionSupport callback cmdType=$cmdType response=$response")
+                HeyCyanDeviceStateStore.saveFeatureSupport(context, response)
+                getGlassesWorkType(handler)
+            }
+        }.onFailure { Log.w(TAG, "wearFunctionSupport failed", it) }
+
+        runCatching {
+            handler.getVolumeControl { cmdType, response ->
+                Log.d(TAG, "volume callback cmdType=$cmdType response=$response")
+                HeyCyanDeviceStateStore.saveVolume(context, response)
+            }
+        }.onFailure { Log.d(TAG, "getVolumeControl failed", it) }
+
+        syncMediaCounts(handler)
+    }
+
+    /**
+     * Archive DeviceCmdInit.getGlassesWorkType sends 01 0A; this is not the media-count command.
+     */
+    private fun getGlassesWorkType(handler: LargeDataHandler) {
+        runCatching {
+            handler.glassesControl(byteArrayOf(0x01, 0x0A)) { cmdType, response ->
                 Log.d(TAG, "workType callback cmdType=$cmdType dataType=${response.dataType} error=${response.errorCode}")
             }
-        }.onFailure { Log.d(TAG, "syncWorkType failed", it) }
-    }
-
-    private fun syncGyro(handler: LargeDataHandler) {
-        runCatching {
-            handler.glassesControl(byteArrayOf(0x02, 0x0A)) { cmdType, response ->
-                Log.d(TAG, "gyro callback cmdType=$cmdType dataType=${response.dataType} error=${response.errorCode}")
-            }
-        }.onFailure { Log.d(TAG, "syncGyro failed", it) }
+        }.onFailure { Log.d(TAG, "getGlassesWorkType failed", it) }
     }
 
     private fun syncMediaCounts(handler: LargeDataHandler) {
-        runCatching {
-            FileHandle.getInstance().clear()
-        }
         runCatching {
             handler.glassesControl(byteArrayOf(0x02, 0x04)) { cmdType, response ->
                 Log.d(
@@ -124,25 +95,18 @@ object HeyCyanDeviceInitializer {
         }.onFailure { Log.d(TAG, "syncMediaCounts failed", it) }
     }
 
-    private fun invokeFirstAvailable(
-        handler: LargeDataHandler,
-        names: List<String>,
-        callback: (Int, Any?) -> Unit,
-    ): Boolean {
-        for (name in names) {
-            val method = handler.javaClass.methods.firstOrNull { method ->
-                method.name == name && method.parameterTypes.size == 1
+    private fun clearFileCallbacks() {
+        val fileHandle = runCatching { FileHandle.getInstance() }.getOrNull() ?: return
+        for (methodName in listOf("clearCallback", "clear")) {
+            val method = fileHandle.javaClass.methods.firstOrNull {
+                it.name == methodName && it.parameterTypes.isEmpty()
             } ?: continue
-
-            return runCatching {
-                method.invoke(handler, callback)
-                true
-            }.getOrElse { error ->
-                Log.d(TAG, "Invocation of $name failed", error)
-                false
-            }
+            runCatching {
+                method.invoke(fileHandle)
+                Log.d(TAG, "FileHandle.$methodName invoked")
+            }.onFailure { Log.d(TAG, "FileHandle.$methodName failed", it) }
+            return
         }
-        return false
     }
 
     private fun Any.readStringCompat(name: String): String? {
@@ -163,19 +127,4 @@ object HeyCyanDeviceInitializer {
             field.get(this)?.toString()
         }.getOrNull()
     }
-
-    private val FEATURE_SUPPORT_METHOD_NAMES = listOf(
-        "wearFunctionSupport",
-        "getWearFunctionSupport",
-        "syncWearFunctionSupport",
-        "syncFunctionSupport",
-        "getFunctionSupport",
-    )
-
-    private val VOLUME_METHOD_NAMES = listOf(
-        "getVolumeControl",
-        "syncVolumeControl",
-        "getVolume",
-        "syncVolume",
-    )
 }
