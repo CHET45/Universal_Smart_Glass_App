@@ -76,7 +76,6 @@ import com.fersaiyan.cyanbridge.protocol.GlassesDevice
 import com.fersaiyan.cyanbridge.protocol.GlassesEvent
 import com.fersaiyan.cyanbridge.protocol.GlassesProtocol
 import com.fersaiyan.cyanbridge.ui.AppUiPolish
-import com.fersaiyan.cyanbridge.ui.AutoPairManager
 import com.fersaiyan.cyanbridge.ui.BatteryOptimizationGuideActivity
 import com.fersaiyan.cyanbridge.ui.BluetoothEvent
 import com.fersaiyan.cyanbridge.ui.BluetoothUtils
@@ -229,6 +228,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         private const val MEDIA_COUNT_NOTIFY_DEBOUNCE_MS = 900L
         private const val MEDIA_COUNT_AFTER_RECORDING_DELAY_MS = 1_500L
         private const val WORK_TYPE_QUERY_TIMEOUT_MS = 1_000L
+        private const val HSC_SELF_EVENT_SUPPRESSION_MS = 5_000L
         private const val QUERY_MAX_AGENT_PERSONA_CHARS = 1200
         private const val QUERY_MAX_USER_FACTS_CHARS = 1400
         private const val QUERY_MAX_CONFIRMED_FACTS_CHARS = 1800
@@ -303,6 +303,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var mediaCountNotifyRefreshJob: Job? = null
     private var lastMediaCountNotifyRefreshAtMs = 0L
     private var currentGlassesWorkType: Int? = null
+    private var hscIgnorePhotoEventsUntilMs = 0L
+    private var hscIgnoreVideoEventsUntilMs = 0L
+    private var hscIgnoreAudioEventsUntilMs = 0L
     private var pendingBatteryToast = false
     private var batteryCallbackRegistered = false
     private var protocolConnectionStateJob: Job? = null
@@ -944,7 +947,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun handleProtocolButtonEvent(event: GlassesEvent.ButtonPressed) {
         val selectedClass = DeviceProfileStore.loadLastSelected(this)?.selectedClass
 
-        // S100/Eyevue and HSC upload action/status notifications after the app command.
+        if (selectedClass == DeviceClass.HSC_H5_15) {
+            if (shouldIgnoreHscSelfOriginatedButton(event)) return
+
+            when (event.button) {
+                GlassesEvent.Button.PHOTO -> binding.btnCamera.performClick()
+                GlassesEvent.Button.VIDEO -> binding.btnVideo.performClick()
+                GlassesEvent.Button.AUDIO -> binding.btnRecord.performClick()
+                GlassesEvent.Button.AI -> triggerAssistantVoiceQuery()
+                GlassesEvent.Button.VOLUME_UP,
+                GlassesEvent.Button.VOLUME_DOWN,
+                GlassesEvent.Button.UNKNOWN -> Unit
+            }
+            return
+        }
+
+        // S100/Eyevue upload action/status notifications after the app command.
         // These notifications must not be converted back into button clicks; otherwise
         // cmd 0x45 "taking photo" causes btnCamera.performClick(), which sends another
         // photo command and creates a capture loop that rapidly increments media count.
@@ -976,6 +994,36 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             GlassesEvent.Button.VOLUME_DOWN,
             GlassesEvent.Button.UNKNOWN -> Unit
         }
+    }
+
+    private fun markHscSelfOriginatedButton(button: GlassesEvent.Button) {
+        if (DeviceProfileStore.loadLastSelected(this)?.selectedClass != DeviceClass.HSC_H5_15) return
+
+        val until = System.currentTimeMillis() + HSC_SELF_EVENT_SUPPRESSION_MS
+        when (button) {
+            GlassesEvent.Button.PHOTO -> hscIgnorePhotoEventsUntilMs = until
+            GlassesEvent.Button.VIDEO -> hscIgnoreVideoEventsUntilMs = until
+            GlassesEvent.Button.AUDIO -> hscIgnoreAudioEventsUntilMs = until
+            else -> Unit
+        }
+    }
+
+    private fun shouldIgnoreHscSelfOriginatedButton(event: GlassesEvent.ButtonPressed): Boolean {
+        val now = System.currentTimeMillis()
+        val ignored = when (event.button) {
+            GlassesEvent.Button.PHOTO -> now < hscIgnorePhotoEventsUntilMs
+            GlassesEvent.Button.VIDEO -> now < hscIgnoreVideoEventsUntilMs
+            GlassesEvent.Button.AUDIO -> now < hscIgnoreAudioEventsUntilMs
+            else -> false
+        }
+
+        if (ignored) {
+            Log.i(
+                "GlassesProtocol",
+                "Ignoring HSC/HY15 self-originated action echo: ${event.button}"
+            )
+        }
+        return ignored
     }
 
     private fun showCommandResult(
@@ -1243,10 +1291,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnConnect -> {
-                    AutoPairManager.setAutoReconnectSuppressed(
-                        false,
-                        reason = "user_reconnect_button"
-                    )
                     Toast.makeText(
                         this@MainActivity,
                         "Reconnecting to glasses…",
@@ -1277,10 +1321,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 binding.btnDisconnect -> {
-                    AutoPairManager.setAutoReconnectSuppressed(
-                        true,
-                        reason = "user_disconnect_button"
-                    )
                     Toast.makeText(
                         this@MainActivity,
                         "Disconnecting from glasses…",
@@ -1402,6 +1442,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     CoroutineScope(Dispatchers.Main).launch {
                         try {
                             if (!prepareProtocolAction(protocol, GlassesAction.PHOTO)) return@launch
+                            markHscSelfOriginatedButton(GlassesEvent.Button.PHOTO)
                             val result = protocol.takePhoto(aiTransfer = false)
                             showCommandResult(
                                 "Take photo",
@@ -1515,39 +1556,39 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         // Legacy HeyCyan/Oudmon volume API. Unsupported protocols are blocked by supportsAction().
                         LargeDataHandler.getInstance()
                             .getVolumeControl { _, response ->
-                            if (response != null) {
-                                val msg = """
+                                if (response != null) {
+                                    val msg = """
                                 Music: ${response.currVolumeMusic}/${response.maxVolumeMusic}
                                 Call: ${response.currVolumeCall}/${response.maxVolumeCall}
                                 System: ${response.currVolumeSystem}/${response.maxVolumeSystem}
                                 Mode: ${response.currVolumeType}
                             """.trimIndent()
-                                Log.i(
-                                    "VolumeControl",
-                                    msg.replace(
-                                        '\n',
-                                        ' '
+                                    Log.i(
+                                        "VolumeControl",
+                                        msg.replace(
+                                            '\n',
+                                            ' '
+                                        )
                                     )
-                                )
-                                runOnUiThread {
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        msg,
-                                        Toast.LENGTH_LONG
-                                    )
-                                        .show()
-                                }
-                            } else {
-                                runOnUiThread {
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "Failed to read volume info",
-                                        Toast.LENGTH_SHORT
-                                    )
-                                        .show()
+                                    runOnUiThread {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            msg,
+                                            Toast.LENGTH_LONG
+                                        )
+                                            .show()
+                                    }
+                                } else {
+                                    runOnUiThread {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Failed to read volume info",
+                                            Toast.LENGTH_SHORT
+                                        )
+                                            .show()
+                                    }
                                 }
                             }
-                        }
                     }
                 }
 
@@ -1968,6 +2009,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 return@launch
             }
 
+            if (start) {
+                markHscSelfOriginatedButton(GlassesEvent.Button.VIDEO)
+            }
+
             when (val result = protocol.setVideoRecording(start)) {
                 GlassesCommandResult.Accepted -> {
                     GlassesMediaPrefs.setVideoRecording(
@@ -2026,6 +2071,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     Toast.LENGTH_SHORT,
                 ).show()
                 return@launch
+            }
+
+            if (start) {
+                markHscSelfOriginatedButton(GlassesEvent.Button.AUDIO)
             }
 
             when (val result = protocol.setAudioRecording(start)) {
@@ -6636,9 +6685,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadStartupTimeoutJob = CoroutineScope(Dispatchers.Main).launch {
             delay(60_000L)
             val stillStarting = !downloadCancelledByUser &&
-                !downloadP2pConnected &&
-                !downloadInProgress &&
-                downloadAttemptJob?.isActive != true
+                    !downloadP2pConnected &&
+                    !downloadInProgress &&
+                    downloadAttemptJob?.isActive != true
 
             if (stillStarting) {
                 Log.e("DataDownload", "Timed out waiting for glasses P2P peer/connection")
@@ -6656,11 +6705,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadBleIpTimeoutJob = CoroutineScope(Dispatchers.Main).launch {
             delay(25_000L)
             val stillWaitingForIp = !downloadCancelledByUser &&
-                downloadP2pConnected &&
-                !downloadInProgress &&
-                downloadAttemptJob?.isActive != true &&
-                downloadBleIp.isNullOrBlank() &&
-                bleIpBridge.ip.value.isNullOrBlank()
+                    downloadP2pConnected &&
+                    !downloadInProgress &&
+                    downloadAttemptJob?.isActive != true &&
+                    downloadBleIp.isNullOrBlank() &&
+                    bleIpBridge.ip.value.isNullOrBlank()
 
             if (stillWaitingForIp) {
                 Log.e(

@@ -1,66 +1,36 @@
 package com.fersaiyan.cyanbridge.ui
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import com.oudmon.ble.base.bluetooth.BleOperateManager
-import com.oudmon.ble.base.bluetooth.DeviceManager
 
+/**
+ * Autopair/autoreconnect is intentionally disabled.
+ *
+ * Keep this object as a compatibility shim for callers that still reference
+ * AutoPairManager, but never initiate BLE connection or classic BT bonding from
+ * here. Manual scan/connect/disconnect flows remain handled by the UI/protocol
+ * layer.
+ */
 object AutoPairManager {
-
 
     private const val TAG = "AutoPairManager"
 
-    @Volatile
-    private var autoReconnectSuppressed: Boolean = false
-
-    private val handler = Handler(Looper.getMainLooper())
-
     fun start(context: Context) {
-
-        requestConnect(context.applicationContext, reason = "app_start")
+        Log.i(TAG, "Autopair disabled; ignoring start for ${context.packageName}")
     }
 
     fun setAutoReconnectSuppressed(suppressed: Boolean, reason: String = "") {
-        autoReconnectSuppressed = suppressed
-        Log.i(TAG, "setAutoReconnectSuppressed=$suppressed reason=$reason")
+        Log.i(TAG, "Autopair disabled; ignoring suppression=$suppressed reason=$reason")
     }
 
     fun requestConnect(context: Context, reason: String = "") {
-        if (autoReconnectSuppressed) {
-            Log.i(TAG, "Auto reconnect suppressed, skip requestConnect. reason=$reason")
-            return
-        }
-
-        val mac = DeviceManager.getInstance().deviceAddress
-
-        if (mac.isNullOrBlank()) {
-            Log.i(TAG, "No saved device address, skip requestConnect. reason=$reason")
-            return
-        }
-
-        requestConnectToMac(context, mac, reason)
+        Log.i(TAG, "Autopair disabled; ignoring requestConnect reason=$reason package=${context.packageName}")
     }
 
     fun requestConnectToMac(context: Context, macAddress: String, reason: String = "") {
-        if (autoReconnectSuppressed) {
-            Log.i(TAG, "Auto reconnect suppressed, skip requestConnectToMac. reason=$reason")
-            return
-        }
-
-        if (macAddress.isBlank()) {
-            Log.i(TAG, "Empty macAddress, skip requestConnectToMac. reason=$reason")
-            return
-        }
-
-        handler.post {
-            try {
-                Log.i(TAG, "Connecting to $macAddress reason=$reason")
-                BleOperateManager.getInstance().connectDirectly(macAddress)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to connect to $macAddress reason=$reason", e)
-            }
-        }
+        Log.i(
+            TAG,
+            "Autopair disabled; ignoring requestConnectToMac mac=$macAddress reason=$reason package=${context.packageName}"
+        )
     }
 }

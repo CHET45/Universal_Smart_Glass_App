@@ -25,6 +25,12 @@ internal class EyevueS2WifiMediaDownloader(
     private val host: String = P2P_HOST,
     private val port: Int = HTTP_PORT,
 ) {
+    private val transferMode: WifiTransferMode = if (host == AP_HOST) {
+        WifiTransferMode.AP
+    } else {
+        WifiTransferMode.P2P
+    }
+
     suspend fun waitUntilReachable(
         attempts: Int = 8,
         delayMillis: Long = 1_000L,
@@ -43,8 +49,8 @@ internal class EyevueS2WifiMediaDownloader(
     suspend fun fetchFileList(): List<RemoteMediaFile> {
         val body = httpText(fileListUrl())
         return parseFileList(body)
-            .distinctBy { it.fullPath }
-            .sortedByDescending { it.timeCode ?: 0L }
+            .distinctBy { it.devicePath }
+            .sortedWith(compareByDescending<RemoteMediaFile> { it.timeCode ?: 0L }.thenBy { it.name })
     }
 
     suspend fun downloadFile(item: RemoteMediaFile): String = withContext(Dispatchers.IO) {
@@ -55,7 +61,7 @@ internal class EyevueS2WifiMediaDownloader(
         try {
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
-                throw IOException("HTTP $responseCode while downloading ${item.fullPath}")
+                throw IOException("HTTP $responseCode while downloading ${item.devicePath}")
             }
 
             connection.inputStream.use { input ->
@@ -70,7 +76,7 @@ internal class EyevueS2WifiMediaDownloader(
             }
             target.absolutePath
         } catch (error: Throwable) {
-            if (target.exists() && target.length() == 0L) target.delete()
+            if (target.exists()) target.delete()
             throw error
         } finally {
             connection.disconnect()
@@ -91,21 +97,33 @@ internal class EyevueS2WifiMediaDownloader(
             }
         }
 
-    private fun fileListUrl(): URL = URL("http", host, port, "/?custom=1&cmd=3015")
+    private fun fileListUrl(): URL = when (transferMode) {
+        WifiTransferMode.P2P -> URL("http", host, port, P2P_FILE_LIST_ENDPOINT)
+        WifiTransferMode.AP -> URL("http", host, port, AP_FILE_LIST_ENDPOINT)
+    }
 
     private fun downloadUrl(item: RemoteMediaFile): URL = URL(
         "http",
         host,
         port,
-        encodePath(item.fullPath)
+        encodePath(item.httpPath)
     )
 
-    private fun deleteUrl(item: RemoteMediaFile): URL = URL(
-        "http",
-        host,
-        port,
-        "/?custom=1&cmd=4003&str=${encodeDevicePathForQuery(item.fullPath)}"
-    )
+    private fun deleteUrl(item: RemoteMediaFile): URL = when (transferMode) {
+        WifiTransferMode.P2P -> URL(
+            "http",
+            host,
+            port,
+            "$P2P_DELETE_ENDPOINT${encodeQueryValue(p2pDeletePath(item))}"
+        )
+
+        WifiTransferMode.AP -> URL(
+            "http",
+            host,
+            port,
+            "$AP_DELETE_ENDPOINT${encodeQueryValue(item.devicePath)}"
+        )
+    }
 
     private suspend fun httpText(url: URL): String = withContext(Dispatchers.IO) {
         val bytes = httpBytes(url)
@@ -163,13 +181,18 @@ internal class EyevueS2WifiMediaDownloader(
             val files = section.optJSONArray("files") ?: JSONArray()
             for (j in 0 until files.length()) {
                 val file = files.optJSONObject(j) ?: continue
-                val name = file.optString("name")
-                if (name.isBlank()) continue
-                val path = normalizePath(folder, name)
+                val rawName = file.optString("name").trim()
+                if (rawName.isBlank()) continue
+
+                val devicePath = buildDevicePath(folder, rawName)
+                val fileName = fileNameFromDevicePath(rawName).ifBlank { fileNameFromDevicePath(devicePath) }
                 out += RemoteMediaFile(
-                    name = name,
-                    fullPath = path,
+                    name = fileName,
+                    devicePath = devicePath,
+                    httpPath = devicePath.toHttpPath(),
                     size = file.optLong("size", -1L).takeIf { it >= 0L },
+                    timeCode = file.optString("timecode").toLongOrNull()
+                        ?: file.optString("createtimestr").toLongOrNull(),
                     timeText = file.optString("createtimestr").takeIf { it.isNotBlank() },
                     attr = file.optInt("type", -1).takeIf { it >= 0 },
                 )
@@ -223,27 +246,33 @@ internal class EyevueS2WifiMediaDownloader(
     }.getOrDefault(emptyList())
 
     private fun parseLooseFileList(raw: String): List<RemoteMediaFile> {
-        val pathRegex = Regex("/?(?:DCIM|PHOTO|VIDEO|AUDIO|RECORD)[^\\s<>'\\\"]+\\.(?:jpg|jpeg|png|mp4|mov|avi|wav|aac|amr|opus|m4a)", RegexOption.IGNORE_CASE)
+        val pathRegex = Regex(
+            "(?:[A-Za-z]:)?[/\\\\]?(?:DCIM|PHOTO|VIDEO|AUDIO|RECORD)[^\\s<>'\\\"]+\\.(?:jpg|jpeg|png|mp4|mov|avi|wav|aac|amr|opus|m4a)",
+            RegexOption.IGNORE_CASE
+        )
         return pathRegex.findAll(raw)
-            .map { it.value }
-            .map { path ->
+            .map { it.value.trim() }
+            .map { devicePath ->
                 RemoteMediaFile(
-                    name = path.substringAfterLast('/'),
-                    fullPath = path.ensureLeadingSlash(),
+                    name = fileNameFromDevicePath(devicePath),
+                    devicePath = devicePath,
+                    httpPath = devicePath.toHttpPath(),
                 )
             }
             .toList()
     }
 
     private fun Map<String, String>.toRemoteMediaFile(): RemoteMediaFile? {
-        val name = firstValue("name", "filename", "file") ?: return null
+        val rawName = firstValue("name", "filename", "file") ?: return null
         val explicitPath = firstValue("fpath", "path", "filepath", "url")
         val folder = firstValue("folder", "dir", "directory") ?: DEFAULT_FOLDER
-        val fullPath = explicitPath?.takeIf { it.isNotBlank() }?.ensureLeadingSlash()
-            ?: normalizePath(folder, name)
+        val devicePath = explicitPath?.takeIf { it.isNotBlank() }
+            ?: buildDevicePath(folder, rawName)
+
         return RemoteMediaFile(
-            name = name.substringAfterLast('/'),
-            fullPath = fullPath,
+            name = fileNameFromDevicePath(rawName).ifBlank { fileNameFromDevicePath(devicePath) },
+            devicePath = devicePath,
+            httpPath = devicePath.toHttpPath(),
             size = firstValue("size", "length")?.toLongOrNull(),
             timeCode = firstValue("timecode", "ctime", "mtime")?.toLongOrNull(),
             timeText = firstValue("time", "createtime", "createtimestr"),
@@ -273,7 +302,7 @@ internal class EyevueS2WifiMediaDownloader(
 
     private fun uniqueFile(directory: File, fileName: String): File {
         directory.mkdirs()
-        val safeName = fileName.substringAfterLast('/').ifBlank { "media.bin" }
+        val safeName = fileName.substringAfterLast('/').substringAfterLast('\\').ifBlank { "media.bin" }
         val candidate = File(directory, safeName)
         if (!candidate.exists()) return candidate
         val base = safeName.substringBeforeLast('.', safeName)
@@ -287,20 +316,53 @@ internal class EyevueS2WifiMediaDownloader(
         }
     }
 
-    private fun normalizePath(folder: String, name: String): String {
-        if (name.startsWith("/")) return name
-        val cleanFolder = folder.ifBlank { DEFAULT_FOLDER }.trimEnd('/')
-        return "$cleanFolder/$name".ensureLeadingSlash()
+    private fun buildDevicePath(folder: String, name: String): String {
+        val cleanName = name.trim()
+        if (cleanName.looksLikeDevicePath()) return cleanName
+
+        val cleanFolder = folder.ifBlank { DEFAULT_FOLDER }.trimEnd('/', '\\')
+        return "$cleanFolder/$cleanName"
     }
+
+    private fun p2pDeletePath(item: RemoteMediaFile): String {
+        val normalized = item.devicePath.ifBlank { item.httpPath }.trim()
+        if (DRIVE_PREFIX_REGEX.containsMatchIn(normalized)) {
+            return normalized.replace('/', '\\')
+        }
+
+        val withoutLeadingSlash = normalized
+            .ifBlank { DEFAULT_FOLDER + "/" + item.name }
+            .replace('\\', '/')
+            .trimStart('/')
+
+        return "A:\\${withoutLeadingSlash.replace('/', '\\')}"
+    }
+
+    private fun String.toHttpPath(): String {
+        var path = trim().replace('\\', '/')
+        path = DRIVE_PREFIX_REGEX.replace(path, "")
+        return path.ensureLeadingSlash()
+    }
+
+    private fun String.looksLikeDevicePath(): Boolean =
+        contains('/') || contains('\\') || DRIVE_PREFIX_REGEX.containsMatchIn(this)
+
+    private fun fileNameFromDevicePath(path: String): String = path
+        .trim()
+        .replace('\\', '/')
+        .removePrefix("A:")
+        .removePrefix("a:")
+        .substringAfterLast('/')
 
     private fun encodePath(path: String): String = path
         .ensureLeadingSlash()
         .split('/')
         .joinToString("/") { segment ->
-            if (segment.isEmpty()) "" else URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
+            if (segment.isEmpty()) "" else encodeQueryValue(segment)
         }
 
-    private fun encodeDevicePathForQuery(path: String): String = encodePath(path)
+    private fun encodeQueryValue(value: String): String =
+        URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")
 
     private fun String.ensureLeadingSlash(): String = if (startsWith("/")) this else "/$this"
 
@@ -313,7 +375,8 @@ internal class EyevueS2WifiMediaDownloader(
 
     data class RemoteMediaFile(
         val name: String,
-        val fullPath: String,
+        val devicePath: String,
+        val httpPath: String,
         val size: Long? = null,
         val timeCode: Long? = null,
         val timeText: String? = null,
@@ -322,11 +385,21 @@ internal class EyevueS2WifiMediaDownloader(
         val mediaType: GlassesTransferEvent.MediaType = inferMediaType(name, attr)
     }
 
+    private enum class WifiTransferMode {
+        P2P,
+        AP,
+    }
+
     companion object {
         const val P2P_HOST = "192.168.49.207"
-        const val AP_HOST = "192.168.1.254"
-        const val HTTP_PORT = 80
+        const val AP_HOST = "192.168.169.1"
+        const val HTTP_PORT = 8080 // TODO поменять на 80, если целевая прошивка использует порт из архивной реализации.
         private const val DEFAULT_FOLDER = "/DCIM/100HUNTI"
+        private const val P2P_FILE_LIST_ENDPOINT = "/?custom=1&cmd=3015"
+        private const val AP_FILE_LIST_ENDPOINT = "/app/getfilelist"
+        private const val P2P_DELETE_ENDPOINT = "/?custom=1&cmd=4003&str="
+        private const val AP_DELETE_ENDPOINT = "/app/deletefile?file="
+        private val DRIVE_PREFIX_REGEX = Regex("^[A-Za-z]:")
         private val FILE_ITEM_TAGS = setOf("file", "item", "files")
         private val FILE_FIELD_TAGS = setOf(
             "name",

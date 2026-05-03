@@ -47,9 +47,7 @@ class MyApplication : Application(){
         CONTEXT = applicationContext
         initBle()
 
-        // Keep the BLE control channel connected while the app process is alive.
-        // This matches user expectations from the official HeyCyan companion app.
-        AutoPairManager.start(this)
+        // Autopair/autoreconnect is disabled; only explicit user actions connect devices.
 
         // Local Agent: ensure daily reminder schedule matches current prefs.
         DailyFactsReminderScheduler.scheduleIfEnabled(

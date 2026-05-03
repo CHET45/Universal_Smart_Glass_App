@@ -39,6 +39,10 @@ object HscH515PacketCodec {
     const val CMD_GET_BATTERY: Int = 0x0101
     const val CMD_BATTERY_NOTIFY: Int = 0x0102
 
+    const val CMD_DEVICE_AI_MODE: Int = 0x0802
+    const val CMD_AI_MODE_EVENT_TRIGGER: Int = 0x0803
+    const val CMD_AI_MODE_VOICE_EVENT_TRIGGER: Int = 0x0805
+
     const val CMD_SET_TIME: Int = 0x0903
     const val CMD_FILE_COUNT_NOTIFY: Int = 0x0905
     const val CMD_GET_FILE_COUNT: Int = 0x0916
@@ -285,6 +289,13 @@ object HscH515PacketCodec {
         parseStringPayload(payload)?.let { return it }
         if (payload.isEmpty()) return null
         return payload.joinToString(".") { (it.toInt() and 0xFF).toString() }
+    }
+
+    fun parseDeviceControl(payload: ByteArray): Int? = payload.firstOrNull()?.toInt()?.and(0xFF)
+
+    fun parseAiTrigger(payload: ByteArray): Boolean {
+        val value = payload.firstOrNull()?.toInt()?.and(0xFF)
+        return value == null || value != 0
     }
 
     fun parseVideoState(payload: ByteArray): Boolean? = when (payload.firstOrNull()?.toInt()?.and(0xFF)) {

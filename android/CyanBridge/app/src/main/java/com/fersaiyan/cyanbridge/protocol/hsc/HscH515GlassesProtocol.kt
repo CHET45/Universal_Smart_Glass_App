@@ -827,32 +827,54 @@ class HscH515GlassesProtocol(
                 completePendingDeviceInfoIfPossible(force = false)
             }
 
+            HscH515PacketCodec.CMD_DEVICE_CONTROL -> handleDeviceControlPacket(packet)
+
+            HscH515PacketCodec.CMD_DEVICE_AI_MODE,
+            HscH515PacketCodec.CMD_AI_MODE_EVENT_TRIGGER,
+            HscH515PacketCodec.CMD_AI_MODE_VOICE_EVENT_TRIGGER -> {
+                if (isIncomingDeviceEvent(packet) && HscH515PacketCodec.parseAiTrigger(packet.payload)) {
+                    emitButton(GlassesEvent.Button.AI, packet.commandId)
+                }
+            }
+
             HscH515PacketCodec.CMD_VIDEO_STATE_NOTIFY -> {
+                if (!isIncomingDeviceEvent(packet)) return
                 HscH515PacketCodec.parseVideoState(packet.payload)
-                    ?.let { enabled ->
-                        val button =
-                            if (enabled) GlassesEvent.Button.VIDEO else GlassesEvent.Button.UNKNOWN
-                        _events.tryEmit(
-                            GlassesEvent.ButtonPressed(
-                                button,
-                                packet.commandId
-                            )
-                        )
-                    }
+                    ?.takeIf { it }
+                    ?.let { emitButton(GlassesEvent.Button.VIDEO, packet.commandId) }
             }
 
             HscH515PacketCodec.CMD_LOCAL_AUDIO_STATE_NOTIFY -> {
+                if (!isIncomingDeviceEvent(packet)) return
                 HscH515PacketCodec.parseAudioState(packet.payload)
-                    ?.let { enabled ->
-                        if (enabled) _events.tryEmit(
-                            GlassesEvent.ButtonPressed(
-                                GlassesEvent.Button.AUDIO,
-                                packet.commandId
-                            )
-                        )
-                    }
+                    ?.takeIf { it }
+                    ?.let { emitButton(GlassesEvent.Button.AUDIO, packet.commandId) }
             }
         }
+    }
+
+    private fun handleDeviceControlPacket(packet: HscH515PacketCodec.Packet) {
+        if (!isIncomingDeviceEvent(packet)) return
+        when (HscH515PacketCodec.parseDeviceControl(packet.payload)) {
+            DEVICE_CONTROL_TAKE_PHOTO -> emitButton(GlassesEvent.Button.PHOTO, packet.commandId)
+            DEVICE_CONTROL_START_VIDEO -> emitButton(GlassesEvent.Button.VIDEO, packet.commandId)
+            DEVICE_CONTROL_STOP_VIDEO -> Unit
+            else -> Unit
+        }
+    }
+
+    private fun isIncomingDeviceEvent(packet: HscH515PacketCodec.Packet): Boolean {
+        return packet.type == HscH515PacketCodec.TYPE_REQUEST ||
+                packet.type == HscH515PacketCodec.TYPE_NOTIFY
+    }
+
+    private fun emitButton(button: GlassesEvent.Button, sourceCommand: Int) {
+        _events.tryEmit(
+            GlassesEvent.ButtonPressed(
+                button,
+                sourceCommand,
+            )
+        )
     }
 
     private fun completePendingDeviceInfoIfPossible(force: Boolean) {

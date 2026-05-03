@@ -186,10 +186,6 @@ class DeviceBindActivity : BaseActivity() {
 
                 val selected = classes.getOrNull(selectedIndex) ?: device.detectedClass
 
-                AutoPairManager.setAutoReconnectSuppressed(
-                    false,
-                    reason = "user_manual_pair"
-                )
                 device.userSelectedClass = selected
 
                 val profile = DeviceProfile(
