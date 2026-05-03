@@ -65,6 +65,7 @@ import com.fersaiyan.cyanbridge.localmodels.storage.LocalModelStorageRepository
 import com.fersaiyan.cyanbridge.media.GlassesMediaPrefs
 import com.fersaiyan.cyanbridge.media.SyncedMediaFolder
 import com.fersaiyan.cyanbridge.media.autocapture.AutoAudioCapturePrefs
+import com.fersaiyan.cyanbridge.media.autocapture.AutoAudioCaptureService
 import com.fersaiyan.cyanbridge.media.autocapture.GlassesSyncedAudioIngestor
 import com.fersaiyan.cyanbridge.memoryvault.MemoryPolicyService
 import com.fersaiyan.cyanbridge.protocol.AppGlassesProtocolManager
@@ -82,6 +83,7 @@ import com.fersaiyan.cyanbridge.ui.ChatThreadActivity
 import com.fersaiyan.cyanbridge.ui.CommunityPluginPrefs
 import com.fersaiyan.cyanbridge.ui.CommunityPluginsActivity
 import com.fersaiyan.cyanbridge.ui.DeviceBindActivity
+import com.fersaiyan.cyanbridge.ui.GlassesBatteryUpdateEvent
 import com.fersaiyan.cyanbridge.ui.SettingsActivity
 import com.fersaiyan.cyanbridge.ui.VersionUpdateChecker
 import com.fersaiyan.cyanbridge.ui.bleIpBridge
@@ -220,6 +222,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         private const val AI_MODE_TASKER = "Tasker"
         private const val AI_MODE_CHOSEN_PROVIDER = "ChosenProvider"
         private const val TASKER_PACKAGE_NAME = "net.dinglisch.android.taskerm"
+        private const val GLASSES_WORK_IDLE = -1
+        private const val GLASSES_WORK_VIDEO_RECORDING = 2
+        private const val GLASSES_WORK_AUDIO_RECORDING = 8
+        private const val MEDIA_COUNT_NOTIFY_DEBOUNCE_MS = 900L
+        private const val MEDIA_COUNT_AFTER_RECORDING_DELAY_MS = 1_500L
+        private const val WORK_TYPE_QUERY_TIMEOUT_MS = 1_000L
         private const val QUERY_MAX_AGENT_PERSONA_CHARS = 1200
         private const val QUERY_MAX_USER_FACTS_CHARS = 1400
         private const val QUERY_MAX_CONFIRMED_FACTS_CHARS = 1800
@@ -258,6 +266,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var downloadPhoneIsGroupOwner: Boolean = true
     private var downloadInProgress = false
     private var downloadAttemptJob: Job? = null
+    private var downloadPreflightJob: Job? = null
+    private var downloadStartupTimeoutJob: Job? = null
+    private var downloadBleIpTimeoutJob: Job? = null
     private var downloadResolvedHttpIp: String? = null
     private var downloadP2pNetwork: Network? = null
     private var boundNetwork: Network? = null
@@ -267,8 +278,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var downloadCancelledByUser = false
     private var lastDownloadBleIpAtMs: Long = 0L
 
-    // Guard against concurrent/duplicate image queries
+    // Guard against concurrent/duplicate image/photo queries
     private val imageQueryInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val photoCaptureInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
     private var lastImageQueryAtMs: Long = 0L
 
     // Official app registers the notify listener with cmdType=2 for album import.
@@ -286,6 +298,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var transferDoneOpus = 0
     private var batteryPollJob: Job? = null
     private val batteryPollIntervalMs = 60_000L
+    private val mediaCountRequestInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var mediaCountNotifyRefreshJob: Job? = null
+    private var lastMediaCountNotifyRefreshAtMs = 0L
+    private var currentGlassesWorkType: Int? = null
     private var pendingBatteryToast = false
     private var batteryCallbackRegistered = false
     private var protocolConnectionStateJob: Job? = null
@@ -621,12 +637,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         updateConnectionStatus(isConnected)
 
-        if (
-            isConnected &&
-            profile?.selectedClass == DeviceClass.HSC_H5_15 &&
-            protocol != null
-        ) {
-            refreshProtocolBatteryOnce(protocol)
+        if (isConnected && protocol != null) {
+            refreshProtocolBatteryForConnectedProfile(profile?.selectedClass, protocol)
+            refreshProtocolMediaCountOnce(protocol)
         }
 
         if (protocol == null) {
@@ -640,11 +653,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 val connected = isProtocolStateConnected(profile?.selectedClass, state)
                 updateConnectionStatus(connected)
 
-                if (
-                    connected &&
-                    profile?.selectedClass == DeviceClass.HSC_H5_15
-                ) {
-                    refreshProtocolBatteryOnce(protocol)
+                if (connected) {
+                    refreshProtocolBatteryForConnectedProfile(profile?.selectedClass, protocol)
+                    refreshProtocolMediaCountOnce(protocol)
                 }
             }
         }
@@ -670,12 +681,49 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
     private var protocolBatteryRefreshJob: Job? = null
+    private var protocolMediaCountRefreshJob: Job? = null
+    private var lastBatteryUiUpdateAtMs = 0L
+    private var lastAutoMediaCountRefreshAtMs = 0L
+
+    private fun refreshProtocolBatteryForConnectedProfile(
+        selectedClass: DeviceClass?,
+        protocol: GlassesProtocol,
+    ) {
+        when (selectedClass) {
+            DeviceClass.HEY_CYAN,
+            null -> refreshLegacyBatteryAfterVendorInitIfNeeded()
+
+            DeviceClass.EYEVUE_S2,
+            DeviceClass.HSC_H5_15 -> refreshProtocolBatteryOnce(protocol)
+
+            DeviceClass.META_RAYBAN,
+            DeviceClass.GENERIC_AUDIO,
+            DeviceClass.UNKNOWN -> Unit
+        }
+    }
+
+    private fun refreshLegacyBatteryAfterVendorInitIfNeeded() {
+        if (protocolBatteryRefreshJob?.isActive == true) return
+
+        val startedAtMs = System.currentTimeMillis()
+        protocolBatteryRefreshJob = CoroutineScope(Dispatchers.Main).launch {
+            // DeviceCmdInit mirrors the vendor app and starts syncBattery() immediately after
+            // service discovery. Use this as a fallback only if that init callback did not
+            // update the UI, so media-count refresh does not race the battery command.
+            delay(1_100)
+            if (!currentProtocolIsConnected()) return@launch
+            if (lastBatteryUiUpdateAtMs >= startedAtMs) return@launch
+
+            requestBatteryStatus(showToast = false)
+        }
+    }
 
     private fun refreshProtocolBatteryOnce(protocol: GlassesProtocol) {
         if (protocolBatteryRefreshJob?.isActive == true) return
 
         protocolBatteryRefreshJob = CoroutineScope(Dispatchers.Main).launch {
-            delay(500)
+            delay(350)
+            if (!currentProtocolIsConnected()) return@launch
 
             protocol.requestBattery()
                 .onSuccess { battery ->
@@ -690,6 +738,93 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
         }
     }
+    private fun refreshProtocolMediaCountOnce(protocol: GlassesProtocol) {
+        if (protocolMediaCountRefreshJob?.isActive == true) return
+
+        protocolMediaCountRefreshJob = CoroutineScope(Dispatchers.Main).launch {
+            // Initial snapshot only. Live gallery changes are driven by glasses notify
+            // events (0x02 / 0x14), not by a background polling loop.
+            delay(1_200)
+            if (!currentProtocolIsConnected()) return@launch
+
+            refreshMediaCountQuietly(
+                protocol = protocol,
+                reason = "connect_snapshot",
+                timeoutMs = 8_000L,
+            )
+        }
+    }
+
+    private fun scheduleMediaCountRefreshFromGlassesNotify(
+        reason: String,
+        delayMs: Long = MEDIA_COUNT_NOTIFY_DEBOUNCE_MS,
+    ) {
+        val profile = DeviceProfileStore.loadLastSelected(this)
+        val protocol = glassesProtocolManager.currentOrCreate(profile?.selectedClass) ?: return
+        if (!currentProtocolIsConnected()) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastMediaCountNotifyRefreshAtMs < 250L) {
+            mediaCountNotifyRefreshJob?.cancel()
+        }
+        lastMediaCountNotifyRefreshAtMs = now
+
+        mediaCountNotifyRefreshJob?.cancel()
+        mediaCountNotifyRefreshJob = CoroutineScope(Dispatchers.Main).launch {
+            delay(delayMs)
+            if (!currentProtocolIsConnected()) return@launch
+
+            refreshMediaCountQuietly(
+                protocol = protocol,
+                reason = reason,
+                timeoutMs = 8_000L,
+            )
+        }
+    }
+
+
+    private suspend fun refreshMediaCountQuietly(
+        protocol: GlassesProtocol,
+        reason: String,
+        timeoutMs: Long,
+    ): Boolean {
+        if (!mediaCountRequestInFlight.compareAndSet(false, true)) {
+            Log.i("MediaCount", "Skipping $reason media count refresh; request already in flight")
+            return false
+        }
+
+        return try {
+            val result = withTimeoutOrNull(timeoutMs) {
+                protocol.requestMediaCounts()
+            }
+
+            if (result == null) {
+                Log.w("MediaCount", "$reason media count refresh timed out after ${timeoutMs}ms")
+                return false
+            }
+
+            result
+                .onSuccess { counts ->
+                    lastAutoMediaCountRefreshAtMs = System.currentTimeMillis()
+                    binding.storageText.text = "${counts.total} files"
+                    Log.i(
+                        "MediaCount",
+                        "$reason media count refreshed: photos=${counts.photos}, videos=${counts.videos}, audios=${counts.audios}, total=${counts.total}"
+                    )
+                }
+                .onFailure { error ->
+                    Log.w(
+                        "MediaCount",
+                        "$reason media count refresh failed: ${error.message}",
+                        error
+                    )
+                }
+                .isSuccess
+        } finally {
+            mediaCountRequestInFlight.set(false)
+        }
+    }
+
     private fun unbindCurrentProtocolUi() {
         protocolConnectionStateJob?.cancel()
         protocolConnectionStateJob = null
@@ -699,6 +834,88 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         protocolBatteryRefreshJob?.cancel()
         protocolBatteryRefreshJob = null
+
+        protocolMediaCountRefreshJob?.cancel()
+        protocolMediaCountRefreshJob = null
+
+        mediaCountNotifyRefreshJob?.cancel()
+        mediaCountNotifyRefreshJob = null
+    }
+
+    private fun applyGlassesWorkType(workType: Int?) {
+        currentGlassesWorkType = workType
+        when (workType) {
+            GLASSES_WORK_VIDEO_RECORDING -> {
+                GlassesMediaPrefs.setVideoRecording(this, true)
+                GlassesMediaPrefs.setAudioRecording(this, false)
+            }
+            GLASSES_WORK_AUDIO_RECORDING -> {
+                GlassesMediaPrefs.setVideoRecording(this, false)
+                GlassesMediaPrefs.setAudioRecording(this, true)
+            }
+            GLASSES_WORK_IDLE -> {
+                GlassesMediaPrefs.setVideoRecording(this, false)
+                GlassesMediaPrefs.setAudioRecording(this, false)
+            }
+        }
+    }
+
+    private suspend fun refreshCurrentGlassesWorkTypeQuietly(): Int? {
+        return withTimeoutOrNull(WORK_TYPE_QUERY_TIMEOUT_MS) {
+            suspendCancellableCoroutine<Int?> { continuation ->
+                runCatching {
+                    LargeDataHandler.getInstance()
+                        .glassesControl(byteArrayOf(0x01, 0x0A)) { _, response ->
+                            if (!continuation.isActive) return@glassesControl
+                            val workType = readIntProperty(
+                                response,
+                                "getGlassesCurrentType",
+                                "glassesCurrentType",
+                            )
+                            if (workType != null) {
+                                applyGlassesWorkType(workType)
+                                Log.i("DeviceNotify", "Queried glasses work type: $workType")
+                            } else {
+                                Log.w("DeviceNotify", "Could not parse glasses work type response: $response")
+                            }
+                            continuation.resume(workType)
+                        }
+                }.onFailure { error ->
+                    Log.w("DeviceNotify", "Failed to query glasses work type", error)
+                    if (continuation.isActive) continuation.resume(null)
+                }
+            }
+        }
+    }
+
+    private fun readIntProperty(
+        target: Any?,
+        vararg names: String,
+    ): Int? {
+        if (target == null) return null
+        for (name in names) {
+            runCatching {
+                val method = target.javaClass.methods.firstOrNull { method ->
+                    method.name == name && method.parameterTypes.isEmpty()
+                }
+                val value = method?.invoke(target)
+                when (value) {
+                    is Number -> return value.toInt()
+                    is String -> value.toIntOrNull()?.let { return it }
+                    else -> Unit
+                }
+            }
+            runCatching {
+                val field = target.javaClass.fields.firstOrNull { field -> field.name == name }
+                val value = field?.get(target)
+                when (value) {
+                    is Number -> return value.toInt()
+                    is String -> value.toIntOrNull()?.let { return it }
+                    else -> Unit
+                }
+            }
+        }
+        return null
     }
 
     private fun isProtocolStateConnected(
@@ -1161,13 +1378,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 binding.btnCamera -> {
                     val protocol = currentGlassesProtocolOrToast() ?: return@setOnClickListener
 
+                    if (!photoCaptureInProgress.compareAndSet(false, true)) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Photo capture is already running.",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        return@setOnClickListener
+                    }
+
                     CoroutineScope(Dispatchers.Main).launch {
-                        if (!prepareProtocolAction(protocol, GlassesAction.PHOTO)) return@launch
-                        val result = protocol.takePhoto(aiTransfer = false)
-                        showCommandResult(
-                            "Take photo",
-                            result
-                        )
+                        try {
+                            if (!prepareProtocolAction(protocol, GlassesAction.PHOTO)) return@launch
+                            val result = protocol.takePhoto(aiTransfer = false)
+                            showCommandResult(
+                                "Take photo",
+                                result
+                            )
+                            // Give the glasses a short finalize window before P2P sync is allowed.
+                            delay(2_000L)
+                        } finally {
+                            photoCaptureInProgress.set(false)
+                        }
                     }
                 }
 
@@ -1322,6 +1554,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         val result = protocol.requestMediaCounts()
 
                         result.onSuccess { counts ->
+                            binding.storageText.text = "${counts.total} files"
+                            lastAutoMediaCountRefreshAtMs = System.currentTimeMillis()
                             val msg = if (counts.total > 0) {
                                 "Media not uploaded - Photos: ${counts.photos}, Videos: ${counts.videos}, Records: ${counts.audios}"
                             } else {
@@ -1764,9 +1998,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun controlAudioRecording(start: Boolean) {
         val protocol = currentGlassesProtocolOrToast() ?: return
 
+        if (start) {
+            GlassesMediaPrefs.setAudioRecording(this, true)
+        }
+
         CoroutineScope(Dispatchers.Main).launch {
             val action = if (start) GlassesAction.AUDIO_START else GlassesAction.AUDIO_STOP
             if (!protocol.supportsAction(action)) {
+                if (start) {
+                    GlassesMediaPrefs.setAudioRecording(this@MainActivity, false)
+                }
                 Toast.makeText(
                     this@MainActivity,
                     "${action.name.lowercase().replace('_', ' ')} is not supported for selected glasses",
@@ -1777,6 +2018,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             when (val result = protocol.setAudioRecording(start)) {
                 GlassesCommandResult.Accepted -> {
+                    GlassesMediaPrefs.setAudioRecording(
+                        this@MainActivity,
+                        start
+                    )
                     Log.i(
                         "GlassesProtocol",
                         "Audio recording command accepted: start=$start"
@@ -1784,6 +2029,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
 
                 is GlassesCommandResult.Rejected -> {
+                    GlassesMediaPrefs.setAudioRecording(
+                        this@MainActivity,
+                        false
+                    )
                     if (start) {
                         Log.e(
                             "GlassesProtocol",
@@ -1813,10 +2062,24 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     fun onBluetoothEvent(event: BluetoothEvent) {
         updateConnectionStatus(event.connect)
         if (event.connect) {
-            requestBatteryStatus(showToast = false)
+            val profile = DeviceProfileStore.loadLastSelected(this)
+            glassesProtocolManager.currentOrCreate(profile?.selectedClass)?.let { protocol ->
+                refreshProtocolBatteryForConnectedProfile(profile?.selectedClass, protocol)
+                refreshProtocolMediaCountOnce(protocol)
+            } ?: requestBatteryStatus(showToast = false)
         } else {
+            GlassesMediaPrefs.setVideoRecording(this, false)
+            GlassesMediaPrefs.setAudioRecording(this, false)
             updateBatteryText(null)
+            currentGlassesWorkType = null
+            lastAutoMediaCountRefreshAtMs = 0L
+            lastMediaCountNotifyRefreshAtMs = 0L
         }
+    }
+
+    @Subscribe(threadMode = ThreadMode.MAIN)
+    fun onGlassesBatteryUpdateEvent(event: GlassesBatteryUpdateEvent) {
+        handleBatteryReport(event.battery, event.charging)
     }
 
     private fun startBatteryPolling() {
@@ -1824,6 +2087,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
         batteryPollJob = CoroutineScope(Dispatchers.Main).launch {
+            // The first post-connect battery read is handled by DeviceCmdInit/protocol refresh.
+            // Polling starts later so it does not compete with the initial status sync.
+            delay(batteryPollIntervalMs)
             while (isActive) {
                 if (currentProtocolIsConnected()) {
                     requestBatteryStatus(showToast = false)
@@ -3717,6 +3983,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
 
     private fun updateBatteryText(battery: Int?) {
+        if (battery != null) {
+            lastBatteryUiUpdateAtMs = System.currentTimeMillis()
+        }
         binding.batteryText.text = battery?.let { "$it%" } ?: "--%"
     }
 
@@ -3797,7 +4066,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // Add battery listener. According to the SDK docs this
         // callback is invoked when syncBattery completes.
         LargeDataHandler.getInstance()
-            .addBatteryCallBack("init") { _, response ->
+            .addBatteryCallBack("main_activity_battery") { _, response ->
                 val result = parseBatteryResponse(response)
                 Log.i(
                     "BatteryCallback",
@@ -3978,6 +4247,101 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         return likely.firstOrNull()
     }
 
+    private fun currentGlassesBusyReasonForDataDownload(): String? {
+        return when {
+            imageQueryInProgress.get() || photoCaptureInProgress.get() -> "Photo capture or visual AI processing is still running. Finish it before syncing files."
+            currentGlassesWorkType == GLASSES_WORK_VIDEO_RECORDING -> "Video recording is active on the glasses. Stop recording before syncing files."
+            currentGlassesWorkType == GLASSES_WORK_AUDIO_RECORDING -> "Audio recording is active on the glasses. Stop recording before syncing files."
+            GlassesMediaPrefs.isVideoRecording(this) -> "Video recording is active on the glasses. Stop recording before syncing files."
+            GlassesMediaPrefs.isAudioRecording(this) -> "Audio recording is active on the glasses. Stop recording before syncing files."
+            AutoAudioCaptureService.isRecordingOnGlasses() -> "Automatic glasses audio recording is active. Stop or pause it before syncing files."
+            MeetingCapturePrefs.getState(this).let { it.isRecording && it.source == CaptureSource.BLUETOOTH_MIC } -> "Bluetooth/glasses microphone recording is active. Stop recording before syncing files."
+            else -> null
+        }
+    }
+
+    private fun isGlassesBusyForDataDownload(showToast: Boolean): Boolean {
+        val reason = currentGlassesBusyReasonForDataDownload() ?: return false
+        if (showToast) {
+            Log.w("DataDownload", "Blocking data sync: $reason")
+            Toast.makeText(this, reason, Toast.LENGTH_LONG).show()
+        } else {
+            Log.d("DataDownload", "Skipping background media-count refresh while busy: $reason")
+        }
+        return true
+    }
+
+    private suspend fun refreshMediaCountForDataDownload(protocol: GlassesProtocol): Boolean {
+        var acquired = mediaCountRequestInFlight.compareAndSet(false, true)
+        var attempts = 0
+        while (!acquired && attempts < 15) {
+            delay(200L)
+            acquired = mediaCountRequestInFlight.compareAndSet(false, true)
+            attempts++
+        }
+        if (!acquired) {
+            Log.i("DataDownload", "Media count preflight skipped; another media count request is still in flight")
+            Toast.makeText(
+                this,
+                "Media count is still updating. Try sync again in a moment.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return false
+        }
+
+        return try {
+            val result = withTimeoutOrNull(10_000L) {
+                protocol.requestMediaCounts()
+            }
+
+            if (result == null) {
+                Log.e("DataDownload", "Media count preflight timed out")
+                Toast.makeText(
+                    this,
+                    "Could not update glasses media count. Stop recording and try again.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return false
+            }
+
+            result
+                .map { counts ->
+                    lastAutoMediaCountRefreshAtMs = System.currentTimeMillis()
+                    binding.storageText.text = "${counts.total} files"
+                    Log.i(
+                        "DataDownload",
+                        "Media count preflight: photos=${counts.photos}, videos=${counts.videos}, audios=${counts.audios}, total=${counts.total}"
+                    )
+                    if (counts.total <= 0) {
+                        Toast.makeText(this, "No files to sync on glasses.", Toast.LENGTH_SHORT).show()
+                        false
+                    } else {
+                        true
+                    }
+                }
+                .getOrElse { error ->
+                    Log.e("DataDownload", "Media count preflight failed: ${error.message}", error)
+                    Toast.makeText(
+                        this,
+                        "Could not update glasses media count: ${error.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    false
+                }
+        } finally {
+            mediaCountRequestInFlight.set(false)
+        }
+    }
+
+    private suspend fun prepareDataDownloadPreflight(protocol: GlassesProtocol): Boolean {
+        refreshCurrentGlassesWorkTypeQuietly()
+        if (isGlassesBusyForDataDownload(showToast = true)) return false
+        if (!prepareProtocolAction(protocol, GlassesAction.MEDIA_COUNT)) return false
+        refreshCurrentGlassesWorkTypeQuietly()
+        if (isGlassesBusyForDataDownload(showToast = true)) return false
+        return refreshMediaCountForDataDownload(protocol)
+    }
+
     private fun startDataDownload() {
         Log.i(
             "DataDownload",
@@ -4034,6 +4398,44 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
+        if (downloadInProgress || downloadAttemptJob?.isActive == true || downloadPreflightJob?.isActive == true) {
+            Toast.makeText(
+                this,
+                "Sync is already running.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        if (isGlassesBusyForDataDownload(showToast = true)) {
+            return
+        }
+
+        val protocol = currentGlassesProtocolOrToast() ?: return
+        downloadCancelledByUser = false
+        downloadPreflightJob = CoroutineScope(Dispatchers.Main).launch {
+            setTransferUiVisible(true)
+            resetTransferUiState()
+            setTransferDetail("Updating glasses media count...")
+
+            val ready = prepareDataDownloadPreflight(protocol)
+            if (!ready) {
+                if (!downloadInProgress && downloadAttemptJob?.isActive != true) {
+                    setTransferUiVisible(false)
+                }
+                downloadPreflightJob = null
+                return@launch
+            }
+
+            startDataDownloadAfterPreflight()
+        }
+        return
+    }
+
+    private fun startDataDownloadAfterPreflight() {
+        downloadPreflightJob = null
+        if (downloadCancelledByUser) return
+
         // Tear down any stale session first so retries do not stack callbacks/jobs.
         teardownDownloadP2pSession(
             sendExitTransfer = false,
@@ -4048,10 +4450,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadInProgress = false
         downloadResolvedHttpIp = null
         lastDownloadBleIpAtMs = 0L
+        downloadStartupTimeoutJob?.cancel()
+        downloadStartupTimeoutJob = null
+        downloadBleIpTimeoutJob?.cancel()
+        downloadBleIpTimeoutJob = null
 
         resetTransferUiState()
         setTransferUiVisible(true)
         setTransferDetail("Starting sync...")
+        armDownloadStartupTimeout()
 
         if (!downloadNotifyListenerRegistered) {
             try {
@@ -5766,6 +6173,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     ) {
         downloadAttemptJob?.cancel()
         downloadAttemptJob = null
+        downloadStartupTimeoutJob?.cancel()
+        downloadStartupTimeoutJob = null
+        downloadBleIpTimeoutJob?.cancel()
+        downloadBleIpTimeoutJob = null
         unbindProcessFromNetwork()
 
         if (hideTransferUi) {
@@ -5859,6 +6270,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             reason
         )
         downloadCancelledByUser = true
+        downloadPreflightJob?.cancel()
+        downloadPreflightJob = null
         setTransferDetail("Stopping sync...")
         teardownDownloadP2pSession(
             sendExitTransfer = true,
@@ -6167,6 +6580,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             "BLE reported device WiFi IP: $ip"
         )
         downloadBleIp = ip
+        downloadBleIpTimeoutJob?.cancel()
+        downloadBleIpTimeoutJob = null
+        if (downloadP2pConnected && downloadP2pNetwork == null) {
+            downloadP2pNetwork = findLikelyP2pNetwork()
+            bindProcessToNetwork(downloadP2pNetwork)
+        }
 
         // If we're stuck scanning/probing without a good route, restart the resolver now that
         // we have the authoritative device IP from BLE.
@@ -6183,6 +6602,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun onDownloadP2pConnected(info: WifiP2pInfo) {
         downloadP2pConnected = info.groupFormed
+        if (downloadP2pConnected) {
+            downloadStartupTimeoutJob?.cancel()
+            downloadStartupTimeoutJob = null
+        }
         downloadWifiIp = info.groupOwnerAddress?.hostAddress
         downloadPhoneIsGroupOwner = info.isGroupOwner
         downloadP2pNetwork = findLikelyP2pNetwork()
@@ -6192,6 +6615,50 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             "onDownloadP2pConnected: p2pConnected=$downloadP2pConnected, isGroupOwner=${info.isGroupOwner}, groupOwnerIp=$downloadWifiIp"
         )
         maybeStartHttpDownload("P2P")
+    }
+
+    private fun armDownloadStartupTimeout() {
+        downloadStartupTimeoutJob?.cancel()
+        downloadStartupTimeoutJob = CoroutineScope(Dispatchers.Main).launch {
+            delay(60_000L)
+            val stillStarting = !downloadCancelledByUser &&
+                !downloadP2pConnected &&
+                !downloadInProgress &&
+                downloadAttemptJob?.isActive != true
+
+            if (stillStarting) {
+                Log.e("DataDownload", "Timed out waiting for glasses P2P peer/connection")
+                showDownloadError(
+                    "Timed out waiting for glasses P2P connection. Stop recording on glasses, refresh media count, and try again.",
+                    cleanup = true
+                )
+            }
+        }
+    }
+
+    private fun armDownloadBleIpTimeout(source: String) {
+        if (downloadBleIpTimeoutJob?.isActive == true) return
+
+        downloadBleIpTimeoutJob = CoroutineScope(Dispatchers.Main).launch {
+            delay(25_000L)
+            val stillWaitingForIp = !downloadCancelledByUser &&
+                downloadP2pConnected &&
+                !downloadInProgress &&
+                downloadAttemptJob?.isActive != true &&
+                downloadBleIp.isNullOrBlank() &&
+                bleIpBridge.ip.value.isNullOrBlank()
+
+            if (stillWaitingForIp) {
+                Log.e(
+                    "DataDownload",
+                    "Timed out waiting for BLE-reported glasses Wi-Fi IP after P2P trigger=$source"
+                )
+                showDownloadError(
+                    "Timed out waiting for glasses Wi-Fi IP. Stop recording on glasses, refresh media count, and try again.",
+                    cleanup = true
+                )
+            }
+        }
     }
 
     private fun maybeStartHttpDownload(source: String) {
@@ -6220,11 +6687,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         val hasDeviceIp = !downloadBleIp.isNullOrBlank() || !bleIpBridge.ip.value.isNullOrBlank()
         if (!hasDeviceIp) {
-            setTransferDetail("Waiting for BLE-reported glasses IP...")
+            setTransferDetail("Waiting for glasses Wi‑Fi IP...")
             Log.i(
                 "DataDownload",
-                "Ignoring HTTP start trigger from $source; waiting for device IP notify"
+                "Ignoring HTTP start trigger from $source; waiting for BLE device IP notify"
             )
+            armDownloadBleIpTimeout(source)
             return
         }
 
@@ -6241,8 +6709,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val startMs = System.currentTimeMillis()
             val overallTimeoutMs = 45_000L
             var lastStatusLogMs = 0L
-            var didSubnetScan = false
-
             while (isActive && System.currentTimeMillis() - startMs < overallTimeoutMs) {
                 val now = System.currentTimeMillis()
                 if (now - lastStatusLogMs > 5000) {
@@ -6276,30 +6742,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         )
                         downloadMediaList(candidate)
                         return@launch
-                    }
-                }
-
-                // 2) If we still don't have a device IP, scan the local /24 derived from
-                // the best available hint (BLE IP, bridge IP, GO subnet, or interface subnet).
-                if (!didSubnetScan && downloadP2pConnected && downloadResolvedHttpIp == null && downloadBleIp == null && bleIpBridge.ip.value == null) {
-                    val prefix = guessDownloadSubnetPrefix()
-                    if (!prefix.isNullOrBlank()) {
-                        didSubnetScan = true
-                        Log.i(
-                            "DataDownload",
-                            "Candidate IPs failed; scanning ${prefix}0/24 for HTTP server..."
-                        )
-                        val found = discoverGlassesIpByScan(prefix)
-                        if (!found.isNullOrBlank()) {
-                            downloadResolvedHttpIp = found
-                            downloadInProgress = true
-                            Log.i(
-                                "DataDownload",
-                                "Resolved glasses HTTP IP via scan: $found"
-                            )
-                            downloadMediaList(found)
-                            return@launch
-                        }
                     }
                 }
 
@@ -6493,8 +6935,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun findLikelyP2pNetwork(): Network? {
-        // We want a network whose sockets route to the Wi‑Fi Direct group even when a VPN is active.
-        // Wi‑Fi Direct networks still show up as TRANSPORT_WIFI; the VPN itself shows up as TRANSPORT_VPN.
+        // Only return a real Wi‑Fi Direct network. Binding the process to ordinary Wi‑Fi
+        // (for example wlan0 on the home LAN) breaks access to the 192.168.49.x P2P peer.
         return try {
             val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -6503,9 +6945,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 ipv4Prefix24(bleIpBridge.ip.value),
                 ipv4Prefix24(downloadWifiIp)
             ).distinct()
-
-            var p2pCandidate: Network? = null
-            var fallbackWifi: Network? = null
 
             for (n in cm.allNetworks) {
                 val caps = cm.getNetworkCapabilities(n) ?: continue
@@ -6517,44 +6956,30 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 val addrs = lp?.linkAddresses?.mapNotNull { it.address.hostAddress } ?: emptyList()
 
                 val matchesHint = prefixHints.any { p -> addrs.any { it.startsWith(p) } }
-                val looksLikeP2p = ifName.contains(
+                val p2pInterface = ifName.contains(
                     "p2p",
                     ignoreCase = true
                 ) || ifName.contains(
                     "wfd",
                     ignoreCase = true
-                ) || addrs.any { it.startsWith("192.168.49.") } || matchesHint
+                )
+                val p2pAddress = addrs.any { it.startsWith("192.168.49.") }
 
-                if (looksLikeP2p) {
+                if (p2pInterface || p2pAddress || matchesHint) {
                     Log.i(
                         "DataDownload",
-                        "Selected P2P/WFD network candidate: if=$ifName addrs=$addrs (matchesHint=$matchesHint)"
+                        "Selected P2P/WFD network: if=$ifName addrs=$addrs (matchesHint=$matchesHint)"
                     )
-                    p2pCandidate = n
-                    // Strong match -> return early.
-                    if (ifName.contains(
-                            "p2p",
-                            ignoreCase = true
-                        ) || ifName.contains(
-                            "wfd",
-                            ignoreCase = true
-                        ) || matchesHint
-                    ) {
-                        return n
-                    }
+                    return n
                 }
 
-                // Keep a Wi‑Fi fallback so VPN doesn't steal routing if we fail to detect P2P.
-                if (fallbackWifi == null) {
-                    Log.i(
-                        "DataDownload",
-                        "Keeping Wi‑Fi fallback network: if=$ifName addrs=$addrs"
-                    )
-                    fallbackWifi = n
-                }
+                Log.i(
+                    "DataDownload",
+                    "Ignoring non-P2P Wi‑Fi network while resolving glasses HTTP: if=$ifName addrs=$addrs"
+                )
             }
 
-            p2pCandidate ?: fallbackWifi
+            null
         } catch (e: Exception) {
             Log.w(
                 "DataDownload",
@@ -6679,21 +7104,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             cmdType: Int,
             response: GlassesDeviceNotifyRsp
         ) {
+            val load = response.loadData
             Log.i(
                 "DeviceNotify",
                 "cmdType=$cmdType, loadData=${
-                    response.loadData.joinToString(separator = ",") {
+                    load.joinToString(separator = ",") {
                         it.toInt()
                             .toString()
                     }
                 }")
-            when (response.loadData[6].toInt()) {
+            if (load.size < 7) {
+                Log.w("DeviceNotify", "Ignoring notify with too-short payload, size=${load.size}")
+                return
+            }
+            when (load[6].toInt()) {
                 //Glasses battery report
                 0x05 -> {
                     //Current battery
-                    val battery = response.loadData[7].toInt()
+                    val battery = load[7].toInt()
                     //Is it charging
-                    val changing = response.loadData[8].toInt()
+                    val changing = load[8].toInt()
                     handleBatteryReport(
                         battery,
                         changing == 1
@@ -6705,6 +7135,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         "DeviceNotify",
                         "AI Photo Button Pressed"
                     )
+                    scheduleMediaCountRefreshFromGlassesNotify("glasses_photo_notify")
                     if (isAiHijackEnabled) {
                         runOnUiThread {
                             val unsupportedReason = imageQueryUnsupportedReasonForCurrentSelection()
@@ -6731,7 +7162,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                 //Glasses activate microphone / AI button
                 0x03 -> {
-                    if (response.loadData[7].toInt() == 1) {
+                    if (load[7].toInt() == 1) {
                         Log.i(
                             "DeviceNotify",
                             "AI Button Pressed - Hijacking to Phone Assistant"
@@ -6754,9 +7185,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 //ota upgrade
                 0x04 -> {
                     try {
-                        response.loadData[7].toInt()
-                        response.loadData[8].toInt()
-                        response.loadData[9].toInt()
+                        load[7].toInt()
+                        load[8].toInt()
+                        load[9].toInt()
                         //download firmware download progress soc download progress nor upgrade progress
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -6765,14 +7196,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                 0x0c -> {
                     //The glasses trigger a pause event, voice broadcast
-                    if (response.loadData[7].toInt() == 1) {
+                    if (load[7].toInt() == 1) {
                         //to do
                     }
                 }
 
                 0x0d -> {
                     //Unbind APP event
-                    if (response.loadData[7].toInt() == 1) {
+                    if (load[7].toInt() == 1) {
                         //to do
                     }
                 }
@@ -6788,30 +7219,30 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 0x12 -> {
                     //Music volume
                     //Minimum volume
-                    response.loadData[8].toInt()
+                    load[8].toInt()
                     //Maximum volume
-                    response.loadData[9].toInt()
+                    load[9].toInt()
                     //Current volume
-                    response.loadData[10].toInt()
+                    load[10].toInt()
 
                     //Incoming call volume
                     //Minimum volume
-                    response.loadData[12].toInt()
+                    load[12].toInt()
                     //Maximum volume
-                    response.loadData[13].toInt()
+                    load[13].toInt()
                     //Current volume
-                    response.loadData[14].toInt()
+                    load[14].toInt()
 
                     //Glasses system volume
                     //Minimum volume
-                    response.loadData[16].toInt()
+                    load[16].toInt()
                     //Maximum volume
-                    response.loadData[17].toInt()
+                    load[17].toInt()
                     //Current volume
-                    response.loadData[18].toInt()
+                    load[18].toInt()
 
                     //Current volume mode
-                    val mode = response.loadData[19].toInt()
+                    val mode = load[19].toInt()
 
                     runOnUiThread {
                         Toast.makeText(
@@ -6823,11 +7254,25 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
 
                 }
+                // Glasses current work type changed. Official app posts this as GlassesWorkingEvent.
+                0x14 -> {
+                    val workType = load.getOrNull(7)?.toInt()
+                    applyGlassesWorkType(workType)
+                    Log.i("DeviceNotify", "Glasses work type changed: $workType")
+
+                    if (workType == GLASSES_WORK_IDLE) {
+                        scheduleMediaCountRefreshFromGlassesNotify(
+                            "glasses_work_idle",
+                            delayMs = MEDIA_COUNT_AFTER_RECORDING_DELAY_MS,
+                        )
+                    }
+                }
+
                 // Glasses report WiFi IP for data download
                 0x08 -> {
-                    if (response.loadData.size >= 11) {
+                    if (load.size >= 11) {
                         val ip =
-                            "${ByteUtil.byteToInt(response.loadData[7])}." + "${ByteUtil.byteToInt(response.loadData[8])}." + "${ByteUtil.byteToInt(response.loadData[9])}." + "${ByteUtil.byteToInt(response.loadData[10])}"
+                            "${ByteUtil.byteToInt(load[7])}." + "${ByteUtil.byteToInt(load[8])}." + "${ByteUtil.byteToInt(load[9])}." + "${ByteUtil.byteToInt(load[10])}"
                         Log.i(
                             "DeviceNotify",
                             "BLE reported WiFi IP: $ip"
@@ -6836,13 +7281,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     } else {
                         Log.w(
                             "DeviceNotify",
-                            "0x08 notify with too-short payload, size=${response.loadData.size}"
+                            "0x08 notify with too-short payload, size=${load.size}"
                         )
                     }
                 }
                 // Glasses report P2P / WiFi error during data download
                 0x09 -> {
-                    val raw = response.loadData.getOrNull(7) ?: 0
+                    val raw = load.getOrNull(7) ?: 0
                     val errorCode = ByteUtil.byteToInt(raw)
                     Log.e(
                         "DeviceNotify",

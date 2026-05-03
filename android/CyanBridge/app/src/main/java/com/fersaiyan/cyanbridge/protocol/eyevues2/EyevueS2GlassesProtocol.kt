@@ -42,7 +42,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -95,6 +95,8 @@ class EyevueS2GlassesProtocol(
     private var pendingBattery: CompletableDeferred<GlassesBattery>? = null
     private var pendingDeviceInfo: CompletableDeferred<GlassesDeviceInfo>? = null
     private var pendingMediaCounts: CompletableDeferred<GlassesMediaCounts>? = null
+    private var pendingVolume: CompletableDeferred<String>? = null
+    private var lastWifiSsid: String? = null
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     override fun scan(filter: GlassesScanFilter): Flow<GlassesDevice> = callbackFlow {
@@ -199,6 +201,11 @@ class EyevueS2GlassesProtocol(
         initialQueriesScheduled = false
         serviceDiscoveryStarted = false
         serviceDiscoveryAttempts = 0
+        pendingBattery = null
+        pendingDeviceInfo = null
+        pendingMediaCounts = null
+        pendingVolume = null
+        lastWifiSsid = null
         setState(GlassesConnectionState.Connecting(lastDevice ?: device))
 
         val adapter = bluetoothManager.adapter
@@ -235,6 +242,11 @@ class EyevueS2GlassesProtocol(
         initialQueriesScheduled = false
         serviceDiscoveryStarted = false
         serviceDiscoveryAttempts = 0
+        pendingBattery = null
+        pendingDeviceInfo = null
+        pendingMediaCounts = null
+        pendingVolume = null
+        lastWifiSsid = null
         writeCharacteristic = null
         cmdNotifyCharacteristic = null
         photoNotifyCharacteristic = null
@@ -275,6 +287,15 @@ class EyevueS2GlassesProtocol(
             if (!sent) return@withTimeoutOrNull Result.failure(IllegalStateException("Media count command was not written"))
             Result.success(deferred.await())
         } ?: Result.failure(IllegalStateException("requestMediaCounts timed out"))
+
+    override suspend fun requestVolume(): Result<String> =
+        withTimeoutOrNull(COMMAND_TIMEOUT_MS) {
+            val deferred = CompletableDeferred<String>()
+            pendingVolume = deferred
+            val sent = write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_VOLUME))
+            if (!sent) return@withTimeoutOrNull Result.failure(IllegalStateException("Volume command was not written"))
+            Result.success(deferred.await())
+        } ?: Result.failure(IllegalStateException("requestVolume timed out"))
 
     override suspend fun takePhoto(aiTransfer: Boolean): GlassesCommandResult = sendCommand(
         commandName = if (aiTransfer) "takePhotoAiTransfer" else "takePhoto",
@@ -319,14 +340,64 @@ class EyevueS2GlassesProtocol(
         }
     }
 
-    override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = flowOf(
-        GlassesTransferEvent.Failed(
-            GlassesProtocolError(
-                code = "NOT_IMPLEMENTED_YET",
-                message = "Eyevue S2 media download needs the Wi-Fi/P2P HTTP layer from the source pack: 192.168.49.207 file-list/download/delete endpoints.",
+    override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = flow {
+        emit(GlassesTransferEvent.Started)
+
+        val wifi = openWifiP2p()
+        if (wifi is GlassesCommandResult.Rejected) {
+            emit(GlassesTransferEvent.Failed(wifi.error))
+            return@flow
+        }
+
+        val downloader = EyevueS2WifiMediaDownloader(context)
+        try {
+            downloader.waitUntilReachable()
+
+            val allFiles = downloader.fetchFileList()
+            val selected = downloader.filter(allFiles, options)
+            val total = selected.size
+
+            if (total == 0) {
+                write(EyevueS2PacketCodec.keepThumbnailCountAndCloseImportMode())
+                emit(GlassesTransferEvent.Progress(0, 0, null))
+                emit(GlassesTransferEvent.Finished)
+                return@flow
+            }
+
+            var completed = 0
+            for (file in selected) {
+                emit(GlassesTransferEvent.Progress(completed, total, file.name))
+
+                val localPath = downloader.downloadFile(file)
+                if (options.deleteRemoteAfterDownload) {
+                    runCatching { downloader.deleteRemote(file) }
+                }
+
+                completed += 1
+                emit(GlassesTransferEvent.FileReady(localPath, file.mediaType))
+                emit(GlassesTransferEvent.Progress(completed, total, file.name))
+            }
+
+            val downloadedEveryKnownFile = selected.size == allFiles.size
+            write(
+                EyevueS2PacketCodec.fileDownloadFinished(
+                    clearThumbnailCount = downloadedEveryKnownFile,
+                    downloadedCount = completed,
+                )
             )
-        )
-    )
+            emit(GlassesTransferEvent.Finished)
+        } catch (error: Throwable) {
+            runCatching { write(EyevueS2PacketCodec.keepThumbnailCountAndCloseImportMode()) }
+            emit(
+                GlassesTransferEvent.Failed(
+                    error.toProtocolError(
+                        code = "MEDIA_DOWNLOAD_FAILED",
+                        fallbackMessage = "Eyevue S2 media download failed"
+                    )
+                )
+            )
+        }
+    }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun close() {
@@ -341,6 +412,8 @@ class EyevueS2GlassesProtocol(
         pendingBattery = null
         pendingDeviceInfo = null
         pendingMediaCounts = null
+        pendingVolume = null
+        lastWifiSsid = null
         writeCharacteristic = null
         cmdNotifyCharacteristic = null
         photoNotifyCharacteristic = null
@@ -582,6 +655,7 @@ class EyevueS2GlassesProtocol(
                     write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_BATTERY))
                     write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_THUMBNAIL_COUNT))
                     write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_DEVICE_INFO))
+                    write(EyevueS2PacketCodec.appCommandWithZero(EyevueS2PacketCodec.CMD_GET_VOLUME))
                 }
             },
             500L
@@ -659,6 +733,17 @@ class EyevueS2GlassesProtocol(
                 pendingMediaCounts?.complete(counts)
                 pendingMediaCounts = null
                 _events.tryEmit(GlassesEvent.MediaCountsChanged(counts))
+            }
+
+            EyevueS2PacketCodec.CMD_GET_VOLUME -> {
+                val parsed = EyevueS2PacketCodec.parseVolume(packet.payload) ?: return
+                val summary = "system=${parsed.first}, media=${parsed.second}, call=${parsed.third}"
+                pendingVolume?.complete(summary)
+                pendingVolume = null
+            }
+
+            EyevueS2PacketCodec.UPLOAD_WIFI_NAME -> {
+                lastWifiSsid = EyevueS2PacketCodec.parseWifiSsid(packet.payload) ?: lastWifiSsid
             }
 
             EyevueS2PacketCodec.UPLOAD_ACTION_SYNC -> handleActionSync(packet.payload)

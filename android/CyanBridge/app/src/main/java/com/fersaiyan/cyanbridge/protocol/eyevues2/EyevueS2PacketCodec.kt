@@ -45,6 +45,10 @@ internal object EyevueS2PacketCodec {
     const val CMD_QUERY_QUICK_VOLUME_SUPPORT = 0x68
     const val CMD_GET_VOLUME = 0x69
 
+    // Present in the real Eyevue application source pack. v11 documents volume adjustment
+    // as 0x32, while the production app uses 0x70 for setting and 0x69 for reading levels.
+    const val CMD_SET_VOLUME_APP = 0x70
+
     const val UPLOAD_WIFI_NAME = 0x25
     const val UPLOAD_THUMBNAIL_COUNT = 0x42
     const val UPLOAD_ACTION_SYNC = 0x45
@@ -178,6 +182,29 @@ internal object EyevueS2PacketCodec {
         val hw = payload[6].u8().toString()
         return Triple(bt, isp, hw)
     }
+
+    fun parseVolume(payload: ByteArray): Triple<Int, Int, Int>? {
+        if (payload.size < 3) return null
+        return Triple(payload[0].u8(), payload[1].u8(), payload[2].u8())
+    }
+
+    fun parseWifiSsid(payload: ByteArray): String? {
+        if (payload.isEmpty()) return null
+        val ssid = payload.toString(Charsets.UTF_8).trim { it <= ' ' || it == '\u0000' }
+        return ssid.takeIf { it.isNotBlank() }
+    }
+
+    fun fileDownloadFinished(clearThumbnailCount: Boolean, downloadedCount: Int = 0): ByteArray {
+        val payload = if (clearThumbnailCount) {
+            byteArrayOf(0x30.toByte(), 0x00.toByte())
+        } else {
+            byteArrayOf(0x31.toByte(), downloadedCount.coerceIn(0, 255).toByte())
+        }
+        return appCommand(CMD_FILE_DOWNLOAD_FINISHED, payload)
+    }
+
+    fun keepThumbnailCountAndCloseImportMode(): ByteArray =
+        appCommand(CMD_FILE_DOWNLOAD_FINISHED, byteArrayOf(0x30.toByte(), 0x01.toByte()))
 
     private fun checksum(command: Int, payload: ByteArray): Int {
         var sum = command and 0xFF

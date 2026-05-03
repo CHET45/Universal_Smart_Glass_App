@@ -76,13 +76,22 @@ interface GlassesProtocol {
     }
 
     /**
-     * Protocol-level feature gate. Volume is currently implemented only by the legacy HeyCyan
-     * path. HSC and S100 should not fall through to Oudmon volume calls.
+     * Protocol-level feature gate. Do not hard-code capabilities by implementation id:
+     * each concrete protocol advertises what it can actually execute.
      */
     fun supportsAction(action: GlassesAction): Boolean {
         return when (action) {
-            GlassesAction.VOLUME -> id == GlassesProtocolId.HEY_CYAN
-            else -> true
+            GlassesAction.TIME_SYNC -> capabilities.contains(GlassesCapability.TIME_SYNC)
+            GlassesAction.DEVICE_INFO -> capabilities.contains(GlassesCapability.DEVICE_INFO)
+            GlassesAction.PHOTO -> capabilities.contains(GlassesCapability.PHOTO_CAPTURE)
+            GlassesAction.VIDEO_START,
+            GlassesAction.VIDEO_STOP -> capabilities.contains(GlassesCapability.VIDEO_RECORDING)
+            GlassesAction.AUDIO_START,
+            GlassesAction.AUDIO_STOP -> capabilities.contains(GlassesCapability.AUDIO_RECORDING)
+            GlassesAction.BATTERY -> capabilities.contains(GlassesCapability.BATTERY)
+            GlassesAction.VOLUME -> capabilities.contains(GlassesCapability.VOLUME_CONTROL)
+            GlassesAction.MEDIA_COUNT -> capabilities.contains(GlassesCapability.MEDIA_COUNT)
+            GlassesAction.DATA_DOWNLOAD -> capabilities.contains(GlassesCapability.WIFI_P2P_DOWNLOAD)
         }
     }
 

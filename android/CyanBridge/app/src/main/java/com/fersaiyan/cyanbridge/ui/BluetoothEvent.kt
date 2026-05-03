@@ -8,3 +8,13 @@ package com.fersaiyan.cyanbridge.ui
  * and only incidentally for machines to execute"
  **/
 open class BluetoothEvent(val connect:Boolean)
+
+/**
+ * Posted when the Oudmon/HeyCyan init flow receives a battery response.
+ * Mirrors the vendor app path, where DeviceCmdInit publishes the battery update
+ * as soon as syncBattery() completes after service discovery.
+ */
+class GlassesBatteryUpdateEvent(
+    val battery: Int,
+    val charging: Boolean,
+)

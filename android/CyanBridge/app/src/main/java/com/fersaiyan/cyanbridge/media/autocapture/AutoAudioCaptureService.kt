@@ -22,6 +22,7 @@ import com.oudmon.ble.base.bluetooth.BleOperateManager
 import com.oudmon.ble.base.communication.LargeDataHandler
 import com.hjq.permissions.XXPermissions
 import com.fersaiyan.cyanbridge.audio.MeetingCapturePrefs
+import com.fersaiyan.cyanbridge.media.GlassesMediaPrefs
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -273,6 +274,8 @@ class AutoAudioCaptureService : Service() {
         }
 
         Log.i(TAG, "Stopping: $reason")
+        GLASSES_AUDIO_RECORDING.set(false)
+        GlassesMediaPrefs.setAudioRecording(this@AutoAudioCaptureService, false)
         loopJob?.cancel()
         loopJob = null
 
@@ -314,8 +317,12 @@ class AutoAudioCaptureService : Service() {
 
         // Some firmware builds start recording but never ACK (or ACK late). Treat timeout as "unknown",
         // not as hard failure, to avoid restart loops.
-        return withTimeoutOrNull(6_000) { done.await() }
+        val ack = withTimeoutOrNull(6_000) { done.await() }
             ?: AudioCmdAck(responded = false, ok = false)
+
+        GLASSES_AUDIO_RECORDING.set(start)
+        GlassesMediaPrefs.setAudioRecording(this@AutoAudioCaptureService, start)
+        return ack
     }
 
     private suspend fun delayWhileEnabledOrPaused(totalMs: Long, stepMs: Long = 2_000): Boolean {
@@ -453,6 +460,7 @@ class AutoAudioCaptureService : Service() {
         private const val VISUAL_NOTE_SETTLE_MS = 20_000L
 
         private val RUNNING = AtomicBoolean(false)
+        private val GLASSES_AUDIO_RECORDING = AtomicBoolean(false)
 
         const val ACTION_START = "com.fersaiyan.cyanbridge.action.AUTO_AUDIO_CAPTURE_START"
         const val ACTION_STOP = "com.fersaiyan.cyanbridge.action.AUTO_AUDIO_CAPTURE_STOP"
@@ -479,10 +487,14 @@ class AutoAudioCaptureService : Service() {
 
         fun stop(context: Context) {
             AutoAudioCapturePrefs.setEnabled(context, false)
+            GLASSES_AUDIO_RECORDING.set(false)
+            GlassesMediaPrefs.setAudioRecording(context, false)
             val intent = Intent(context, AutoAudioCaptureService::class.java).setAction(ACTION_STOP)
             context.startService(intent)
         }
 
         fun isRunning(): Boolean = RUNNING.get()
+
+        fun isRecordingOnGlasses(): Boolean = GLASSES_AUDIO_RECORDING.get()
     }
 }
