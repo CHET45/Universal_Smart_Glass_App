@@ -249,6 +249,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         // For experiments you can point this at a simple `python -m http.server`
         // instance on the phone or on a reachable host.
         private const val TEST_PULL_OTA_URL = "http://192.168.49.1:8080/dummy.swu"
+
+        private const val EYEVUE_S2_HTTP_PORT = 80
+        // TODO поменять на 80, если конкретная прошивка Eyevue S2 отвечает только на стандартном HTTP-порту из архивной реализации.
+        private const val EYEVUE_S2_HTTP_FALLBACK_PORT = 80
+        private const val EYEVUE_S2_P2P_FILE_LIST_ENDPOINT = "/?custom=1&cmd=3015"
+        private const val EYEVUE_S2_P2P_MEDIA_DIR = "/DCIM/100HUNTI/"
     }
 
     private lateinit var binding: AcitivytMainBinding
@@ -271,6 +277,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var downloadStartupTimeoutJob: Job? = null
     private var downloadBleIpTimeoutJob: Job? = null
     private var downloadResolvedHttpIp: String? = null
+    private var downloadResolvedHttpPort: Int = EYEVUE_S2_HTTP_PORT
     private var downloadP2pNetwork: Network? = null
     private var boundNetwork: Network? = null
     private var lastP2pResetAtMs: Long = 0L
@@ -4411,15 +4418,25 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             "Starting BLE+WiFi P2P data download..."
         )
 
-        // Check Bluetooth connection status
-        if (!BleOperateManager.getInstance().isConnected) {
+        val profile = DeviceProfileStore.loadLastSelected(this)
+        val protocol = currentGlassesProtocolOrToast() ?: return
+        val protocolConnected = isProtocolStateConnected(
+            profile?.selectedClass,
+            protocol.connectionState.value
+        )
+        val legacyBleConnected = BleOperateManager.getInstance().isConnected
+
+        // Eyevue S2/HSC use the new GlassesProtocol connection state. The legacy
+        // Oudmon BleOperateManager flag can stay false even when the glasses are
+        // connected, so using it alone causes the false "glasses not connected" error.
+        if (!protocolConnected && !legacyBleConnected) {
             Log.e(
                 "DataDownload",
-                "Bluetooth not connected. Please connect to glasses first."
+                "Glasses protocol is not connected. selectedClass=${profile?.selectedClass}, state=${protocol.connectionState.value}, legacyBle=$legacyBleConnected"
             )
             Toast.makeText(
                 this,
-                "Bluetooth not connected. Please connect to glasses first.",
+                "Glasses are not connected. Please connect to glasses first.",
                 Toast.LENGTH_LONG
             )
                 .show()
@@ -4474,7 +4491,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        val protocol = currentGlassesProtocolOrToast() ?: return
         downloadCancelledByUser = false
         downloadPreflightJob = CoroutineScope(Dispatchers.Main).launch {
             setTransferUiVisible(true)
@@ -4512,6 +4528,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadWifiIp = null
         downloadInProgress = false
         downloadResolvedHttpIp = null
+        downloadResolvedHttpPort = EYEVUE_S2_HTTP_PORT
         lastDownloadBleIpAtMs = 0L
         downloadStartupTimeoutJob?.cancel()
         downloadStartupTimeoutJob = null
@@ -4804,10 +4821,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             try {
                 // Lock the device IP for the whole transfer session.
                 downloadResolvedHttpIp = deviceIp
-                val url = "http://$deviceIp/files/media.config"
                 Log.i(
                     "DataDownload",
-                    "Downloading media list from: $url"
+                    "Downloading Eyevue S2 media list from $deviceIp:${downloadResolvedHttpPort}"
                 )
 
                 withContext(Dispatchers.Main) {
@@ -4815,40 +4831,37 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     setTransferDetail("Fetching media list...")
                 }
 
-                var content: String? = null
-                httpGet(
-                    URL(url),
-                    10000,
-                    30000
-                ) { stream, _ ->
-                    content = stream.bufferedReader()
-                        .use { it.readText() }
-                }
+                val content = httpGetEyevueS2Text(
+                    deviceIp = deviceIp,
+                    path = EYEVUE_S2_P2P_FILE_LIST_ENDPOINT,
+                    connectTimeoutMs = 10000,
+                    readTimeoutMs = 30000,
+                )
 
                 if (content != null) {
                     Log.i(
                         "DataDownload",
-                        "=== MEDIA CONFIG CONTENT ==="
+                        "=== EYEVUE S2 FILE LIST CONTENT ==="
                     )
                     Log.i(
                         "DataDownload",
-                        content!!
+                        content
                     )
                     Log.i(
                         "DataDownload",
-                        "=== END MEDIA CONFIG ==="
+                        "=== END EYEVUE S2 FILE LIST ==="
                     )
                     parseMediaList(
-                        content!!,
+                        content,
                         deviceIp
                     )
                 } else {
                     Log.e(
                         "DataDownload",
-                        "Failed to download media list."
+                        "Failed to download Eyevue S2 media list."
                     )
                     withContext(Dispatchers.Main) {
-                        showDownloadError("Failed to download media list.")
+                        showDownloadError("Failed to download Eyevue S2 media list.")
                     }
                 }
             } catch (e: Exception) {
@@ -4880,75 +4893,93 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         content: String,
         deviceIp: String
     ) {
-        // Parse the media configuration file content - this is a text file containing media file names.
+        // Archive implementation uses /?custom=1&cmd=3015 and returns XML-like data.
+        // Keep the parser tolerant: XML, JSON-ish and loose text are all accepted.
         Log.i(
             "DataDownload",
-            "Parsing media list content..."
+            "Parsing Eyevue S2 media list content..."
         )
 
         try {
-            // Split by line, each line should be a file name
-            val lines = content.trim()
-                .lines()
+            val mediaPaths = extractEyevueS2MediaPaths(content)
             val jpgFiles = mutableListOf<String>()
             val mp4Files = mutableListOf<String>()
             val opusFiles = mutableListOf<String>()
             var otherFiles = 0
 
-            lines.forEach { line ->
-                val trimmedLine = line.trim()
-                if (trimmedLine.isNotEmpty()) {
-                    when {
-                        trimmedLine.endsWith(
-                            ".jpg",
-                            ignoreCase = true
-                        ) || trimmedLine.endsWith(
-                            ".jpeg",
-                            ignoreCase = true
-                        ) -> {
-                            jpgFiles.add(trimmedLine)
-                            Log.i(
-                                "DataDownload",
-                                "Found JPG file: $trimmedLine"
-                            )
-                        }
+            mediaPaths.forEach { path ->
+                val name = eyevueS2DisplayName(path)
+                when {
+                    name.endsWith(
+                        ".jpg",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".jpeg",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".png",
+                        ignoreCase = true
+                    ) -> {
+                        jpgFiles.add(path)
+                        Log.i(
+                            "DataDownload",
+                            "Found photo file: $path"
+                        )
+                    }
 
-                        trimmedLine.endsWith(
-                            ".mp4",
-                            ignoreCase = true
-                        ) -> {
-                            mp4Files.add(trimmedLine)
-                            Log.i(
-                                "DataDownload",
-                                "Found MP4 file: $trimmedLine"
-                            )
-                        }
+                    name.endsWith(
+                        ".mp4",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".mov",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".avi",
+                        ignoreCase = true
+                    ) -> {
+                        mp4Files.add(path)
+                        Log.i(
+                            "DataDownload",
+                            "Found video file: $path"
+                        )
+                    }
 
-                        trimmedLine.endsWith(
-                            ".opus",
-                            ignoreCase = true
-                        ) -> {
-                            opusFiles.add(trimmedLine)
-                            Log.i(
-                                "DataDownload",
-                                "Found OPUS file: $trimmedLine"
-                            )
-                        }
+                    name.endsWith(
+                        ".opus",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".wav",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".aac",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".amr",
+                        ignoreCase = true
+                    ) || name.endsWith(
+                        ".m4a",
+                        ignoreCase = true
+                    ) -> {
+                        opusFiles.add(path)
+                        Log.i(
+                            "DataDownload",
+                            "Found audio file: $path"
+                        )
+                    }
 
-                        else -> {
-                            otherFiles++
-                            Log.i(
-                                "DataDownload",
-                                "Found other file: $trimmedLine"
-                            )
-                        }
+                    else -> {
+                        otherFiles++
+                        Log.i(
+                            "DataDownload",
+                            "Found unsupported media file: $path"
+                        )
                     }
                 }
             }
 
             Log.i(
                 "DataDownload",
-                "Media list parsed: jpg=${jpgFiles.size}, mp4=${mp4Files.size}, opus=${opusFiles.size}, other=$otherFiles"
+                "Media list parsed: jpg=${jpgFiles.size}, mp4=${mp4Files.size}, audio=${opusFiles.size}, other=$otherFiles"
             )
 
             CoroutineScope(Dispatchers.Main).launch {
@@ -4964,10 +4995,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (jpgFiles.isEmpty() && mp4Files.isEmpty() && opusFiles.isEmpty()) {
                 Log.w(
                     "DataDownload",
-                    "No JPG/MP4/OPUS files found in media.config"
+                    "No supported media files found in Eyevue S2 file list"
                 )
                 CoroutineScope(Dispatchers.Main).launch {
-                    showDownloadError("No JPG/MP4/OPUS files found in media.config")
+                    showDownloadError("No supported media files found in Eyevue S2 file list")
                 }
                 return
             }
@@ -5192,43 +5223,53 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         deviceIp: String
     ): Boolean {
         return try {
-            val url = "http://$deviceIp/files/$fileName"
+            val remotePath = normalizeEyevueS2MediaPath(fileName)
+            val displayName = eyevueS2DisplayName(remotePath)
             Log.i(
                 "DataDownload",
-                "Downloading: $url"
+                "Downloading photo: $remotePath from $deviceIp:${downloadResolvedHttpPort}"
             )
 
             var saved: GallerySaveResult? = null
-            httpGet(
-                URL(url),
-                10000,
-                30000
+            val ok = httpGetEyevueS2(
+                deviceIp = deviceIp,
+                path = remotePath,
+                connectTimeoutMs = 10000,
+                readTimeoutMs = 30000,
             ) { stream, _ ->
                 val takenMs =
-                    parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
+                    parseTakenTimeMillisFromFilename(displayName) ?: System.currentTimeMillis()
                 saved = saveJpegToGallery(
                     stream,
-                    fileName,
+                    displayName,
                     takenMs
                 )
+            }
+
+            if (!ok) {
+                Log.e(
+                    "DataDownload",
+                    "HTTP download failed: $remotePath"
+                )
+                return false
             }
 
             if (saved != null && saved!!.bytes > 0) {
                 Log.i(
                     "DataDownload",
-                    "File downloaded: $fileName (${saved!!.bytes} bytes)"
+                    "File downloaded: $displayName (${saved!!.bytes} bytes)"
                 )
             }
             if (saved != null && saved!!.success) {
                 Log.i(
                     "DataDownload",
-                    "Saved to gallery: name=$fileName uri=${saved!!.uri}"
+                    "Saved to gallery: name=$displayName uri=${saved!!.uri}"
                 )
                 true
             } else {
                 Log.e(
                     "DataDownload",
-                    "Failed to download/save: $fileName"
+                    "Failed to download/save: $displayName"
                 )
                 false
             }
@@ -5247,43 +5288,53 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         deviceIp: String
     ): Boolean {
         return try {
-            val url = "http://$deviceIp/files/$fileName"
+            val remotePath = normalizeEyevueS2MediaPath(fileName)
+            val displayName = eyevueS2DisplayName(remotePath)
             Log.i(
                 "DataDownload",
-                "Downloading: $url"
+                "Downloading video: $remotePath from $deviceIp:${downloadResolvedHttpPort}"
             )
 
             var saved: GallerySaveResult? = null
-            httpGet(
-                URL(url),
-                15000,
-                180000
+            val ok = httpGetEyevueS2(
+                deviceIp = deviceIp,
+                path = remotePath,
+                connectTimeoutMs = 15000,
+                readTimeoutMs = 180000,
             ) { stream, _ ->
                 val takenMs =
-                    parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
+                    parseTakenTimeMillisFromFilename(displayName) ?: System.currentTimeMillis()
                 saved = saveMp4ToGallery(
                     stream,
-                    fileName,
+                    displayName,
                     takenMs
                 )
+            }
+
+            if (!ok) {
+                Log.e(
+                    "DataDownload",
+                    "HTTP download failed: $remotePath"
+                )
+                return false
             }
 
             if (saved != null && saved!!.bytes > 0) {
                 Log.i(
                     "DataDownload",
-                    "File downloaded: $fileName (${saved!!.bytes} bytes)"
+                    "File downloaded: $displayName (${saved!!.bytes} bytes)"
                 )
             }
             if (saved != null && saved!!.success) {
                 Log.i(
                     "DataDownload",
-                    "Saved to gallery: name=$fileName uri=${saved!!.uri}"
+                    "Saved to gallery: name=$displayName uri=${saved!!.uri}"
                 )
                 true
             } else {
                 Log.e(
                     "DataDownload",
-                    "Failed to download/save: $fileName"
+                    "Failed to download/save: $displayName"
                 )
                 false
             }
@@ -5302,21 +5353,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         deviceIp: String
     ): Boolean {
         return try {
-            val url = "http://$deviceIp/files/$fileName"
+            val remotePath = normalizeEyevueS2MediaPath(fileName)
+            val displayName = eyevueS2DisplayName(remotePath)
             Log.i(
                 "DataDownload",
-                "Downloading: $url"
+                "Downloading audio: $remotePath from $deviceIp:${downloadResolvedHttpPort}"
             )
 
             var saved: GallerySaveResult? = null
             var payloadBytes: ByteArray? = null
             var rawBytesSize = 0
             var payloadNote = "raw"
-            val takenMs = parseTakenTimeMillisFromFilename(fileName) ?: System.currentTimeMillis()
-            httpGet(
-                URL(url),
-                15000,
-                120000
+            val takenMs = parseTakenTimeMillisFromFilename(displayName) ?: System.currentTimeMillis()
+            val ok = httpGetEyevueS2(
+                deviceIp = deviceIp,
+                path = remotePath,
+                connectTimeoutMs = 15000,
+                readTimeoutMs = 120000,
             ) { stream, _ ->
                 val rawBytes = readAllBytes(stream)
                 rawBytesSize = rawBytes.size
@@ -5327,15 +5380,23 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     payloadBytes = wrapped.first,
                     rawBytesSize = rawBytes.size,
                     payloadNote = wrapped.second,
-                    displayName = fileName,
+                    displayName = displayName,
                     takenTimeMs = takenMs,
                 )
+            }
+
+            if (!ok) {
+                Log.e(
+                    "DataDownload",
+                    "HTTP download failed: $remotePath"
+                )
+                return false
             }
 
             if (saved != null && saved!!.bytes > 0) {
                 Log.i(
                     "DataDownload",
-                    "File downloaded: $fileName (${saved!!.bytes} bytes)"
+                    "File downloaded: $displayName (${saved!!.bytes} bytes)"
                 )
             }
             if (saved != null && saved!!.success) {
@@ -5343,7 +5404,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     runCatching {
                         val persisted = GlassesSyncedAudioIngestor.persistDownloadedAudio(
                             context = applicationContext,
-                            displayName = fileName,
+                            displayName = displayName,
                             payloadBytes = bytes,
                             takenTimeMs = takenMs,
                         )
@@ -5356,20 +5417,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }.onFailure {
                         Log.e(
                             "DataDownload",
-                            "Failed to persist synced audio session for $fileName: ${it.message}",
+                            "Failed to persist synced audio session for $displayName: ${it.message}",
                             it
                         )
                     }
                 }
                 Log.i(
                     "DataDownload",
-                    "Saved to library: name=$fileName uri=${saved!!.uri}"
+                    "Saved to library: name=$displayName uri=${saved!!.uri}"
                 )
                 true
             } else {
                 Log.e(
                     "DataDownload",
-                    "Failed to download/save: $fileName (raw=$rawBytesSize mode=$payloadNote)"
+                    "Failed to download/save: $displayName (raw=$rawBytesSize mode=$payloadNote)"
                 )
                 false
             }
@@ -6315,6 +6376,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         downloadInProgress = false
         downloadP2pNetwork = null
         downloadResolvedHttpIp = null
+        downloadResolvedHttpPort = EYEVUE_S2_HTTP_PORT
     }
 
     private fun cleanupP2pAfterDownload() {
@@ -6491,42 +6553,200 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private fun eyevueS2HttpPorts(): List<Int> = listOf(
+        downloadResolvedHttpPort,
+        EYEVUE_S2_HTTP_PORT,
+        EYEVUE_S2_HTTP_FALLBACK_PORT,
+    ).distinct()
+
+    private fun buildEyevueS2HttpUrl(
+        deviceIp: String,
+        port: Int = downloadResolvedHttpPort,
+        path: String,
+    ): URL {
+        val file = if (path.startsWith("/?")) {
+            path
+        } else {
+            encodeEyevueS2Path(path)
+        }
+        return URL(
+            "http",
+            deviceIp,
+            port,
+            file,
+        )
+    }
+
+    private fun encodeEyevueS2Path(path: String): String {
+        return normalizeEyevueS2MediaPath(path)
+            .split('/')
+            .joinToString("/") { segment ->
+                if (segment.isEmpty()) {
+                    ""
+                } else {
+                    java.net.URLEncoder.encode(
+                        segment,
+                        "UTF-8"
+                    ).replace(
+                        "+",
+                        "%20"
+                    )
+                }
+            }
+    }
+
+    private fun normalizeEyevueS2MediaPath(raw: String): String {
+        var path = raw.trim()
+            .trim('\'', '"')
+            .replace('\\', '/')
+        if (path.startsWith(
+                "A:/",
+                ignoreCase = true
+            )
+        ) {
+            path = path.substring(2)
+        }
+        if (!path.contains('/')) {
+            path = EYEVUE_S2_P2P_MEDIA_DIR + path
+        }
+        if (!path.startsWith('/')) {
+            path = "/$path"
+        }
+        while (path.contains("//")) {
+            path = path.replace(
+                "//",
+                "/"
+            )
+        }
+        return path
+    }
+
+    private fun eyevueS2DisplayName(path: String): String {
+        return path.replace('\\', '/')
+            .substringAfterLast('/')
+            .ifBlank { path }
+    }
+
+    private fun extractEyevueS2MediaPaths(raw: String): List<String> {
+        val out = LinkedHashSet<String>()
+        val pathRegex = Regex(
+            "(?:A:\\\\)?/?(?:DCIM|PHOTO|VIDEO|AUDIO|RECORD)[^\\s<>'\"&]+\\.(?:jpg|jpeg|png|mp4|mov|avi|wav|aac|amr|opus|m4a)",
+            RegexOption.IGNORE_CASE,
+        )
+        pathRegex.findAll(raw).forEach { match ->
+            out.add(normalizeEyevueS2MediaPath(match.value))
+        }
+
+        val nameRegex = Regex(
+            "[A-Za-z0-9_\\-]{4,}\\.(?:jpg|jpeg|png|mp4|mov|avi|wav|aac|amr|opus|m4a)",
+            RegexOption.IGNORE_CASE,
+        )
+        nameRegex.findAll(raw).forEach { match ->
+            val value = match.value
+            if (!value.contains('/')) {
+                out.add(normalizeEyevueS2MediaPath(value))
+            }
+        }
+        return out.toList()
+    }
+
+    private fun httpGetEyevueS2Text(
+        deviceIp: String,
+        path: String,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+    ): String? {
+        var content: String? = null
+        val ok = httpGetEyevueS2(
+            deviceIp = deviceIp,
+            path = path,
+            connectTimeoutMs = connectTimeoutMs,
+            readTimeoutMs = readTimeoutMs,
+        ) { stream, _ ->
+            content = stream.bufferedReader()
+                .use { it.readText() }
+        }
+        return if (ok) content else null
+    }
+
+    private fun httpGetEyevueS2(
+        deviceIp: String,
+        path: String,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        onStream: ((InputStream, Long) -> Unit)? = null,
+    ): Boolean {
+        for (port in eyevueS2HttpPorts()) {
+            val url = buildEyevueS2HttpUrl(
+                deviceIp = deviceIp,
+                port = port,
+                path = path,
+            )
+            Log.i(
+                "DataDownload",
+                "HTTP GET Eyevue S2: $url"
+            )
+            val ok = httpGet(
+                url,
+                connectTimeoutMs,
+                readTimeoutMs,
+                onStream,
+            )
+            if (ok) {
+                downloadResolvedHttpPort = port
+                return true
+            }
+        }
+        return false
+    }
+
     private fun mediaConfigOk(
         ip: String,
         timeoutMs: Int,
         logFailures: Boolean = false
     ): Boolean {
-        if (!isPortOpen(
-                ip,
-                80,
-                (timeoutMs / 2).coerceAtLeast(400)
+        for (port in eyevueS2HttpPorts()) {
+            if (!isPortOpen(
+                    ip,
+                    port,
+                    (timeoutMs / 2).coerceAtLeast(400)
+                )
+            ) {
+                if (logFailures) {
+                    Log.w(
+                        "DataDownload",
+                        "Eyevue S2 file-list probe skipped for $ip:$port (port closed/unreachable)"
+                    )
+                }
+                continue
+            }
+
+            val url = buildEyevueS2HttpUrl(
+                deviceIp = ip,
+                port = port,
+                path = EYEVUE_S2_P2P_FILE_LIST_ENDPOINT,
             )
-        ) {
+            val ok = httpGet(
+                url,
+                timeoutMs,
+                timeoutMs
+            )
+            if (ok) {
+                downloadResolvedHttpPort = port
+                return true
+            }
             if (logFailures) {
                 Log.w(
                     "DataDownload",
-                    "media.config probe skipped for $ip (port 80 closed/unreachable)"
+                    "Eyevue S2 file-list probe failed for $url"
                 )
             }
-            return false
         }
-        val url = URL("http://$ip/files/media.config")
-        val ok = httpGet(
-            url,
-            timeoutMs,
-            timeoutMs
-        )
-        if (!ok && logFailures) {
-            Log.w(
-                "DataDownload",
-                "media.config probe failed for $ip"
-            )
-        }
-        return ok
+        return false
     }
 
     private suspend fun discoverGlassesIpByScan(prefix: String = "192.168.49."): String? {
-        // Fast scan for an HTTP server on port 80 in the P2P subnet.
+        // Fast scan for an Eyevue S2 HTTP server in the P2P subnet.
         // Concurrency is limited to avoid overwhelming the device/network stack.
         return supervisorScope {
             val sem = Semaphore(32)
@@ -6541,23 +6761,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 launch(Dispatchers.IO) {
                     sem.withPermit {
                         if (found.isCompleted) return@withPermit
-                        if (isPortOpen(
-                                ip,
-                                80,
-                                connectTimeoutMs
-                            )
-                        ) {
-                            firstOpenPortIp.compareAndSet(
-                                null,
-                                ip
-                            )
-                            // Prefer an IP that actually serves media.config.
-                            if (mediaConfigOk(
+                        for (port in eyevueS2HttpPorts()) {
+                            if (isPortOpen(
                                     ip,
-                                    verifyTimeoutMs
+                                    port,
+                                    connectTimeoutMs
                                 )
                             ) {
-                                found.complete(ip)
+                                firstOpenPortIp.compareAndSet(
+                                    null,
+                                    ip
+                                )
+                                // Prefer an IP that actually serves the official Eyevue S2 file list.
+                                if (mediaConfigOk(
+                                        ip,
+                                        verifyTimeoutMs
+                                    )
+                                ) {
+                                    found.complete(ip)
+                                }
+                                break
                             }
                         }
                     }
@@ -6601,14 +6824,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun testConnection(deviceIp: String): Boolean {
         Log.i(
             "DataDownload",
-            "Testing connection to $deviceIp..."
+            "Testing Eyevue S2 connection to $deviceIp..."
         )
-        val url = URL("http://$deviceIp/files/media.config")
         var bytesRead = 0
-        val ok = httpGet(
-            url,
-            5000,
-            5000
+        val ok = httpGetEyevueS2(
+            deviceIp = deviceIp,
+            path = EYEVUE_S2_P2P_FILE_LIST_ENDPOINT,
+            connectTimeoutMs = 5000,
+            readTimeoutMs = 5000,
         ) { stream, _ ->
             val buffer = ByteArray(1024)
             bytesRead = stream.read(buffer)

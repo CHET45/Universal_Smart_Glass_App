@@ -45,6 +45,10 @@ object HscH515PacketCodec {
 
     const val CMD_SET_TIME: Int = 0x0903
     const val CMD_FILE_COUNT_NOTIFY: Int = 0x0905
+    const val CMD_WIFI_AP_CONTROL: Int = 0x090B
+    const val CMD_REPORT_AP_SSID: Int = 0x090C
+    const val CMD_REPORT_AP_PASSWORD: Int = 0x090D
+    const val CMD_REPORT_WIFI_API: Int = 0x090E
     const val CMD_GET_FILE_COUNT: Int = 0x0916
 
     const val CMD_DEVICE_CONTROL: Int = 0x0D01
@@ -52,6 +56,7 @@ object HscH515PacketCodec {
 
     const val CMD_LOCAL_AUDIO_CONTROL: Int = 0x0E04
     const val CMD_LOCAL_AUDIO_STATE_NOTIFY: Int = 0x0E05
+    const val CMD_LOCAL_AUDIO_FILE_COUNT_REPORT: Int = 0x0E08
 
     private const val FRAME_MAGIC: Int = 0xA5
     private const val MIN_COMMAND_DATA_LENGTH: Int = 6
@@ -189,6 +194,15 @@ object HscH515PacketCodec {
         byteArrayOf(if (enabled) 1 else 0),
     )
 
+    fun wifiApControlRequest(
+        sequence: Int,
+        enabled: Boolean,
+    ): ByteArray = request(
+        CMD_WIFI_AP_CONTROL,
+        sequence,
+        byteArrayOf(if (enabled) 1 else 0),
+    )
+
     fun decodeFrame(raw: ByteArray): Packet? {
         if (raw.size < 11) return null
         if ((raw[0].toInt() and 0xFF) != FRAME_MAGIC) return null
@@ -283,6 +297,15 @@ object HscH515PacketCodec {
             .toString(UTF8)
             .trim()
             .takeIf { it.isNotEmpty() }
+    }
+
+    fun parseFileListUrlPayload(payload: ByteArray): String? {
+        if (payload.isEmpty()) return null
+        val first = payload.getOrNull(0)?.toInt()?.and(0xFF) ?: 0
+        val second = payload.getOrNull(1)?.toInt()?.and(0xFF) ?: 0
+        val hasCountPrefix = payload.size > 2 && (first < 0x20 || second < 0x20)
+        val offset = if (hasCountPrefix) 2 else 0
+        return parseStringPayload(payload.copyOfRange(offset, payload.size))
     }
 
     fun parseVersionPayload(payload: ByteArray): String? {

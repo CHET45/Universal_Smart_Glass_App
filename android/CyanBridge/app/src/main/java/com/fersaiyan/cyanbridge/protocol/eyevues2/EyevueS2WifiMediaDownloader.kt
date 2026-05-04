@@ -31,23 +31,37 @@ internal class EyevueS2WifiMediaDownloader(
         WifiTransferMode.P2P
     }
 
+    private var activePort: Int = port
+
     suspend fun waitUntilReachable(
         attempts: Int = 8,
         delayMillis: Long = 1_000L,
     ) {
         var lastError: Throwable? = null
         repeat(attempts) { attempt ->
-            val reachable = runCatching {
-                httpBytes(fileListUrl(), connectTimeoutMillis = 2_500, readTimeoutMillis = 2_500)
-            }.onFailure { lastError = it }.isSuccess
-            if (reachable) return
+            for (candidatePort in candidatePorts()) {
+                val reachable = runCatching {
+                    httpBytes(
+                        fileListUrl(candidatePort),
+                        connectTimeoutMillis = 2_500,
+                        readTimeoutMillis = 2_500
+                    )
+                }.onFailure { lastError = it }.isSuccess
+                if (reachable) {
+                    activePort = candidatePort
+                    return
+                }
+            }
             if (attempt < attempts - 1) delay(delayMillis)
         }
-        throw IOException("Eyevue S2 HTTP endpoint $host:$port is not reachable", lastError)
+        throw IOException("Eyevue S2 HTTP endpoint $host:${candidatePorts().joinToString("/")} is not reachable", lastError)
     }
 
     suspend fun fetchFileList(): List<RemoteMediaFile> {
-        val body = httpText(fileListUrl())
+        if (activePort == port) {
+            runCatching { waitUntilReachable(attempts = 1, delayMillis = 0L) }
+        }
+        val body = httpText(fileListUrl(activePort))
         return parseFileList(body)
             .distinctBy { it.devicePath }
             .sortedWith(compareByDescending<RemoteMediaFile> { it.timeCode ?: 0L }.thenBy { it.name })
@@ -97,15 +111,15 @@ internal class EyevueS2WifiMediaDownloader(
             }
         }
 
-    private fun fileListUrl(): URL = when (transferMode) {
-        WifiTransferMode.P2P -> URL("http", host, port, P2P_FILE_LIST_ENDPOINT)
-        WifiTransferMode.AP -> URL("http", host, port, AP_FILE_LIST_ENDPOINT)
+    private fun fileListUrl(targetPort: Int = activePort): URL = when (transferMode) {
+        WifiTransferMode.P2P -> URL("http", host, targetPort, P2P_FILE_LIST_ENDPOINT)
+        WifiTransferMode.AP -> URL("http", host, targetPort, AP_FILE_LIST_ENDPOINT)
     }
 
     private fun downloadUrl(item: RemoteMediaFile): URL = URL(
         "http",
         host,
-        port,
+        activePort,
         encodePath(item.httpPath)
     )
 
@@ -113,17 +127,22 @@ internal class EyevueS2WifiMediaDownloader(
         WifiTransferMode.P2P -> URL(
             "http",
             host,
-            port,
+            activePort,
             "$P2P_DELETE_ENDPOINT${encodeQueryValue(p2pDeletePath(item))}"
         )
 
         WifiTransferMode.AP -> URL(
             "http",
             host,
-            port,
+            activePort,
             "$AP_DELETE_ENDPOINT${encodeQueryValue(item.devicePath)}"
         )
     }
+
+    private fun candidatePorts(): List<Int> = listOf(
+        port,
+        LEGACY_HTTP_PORT, // TODO поменять на 80 только для прошивок, где HTTP-сервер очков остался на дефолтном порту.
+    ).distinct()
 
     private suspend fun httpText(url: URL): String = withContext(Dispatchers.IO) {
         val bytes = httpBytes(url)
@@ -393,7 +412,8 @@ internal class EyevueS2WifiMediaDownloader(
     companion object {
         const val P2P_HOST = "192.168.49.207"
         const val AP_HOST = "192.168.169.1"
-        const val HTTP_PORT = 8080 // TODO поменять на 80, если целевая прошивка использует порт из архивной реализации.
+        const val HTTP_PORT = 80
+        private const val LEGACY_HTTP_PORT = 80 // TODO поменять на 80 для архивной P2P/AP реализации без явного порта.
         private const val DEFAULT_FOLDER = "/DCIM/100HUNTI"
         private const val P2P_FILE_LIST_ENDPOINT = "/?custom=1&cmd=3015"
         private const val AP_FILE_LIST_ENDPOINT = "/app/getfilelist"

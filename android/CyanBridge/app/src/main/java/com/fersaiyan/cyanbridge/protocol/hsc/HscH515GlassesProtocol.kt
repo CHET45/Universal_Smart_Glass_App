@@ -43,7 +43,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -122,6 +123,7 @@ class HscH515GlassesProtocol(
     private var pendingBattery: CompletableDeferred<GlassesBattery>? = null
     private var pendingDeviceInfo: CompletableDeferred<GlassesDeviceInfo>? = null
     private var pendingMediaCounts: CompletableDeferred<GlassesMediaCounts>? = null
+    private var pendingMediaApiUrl: CompletableDeferred<String>? = null
 
     private var cachedDeviceName: String? = null
     private var cachedModel: String? = null
@@ -129,6 +131,20 @@ class HscH515GlassesProtocol(
     private var cachedHardware: String? = null
     private var cachedProductInfo: HscH515PacketCodec.ProductInfo? = null
     private var cachedSupportFeatures: Map<String, Boolean>? = null
+    private var cachedMediaApiUrl: String? = null
+
+    /**
+     * HY15 can echo app-originated DEVICE_CONTROL / LOCAL_AUDIO_CONTROL commands back as
+     * notify/request packets. Echo suppression belongs in the protocol, not in MainActivity:
+     * UI must only receive real button actions coming from the glasses.
+     */
+    private var suppressPhotoEchoUntilMs = 0L
+    private var suppressVideoEchoUntilMs = 0L
+    private var suppressAudioEchoUntilMs = 0L
+    private var suppressVideoTarget: Boolean? = null
+    private var suppressAudioTarget: Boolean? = null
+    private var knownVideoRecording: Boolean? = null
+    private var knownAudioRecording: Boolean? = null
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private fun finishCurrentWriteAndDrain(reason: String) {
         writeWatchdog?.let { mainHandler.removeCallbacks(it) }
@@ -254,6 +270,7 @@ class HscH515GlassesProtocol(
         cachedHardware = null
         cachedProductInfo = null
         cachedSupportFeatures = null
+        cachedMediaApiUrl = null
         markedConnected = false
         initialQueriesScheduled = false
         serviceDiscoveryStarted = false
@@ -387,43 +404,99 @@ class HscH515GlassesProtocol(
         } ?: Result.failure(IllegalStateException("requestMediaCounts timed out"))
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-
-    override suspend fun takePhoto(aiTransfer: Boolean): GlassesCommandResult = sendCommand(
-        commandName = "takePhoto",
-        bytes = HscH515PacketCodec.deviceControlRequest(
-            sequence.next(),
-            DEVICE_CONTROL_TAKE_PHOTO
-        ),
-    )
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-
-    override suspend fun setVideoRecording(enabled: Boolean): GlassesCommandResult = sendCommand(
-        commandName = if (enabled) "startVideoRecording" else "stopVideoRecording",
-        bytes = HscH515PacketCodec.deviceControlRequest(
-            sequence.next(),
-            if (enabled) DEVICE_CONTROL_START_VIDEO else DEVICE_CONTROL_STOP_VIDEO,
-        ),
-    )
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
-
-    override suspend fun setAudioRecording(enabled: Boolean): GlassesCommandResult = sendCommand(
-        commandName = if (enabled) "startAudioRecording" else "stopAudioRecording",
-        bytes = HscH515PacketCodec.localAudioControlRequest(
-            sequence.next(),
-            enabled
-        ),
-    )
-
-    override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = flowOf(
-        GlassesTransferEvent.Failed(
-            GlassesProtocolError(
-                code = "NOT_IMPLEMENTED_YET",
-                message = "HSC/H5-15 file import needs the Wi-Fi HTTP/upload layer from protocol v2.0.15.",
-            )
+    override suspend fun takePhoto(aiTransfer: Boolean): GlassesCommandResult {
+        val result = sendCommand(
+            commandName = "takePhoto",
+            bytes = HscH515PacketCodec.deviceControlRequest(
+                sequence.next(),
+                DEVICE_CONTROL_TAKE_PHOTO
+            ),
         )
-    )
+        if (result == GlassesCommandResult.Accepted) {
+            markSelfOriginatedButton(GlassesEvent.Button.PHOTO)
+        }
+        return result
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    override suspend fun setVideoRecording(enabled: Boolean): GlassesCommandResult {
+        val result = sendCommand(
+            commandName = if (enabled) "startVideoRecording" else "stopVideoRecording",
+            bytes = HscH515PacketCodec.deviceControlRequest(
+                sequence.next(),
+                if (enabled) DEVICE_CONTROL_START_VIDEO else DEVICE_CONTROL_STOP_VIDEO,
+            ),
+        )
+        if (result == GlassesCommandResult.Accepted) {
+            knownVideoRecording = enabled
+            markSelfOriginatedButton(GlassesEvent.Button.VIDEO, enabled)
+        }
+        return result
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    override suspend fun setAudioRecording(enabled: Boolean): GlassesCommandResult {
+        val result = sendCommand(
+            commandName = if (enabled) "startAudioRecording" else "stopAudioRecording",
+            bytes = HscH515PacketCodec.localAudioControlRequest(
+                sequence.next(),
+                enabled
+            ),
+        )
+        if (result == GlassesCommandResult.Accepted) {
+            knownAudioRecording = enabled
+            markSelfOriginatedButton(GlassesEvent.Button.AUDIO, enabled)
+        }
+        return result
+    }
+
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    override fun downloadMedia(options: MediaDownloadOptions): Flow<GlassesTransferEvent> = flow {
+        emit(GlassesTransferEvent.Started)
+
+        if (!isProtocolReadyForWrite()) {
+            emit(
+                GlassesTransferEvent.Failed(
+                    GlassesProtocolError(
+                        code = "NOT_CONNECTED",
+                        message = "HSC/HY15 protocol is not connected or GATT write characteristic is not ready.",
+                    )
+                )
+            )
+            return@flow
+        }
+
+        val apiResult = requestMediaApiUrlForDownload()
+        val apiUrl = apiResult.getOrElse { error ->
+            emit(
+                GlassesTransferEvent.Failed(
+                    error.toProtocolError(
+                        code = "MEDIA_API_NOT_AVAILABLE",
+                        fallbackMessage = "HSC/HY15 did not provide a file import HTTP API URL"
+                    )
+                )
+            )
+            return@flow
+        }
+
+        try {
+            val downloader = HscH515HttpMediaDownloader(context)
+            emitAll(downloader.downloadMedia(apiUrl, options))
+        } catch (error: Throwable) {
+            emit(
+                GlassesTransferEvent.Failed(
+                    error.toProtocolError(
+                        code = "MEDIA_DOWNLOAD_FAILED",
+                        fallbackMessage = "HSC/HY15 media download failed"
+                    )
+                )
+            )
+        } finally {
+            runCatching {
+                write(HscH515PacketCodec.wifiApControlRequest(sequence.next(), enabled = false))
+            }
+        }
+    }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun close() {
@@ -729,6 +802,41 @@ class HscH515GlassesProtocol(
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private suspend fun requestMediaApiUrlForDownload(): Result<String> = withTimeoutOrNull(MEDIA_API_TIMEOUT_MS) {
+        val opened = write(HscH515PacketCodec.wifiApControlRequest(sequence.next(), enabled = true))
+        cachedMediaApiUrl?.takeIf { it.isNotBlank() }?.let { return@withTimeoutOrNull Result.success(it) }
+
+        val deferred = CompletableDeferred<String>()
+        pendingMediaApiUrl = deferred
+
+        val requestedCount = write(
+            HscH515PacketCodec.request(
+                HscH515PacketCodec.CMD_GET_FILE_COUNT,
+                sequence.next(),
+            )
+        )
+
+        if (!opened && !requestedCount) {
+            pendingMediaApiUrl = null
+            return@withTimeoutOrNull Result.failure(IllegalStateException("Could not request HSC/HY15 file import API over BLE"))
+        }
+
+        Result.success(deferred.await())
+    } ?: Result.failure(IllegalStateException("Timed out waiting for HSC/HY15 file import API URL"))
+
+    private fun completeMediaApiUrl(url: String) {
+        val normalized = url.trim().trim('\u0000', ' ', '\r', '\n', '\t')
+        if (normalized.isBlank() || !normalized.startsWith("http", ignoreCase = true)) return
+
+        cachedMediaApiUrl = normalized
+        pendingMediaApiUrl?.let { deferred ->
+            if (!deferred.isCompleted) deferred.complete(normalized)
+        }
+        pendingMediaApiUrl = null
+        Log.i(TAG, "HSC/HY15 media API URL: $normalized")
+    }
+
     private fun onCharacteristicBytes(
         uuid: String,
         bytes: ByteArray
@@ -790,11 +898,23 @@ class HscH515GlassesProtocol(
             }
 
             HscH515PacketCodec.CMD_GET_FILE_COUNT, HscH515PacketCodec.CMD_FILE_COUNT_NOTIFY -> {
+                HscH515PacketCodec.parseFileListUrlPayload(packet.payload)?.let(::completeMediaApiUrl)
+
                 val count = HscH515PacketCodec.parseFileCount(packet.payload) ?: return
                 val counts = GlassesMediaCounts(photos = count)
                 pendingMediaCounts?.complete(counts)
                 pendingMediaCounts = null
                 _events.tryEmit(GlassesEvent.MediaCountsChanged(counts))
+            }
+
+            HscH515PacketCodec.CMD_REPORT_WIFI_API -> {
+                HscH515PacketCodec.parseFileListUrlPayload(packet.payload)?.let(::completeMediaApiUrl)
+            }
+
+            HscH515PacketCodec.CMD_LOCAL_AUDIO_FILE_COUNT_REPORT -> {
+                HscH515PacketCodec.parseFileListUrlPayload(packet.payload)?.let(::completeMediaApiUrl)
+                val count = HscH515PacketCodec.parseFileCount(packet.payload) ?: return
+                _events.tryEmit(GlassesEvent.MediaCountsChanged(GlassesMediaCounts(audios = count)))
             }
 
             HscH515PacketCodec.CMD_PRODUCT_INFO -> {
@@ -837,35 +957,130 @@ class HscH515GlassesProtocol(
                 }
             }
 
-            HscH515PacketCodec.CMD_VIDEO_STATE_NOTIFY -> {
-                if (!isIncomingDeviceEvent(packet)) return
-                HscH515PacketCodec.parseVideoState(packet.payload)
-                    ?.takeIf { it }
-                    ?.let { emitButton(GlassesEvent.Button.VIDEO, packet.commandId) }
-            }
+            HscH515PacketCodec.CMD_VIDEO_STATE_NOTIFY -> handleVideoStatePacket(packet)
 
-            HscH515PacketCodec.CMD_LOCAL_AUDIO_STATE_NOTIFY -> {
-                if (!isIncomingDeviceEvent(packet)) return
-                HscH515PacketCodec.parseAudioState(packet.payload)
-                    ?.takeIf { it }
-                    ?.let { emitButton(GlassesEvent.Button.AUDIO, packet.commandId) }
-            }
+            HscH515PacketCodec.CMD_LOCAL_AUDIO_CONTROL -> handleLocalAudioControlPacket(packet)
+
+            HscH515PacketCodec.CMD_LOCAL_AUDIO_STATE_NOTIFY -> handleLocalAudioStatePacket(packet)
         }
     }
 
     private fun handleDeviceControlPacket(packet: HscH515PacketCodec.Packet) {
         if (!isIncomingDeviceEvent(packet)) return
         when (HscH515PacketCodec.parseDeviceControl(packet.payload)) {
-            DEVICE_CONTROL_TAKE_PHOTO -> emitButton(GlassesEvent.Button.PHOTO, packet.commandId)
-            DEVICE_CONTROL_START_VIDEO -> emitButton(GlassesEvent.Button.VIDEO, packet.commandId)
-            DEVICE_CONTROL_STOP_VIDEO -> Unit
+            DEVICE_CONTROL_TAKE_PHOTO -> {
+                if (!shouldSuppressSelfOriginatedButton(GlassesEvent.Button.PHOTO)) {
+                    emitButton(GlassesEvent.Button.PHOTO, packet.commandId)
+                }
+            }
+
+            DEVICE_CONTROL_START_VIDEO -> {
+                knownVideoRecording = true
+                if (!shouldSuppressSelfOriginatedButton(GlassesEvent.Button.VIDEO, true)) {
+                    emitButton(GlassesEvent.Button.VIDEO, packet.commandId)
+                }
+            }
+
+            DEVICE_CONTROL_STOP_VIDEO -> {
+                knownVideoRecording = false
+                if (!shouldSuppressSelfOriginatedButton(GlassesEvent.Button.VIDEO, false)) {
+                    emitButton(GlassesEvent.Button.VIDEO, packet.commandId)
+                }
+            }
+
             else -> Unit
         }
     }
 
+    private fun handleVideoStatePacket(packet: HscH515PacketCodec.Packet) {
+        if (!isIncomingDeviceEvent(packet)) return
+        val state = HscH515PacketCodec.parseVideoState(packet.payload) ?: return
+        val previous = knownVideoRecording
+        knownVideoRecording = state
+        if (shouldSuppressSelfOriginatedButton(GlassesEvent.Button.VIDEO, state)) return
+        if (previous != state) {
+            emitButton(GlassesEvent.Button.VIDEO, packet.commandId)
+        }
+    }
+
+    private fun handleLocalAudioControlPacket(packet: HscH515PacketCodec.Packet) {
+        if (!isIncomingDeviceEvent(packet)) return
+        val targetFromPayload = HscH515PacketCodec.parseAudioState(packet.payload)
+        if (shouldSuppressSelfOriginatedButton(GlassesEvent.Button.AUDIO, targetFromPayload)) {
+            targetFromPayload?.let { knownAudioRecording = it }
+            return
+        }
+
+        // HY15 sends LOCAL_AUDIO_CONTROL from the glasses button. Payload 0x01 is an
+        // action trigger in this direction, not a phone-side command to always start.
+        // Convert it to one UI button event; the UI then toggles its own recording state.
+        knownAudioRecording = !(knownAudioRecording ?: false)
+        emitButton(GlassesEvent.Button.AUDIO, packet.commandId)
+    }
+
+    private fun handleLocalAudioStatePacket(packet: HscH515PacketCodec.Packet) {
+        if (!isIncomingDeviceEvent(packet)) return
+        val state = HscH515PacketCodec.parseAudioState(packet.payload) ?: return
+        val previous = knownAudioRecording
+        knownAudioRecording = state
+        if (shouldSuppressSelfOriginatedButton(GlassesEvent.Button.AUDIO, state)) return
+        if (previous != state) {
+            emitButton(GlassesEvent.Button.AUDIO, packet.commandId)
+        }
+    }
+
+    private fun markSelfOriginatedButton(
+        button: GlassesEvent.Button,
+        targetState: Boolean? = null,
+    ) {
+        val until = System.currentTimeMillis() + SELF_EVENT_SUPPRESSION_MS
+        when (button) {
+            GlassesEvent.Button.PHOTO -> suppressPhotoEchoUntilMs = until
+            GlassesEvent.Button.VIDEO -> {
+                suppressVideoEchoUntilMs = until
+                suppressVideoTarget = targetState
+            }
+            GlassesEvent.Button.AUDIO -> {
+                suppressAudioEchoUntilMs = until
+                suppressAudioTarget = targetState
+            }
+            else -> Unit
+        }
+    }
+
+    private fun shouldSuppressSelfOriginatedButton(
+        button: GlassesEvent.Button,
+        state: Boolean? = null,
+    ): Boolean {
+        val now = System.currentTimeMillis()
+        val suppress = when (button) {
+            GlassesEvent.Button.PHOTO -> now < suppressPhotoEchoUntilMs
+            GlassesEvent.Button.VIDEO -> now < suppressVideoEchoUntilMs && (suppressVideoTarget == null || state == null || suppressVideoTarget == state)
+            GlassesEvent.Button.AUDIO -> now < suppressAudioEchoUntilMs && (suppressAudioTarget == null || state == null || suppressAudioTarget == state)
+            else -> false
+        }
+
+        if (!suppress) return false
+
+        Log.i(TAG, "Suppressing self-originated HSC/HY15 button echo: $button state=$state")
+        when (button) {
+            GlassesEvent.Button.PHOTO -> suppressPhotoEchoUntilMs = 0L
+            GlassesEvent.Button.VIDEO -> {
+                suppressVideoEchoUntilMs = 0L
+                suppressVideoTarget = null
+            }
+            GlassesEvent.Button.AUDIO -> {
+                suppressAudioEchoUntilMs = 0L
+                suppressAudioTarget = null
+            }
+            else -> Unit
+        }
+        return true
+    }
+
     private fun isIncomingDeviceEvent(packet: HscH515PacketCodec.Packet): Boolean {
         return packet.type == HscH515PacketCodec.TYPE_REQUEST ||
-                packet.type == HscH515PacketCodec.TYPE_NOTIFY
+            packet.type == HscH515PacketCodec.TYPE_NOTIFY
     }
 
     private fun emitButton(button: GlassesEvent.Button, sourceCommand: Int) {
@@ -969,6 +1184,10 @@ class HscH515GlassesProtocol(
         )
     }
 
+
+    private fun isProtocolReadyForWrite(): Boolean {
+        return gatt != null && writeCharacteristic != null
+    }
 
     @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     private suspend fun sendCommand(
@@ -1228,6 +1447,7 @@ class HscH515GlassesProtocol(
         pendingBattery = null
         pendingDeviceInfo = null
         pendingMediaCounts = null
+        pendingMediaApiUrl = null
         writeCharacteristic = null
         readCharacteristic = null
         frameDecoder.clear()
@@ -1236,6 +1456,13 @@ class HscH515GlassesProtocol(
         isLargeMtu = false
         awaitingPong = false
         failedPing = 0
+        suppressPhotoEchoUntilMs = 0L
+        suppressVideoEchoUntilMs = 0L
+        suppressAudioEchoUntilMs = 0L
+        suppressVideoTarget = null
+        suppressAudioTarget = null
+        knownVideoRecording = null
+        knownAudioRecording = null
         stopHeartbeat()
         synchronized(writeLock) {
             writeQueue.clear()
@@ -1282,12 +1509,14 @@ class HscH515GlassesProtocol(
         private const val TAG = "HscH515Protocol"
         private const val CONNECT_TIMEOUT_MS = 15_000L
         private const val COMMAND_TIMEOUT_MS = 5_000L
+        private const val MEDIA_API_TIMEOUT_MS = 15_000L
         private const val SERVICE_DISCOVERY_MAX_ATTEMPTS = 8
         private const val SERVICE_DISCOVERY_RETRY_DELAY_MS = 500L
         private const val CONNECT_RETRY_SETTLE_MS = 700L
         private const val WRITE_RETRY_DELAY_MS = 150L
         private const val HEARTBEAT_INTERVAL_MS = 3_000L
         private const val HEARTBEAT_MAX_MISSED = 3
+        private const val SELF_EVENT_SUPPRESSION_MS = 750L
 
         private const val DEVICE_CONTROL_TAKE_PHOTO = 8
         private const val DEVICE_CONTROL_START_VIDEO = 9
