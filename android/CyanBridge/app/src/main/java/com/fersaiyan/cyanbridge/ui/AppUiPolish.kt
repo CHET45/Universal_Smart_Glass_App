@@ -60,7 +60,8 @@ object AppUiPolish {
         binding.btnToggleAdvanced.visibility = View.GONE
         binding.layoutAdvancedContainer.visibility = View.GONE
         binding.btnTestHijackVoice.visibility = View.GONE
-        binding.btnTestHijackImage.visibility = View.GONE
+        binding.btnTestHijackImage.visibility = View.VISIBLE
+        binding.btnTestHijackImage.text = "Image Recognition"
         binding.btnPullOtaTest.visibility = View.GONE
         binding.btnOtaInfo.visibility = View.GONE
 
@@ -76,6 +77,7 @@ object AppUiPolish {
             binding.btnScan,
             binding.btnConnect,
             binding.btnDataDownload,
+            binding.btnTestHijackImage,
         ).forEach { stylePrimaryButton(it) }
 
         listOf(
